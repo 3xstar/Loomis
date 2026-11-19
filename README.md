@@ -71,7 +71,13 @@ uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 Swagger UI доступен по адресу [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs), проверка состояния — по `GET /health`. Чтобы запустить сервер с адресом и портом из настроек Loomis, используйте `python -m backend.main`.
 
-Планируемая команда запуска Desktop в отдельном окне PowerShell с активированным окружением — `python -m desktop.app`. В текущей копии файл `desktop/app.py` отсутствует, а pywebview пока не входит в `requirements.txt`.
+Этап 3 «Liquid Glass Desktop + Magic Login» полностью реализован и готов к запуску из корня проекта с активированным окружением.
+
+```powershell
+python -m desktop.app
+```
+
+Клиент запускает API автоматически, если `/health` недоступен. В окне доступны темы Dark Liquid Glass и Light iOS Glass. Выбор темы сохраняется между запусками.
 
 ### Переменные окружения
 
@@ -118,7 +124,7 @@ Swagger UI доступен по адресу [http://127.0.0.1:8000/docs](http:
 | --- | --- | --- |
 | 1 · База | FastAPI, SQLite, аккаунты, Telegram-бот, проекты и сборка ТЗ | Реализован |
 | 2 · Агенты | CLI/API-адаптеры, консилиум, утверждение плана, Git-откат и сетевые воркеры | Реализован, проверка с реальными провайдерами указана в `STATE.md` как следующий шаг |
-| 3 · Desktop | Liquid Glass Desktop на pywebview и Vanilla JS, Magic Login | В разработке |
+| 3 · Desktop | Liquid Glass Desktop на pywebview и Vanilla JS, Magic Login | Реализован |
 
 ## Безопасность и локальность
 
@@ -128,6 +134,6 @@ Swagger UI доступен по адресу [http://127.0.0.1:8000/docs](http:
 
 ## Лицензия и статус
 
-Проект в разработке. Файл лицензии в репозитории отсутствует.
+Файл лицензии в репозитории отсутствует.
 
 **Loomis · Stage 3.**

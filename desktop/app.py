@@ -16,6 +16,17 @@ if __package__ in (None, ""):
 from backend.settings import settings
 
 
+def set_dark_title_bar(window) -> None:
+    from ctypes import byref, c_int, windll
+    from ctypes.wintypes import HWND
+
+    hwnd = HWND(window.native.Handle.ToInt64())
+    enabled = c_int(1)
+    set_attribute = windll.dwmapi.DwmSetWindowAttribute
+    if set_attribute(hwnd, 20, byref(enabled), 4) != 0:
+        set_attribute(hwnd, 19, byref(enabled), 4)
+
+
 def server_ready(url: str) -> bool:
     try:
         with build_opener(ProxyHandler({})).open(f"{url}/health", timeout=1) as response:
@@ -39,8 +50,13 @@ def main() -> None:
                 if server.poll() is not None or monotonic() >= deadline:
                     raise RuntimeError(f"Сервер Loomis недоступен по адресу {url}")
                 sleep(0.2)
-        webview.create_window("Loomis", url, width=1280, height=820)
-        webview.start()
+        # Load the FastAPI-mounted UI on the same origin as the API and WebSocket.
+        window = webview.create_window(
+            "Loomis", f"{url}/index.html", width=1280, height=820, background_color="#0b1020",
+        )
+        if sys.platform == "win32":
+            window.events.shown += lambda: set_dark_title_bar(window)
+        webview.start(private_mode=False)
     finally:
         if server is not None and server.poll() is None:
             server.terminate()
