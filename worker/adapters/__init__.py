@@ -1,6 +1,8 @@
 from .api_adapter import ApiAgent
 from .cli_adapter import CliAgent
 
+CLI_PROVIDERS = {"codex", "cli", "opencode", "qwen", "claude"}
+
 
 def build_agent(provider, model, settings, approval=None):
     if provider.lower() == "codex":
@@ -9,6 +11,6 @@ def build_agent(provider, model, settings, approval=None):
             settings.get("question_command", "codex exec --json --skip-git-repo-check --sandbox read-only -"),
             approval,
         )
-    if provider.lower() in {"cli", "opencode", "qwen", "claude"}:
+    if provider.lower() in CLI_PROVIDERS:
         return CliAgent(settings.get("command", model), settings.get("question_command"), approval)
-    return ApiAgent(model, settings["base_url"], settings.get("api_key_env"), api_key=settings.get("api_key"))
+    return ApiAgent.from_config(model, settings)

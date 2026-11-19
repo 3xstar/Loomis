@@ -18,6 +18,7 @@ from backend.core.doc_parser import parse_document
 from backend.core.orchestrator import orchestrator
 from backend.database.models import AgentConfig, Project, SpecItem
 from backend.settings import ROOT
+from worker.adapters import CLI_PROVIDERS
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 ProjectName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
@@ -79,7 +80,7 @@ class AgentView(AgentCreate):
 
     @field_serializer("settings")
     def public_settings(self, settings: dict) -> dict:
-        return {name: value for name, value in settings.items() if name != "api_key"}
+        return {name: value for name, value in settings.items() if name not in {"api_key", "apiKey"}}
 
 
 class SpecText(BaseModel):
@@ -249,9 +250,21 @@ async def save_agent(session: AsyncSession) -> None:
         raise HTTPException(409, "Не удалось сохранить агента. Проверьте имя и проект.") from None
 
 
+def normalize_api_settings(settings: dict, model: str) -> dict:
+    config = settings.copy()
+    base_url = config.pop("baseUrl", None)
+    api_key = config.pop("apiKey", None)
+    config["base_url"] = config.get("base_url") or base_url
+    config["api_key"] = config.get("api_key") or api_key
+    config["model"] = model
+    return config
+
+
 @router.post("/{project_id}/agents", response_model=AgentView, status_code=201)
 async def add_agent(data: AgentCreate, project: OwnedProject, session: Session):
     agent = AgentConfig(project_id=project.id, **data.model_dump())
+    if agent.provider.lower() not in CLI_PROVIDERS:
+        agent.settings = normalize_api_settings(agent.settings, agent.model)
     session.add(agent)
     await save_agent(session)
     return agent
@@ -267,7 +280,14 @@ async def edit_agent(data: AgentPatch, agent: OwnedAgent, session: Session):
     updates = data.model_dump(exclude_unset=True)
     if any(value is None for value in updates.values()):
         raise HTTPException(422, "Поля агента не могут быть пустыми.")
-    if "settings" in updates and "api_key" in agent.settings:
+    provider = updates.get("provider", agent.provider)
+    if provider.lower() not in CLI_PROVIDERS:
+        settings = updates.get("settings", agent.settings)
+        settings = normalize_api_settings(settings, updates.get("model", agent.model))
+        if "settings" in updates and not {"api_key", "apiKey"}.intersection(updates["settings"]):
+            settings["api_key"] = agent.settings.get("api_key") or agent.settings.get("apiKey")
+        updates["settings"] = settings
+    elif "settings" in updates and "api_key" in agent.settings:
         updates["settings"].setdefault("api_key", agent.settings["api_key"])
     for field, value in updates.items():
         setattr(agent, field, value)

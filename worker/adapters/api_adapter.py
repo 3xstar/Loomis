@@ -39,6 +39,12 @@ def run_file_tool(workspace, name, path, content=None):
 
 
 class ApiAgent(BaseAgent):
+    @classmethod
+    def from_config(cls, model: str, config: dict):
+        base_url = config.get("base_url") or config.get("baseUrl") or os.getenv("OPENAI_BASE_URL") or "https://openai.com"
+        api_key = config.get("api_key") or config.get("apiKey") or os.getenv("OPENAI_API_KEY")
+        return cls(model, base_url, config.get("api_key_env"), api_key=api_key)
+
     def __init__(self, model: str, base_url: str, api_key_env: str | None = None, *, api_key: str | None = None):
         self.model = model
         self.base_url = base_url
