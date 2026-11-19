@@ -1,17 +1,22 @@
 from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_serializer
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.datastructures import UploadFile
 
 from backend.api.auth import CurrentUser, Session
 from backend.api.ws import manager
+from backend.core.context_manager import build_spec
+from backend.core.doc_parser import parse_document
 from backend.core.orchestrator import orchestrator
-from backend.database.models import AgentConfig, Project
+from backend.database.models import AgentConfig, Project, SpecItem
 from backend.settings import ROOT
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -72,6 +77,22 @@ class AgentView(AgentCreate):
     project_id: int
     created_at: datetime
 
+    @field_serializer("settings")
+    def public_settings(self, settings: dict) -> dict:
+        return {name: value for name, value in settings.items() if name != "api_key"}
+
+
+class SpecText(BaseModel):
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class SpecItemView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    content: str
+
 
 def default_workspace(project: Project) -> str:
     return str(ROOT / "workspaces" / f"{project.id}-{uuid4().hex}")
@@ -114,6 +135,65 @@ async def add_project(data: ProjectCreate, session: Session, user: CurrentUser):
 @router.get("/{project_id}", response_model=ProjectView)
 async def get_project(project: OwnedProject):
     return project
+
+
+@router.get("/{project_id}/spec-items", response_model=list[SpecItemView])
+async def list_spec_items(project: OwnedProject, session: Session):
+    return list(await session.scalars(
+        select(SpecItem).where(SpecItem.project_id == project.id).order_by(SpecItem.position, SpecItem.id)
+    ))
+
+
+async def read_spec_item(request: Request) -> tuple[str, str]:
+    media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
+    if media_type == "application/json":
+        try:
+            return "Текст", SpecText.model_validate_json(await request.body()).text
+        except ValidationError as exc:
+            raise HTTPException(422, "Введите текст ТЗ.") from exc
+    if media_type != "multipart/form-data":
+        raise HTTPException(415, "Передайте JSON или документ.")
+    async with request.form(max_files=1, max_fields=0) as form:
+        upload = form.get("file")
+        if not isinstance(upload, UploadFile) or not upload.filename:
+            raise HTTPException(422, "Прикрепите документ в поле file.")
+        title = Path(upload.filename.replace("\\", "/")).name
+        suffix = Path(title).suffix.lower()
+        if suffix not in {".pdf", ".docx", ".txt", ".md"}:
+            raise HTTPException(415, "Поддерживаются документы .pdf, .docx, .txt и .md.")
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / f"upload{suffix}"
+            with path.open("wb") as stream:
+                while chunk := await upload.read(1024 * 1024):
+                    stream.write(chunk)
+            try:
+                content = await parse_document(path)
+            except Exception as exc:
+                raise HTTPException(422, "Не удалось прочитать документ.") from exc
+        if not content:
+            raise HTTPException(422, "В документе не найден текст.")
+        return title[:500], content
+
+
+async def require_draft(session: Session, project: Project) -> None:
+    await session.refresh(project)
+    if project.status != "draft":
+        raise HTTPException(409, "Буфер ТЗ доступен в черновике.")
+
+
+@router.post("/{project_id}/spec-items", response_model=SpecItemView, status_code=201)
+async def add_spec_item(request: Request, project: OwnedProject, session: Session):
+    await require_draft(session, project)
+    title, content = await read_spec_item(request)
+    async with orchestrator.runtime(project.id).boundary:
+        await require_draft(session, project)
+        position = await session.scalar(
+            select(func.max(SpecItem.position)).where(SpecItem.project_id == project.id)
+        )
+        item = SpecItem(project_id=project.id, title=title, content=content, position=(position or 0) + 1)
+        session.add(item)
+        await session.commit()
+    return item
 
 
 @router.patch("/{project_id}", response_model=ProjectView)
@@ -187,6 +267,8 @@ async def edit_agent(data: AgentPatch, agent: OwnedAgent, session: Session):
     updates = data.model_dump(exclude_unset=True)
     if any(value is None for value in updates.values()):
         raise HTTPException(422, "Поля агента не могут быть пустыми.")
+    if "settings" in updates and "api_key" in agent.settings:
+        updates["settings"].setdefault("api_key", agent.settings["api_key"])
     for field, value in updates.items():
         setattr(agent, field, value)
     await save_agent(session)
@@ -201,7 +283,7 @@ async def delete_agent(agent: OwnedAgent, session: Session):
 
 
 class ProjectAction(BaseModel):
-    action: Literal["council", "approve", "pause", "resume", "rollback"]
+    action: Literal["build_spec", "council", "approve", "pause", "resume", "rollback"]
 
 
 class AgentQuestion(BaseModel):
@@ -213,8 +295,21 @@ class ApprovalDecision(BaseModel):
 
 
 @router.post("/{project_id}/actions")
-async def project_action(project: OwnedProject, data: ProjectAction):
+async def project_action(project: OwnedProject, data: ProjectAction, session: Session):
     try:
+        if data.action == "build_spec":
+            async with orchestrator.runtime(project.id).boundary:
+                await require_draft(session, project)
+                has_items = await session.scalar(select(SpecItem.id).where(SpecItem.project_id == project.id).limit(1))
+                if has_items is None:
+                    raise HTTPException(409, "Добавьте хотя бы одну запись в буфер ТЗ.")
+                if not project.workspace_path:
+                    project.workspace_path = default_workspace(project)
+                await build_spec(session, project)
+                project.status = "planning"
+                await session.commit()
+                await manager.publish_status(project.id, project.status)
+            return {"status": project.status}
         return {"status": await orchestrator.action(project.id, data.action)}
     except (ValueError, OSError, RuntimeError) as exc:
         raise HTTPException(409, str(exc)) from exc

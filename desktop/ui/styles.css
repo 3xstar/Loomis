@@ -140,7 +140,22 @@ option { background: var(--base); }
 .workspace { display: flex; flex: 1; flex-direction: column; gap: 14px; min-height: 0; overflow: auto; padding: 0 2px 2px; }
 .section-head { margin-bottom: 8px; }
 .agent-grid, .controls-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
-.agent-card, .controls-panel, .terminal-panel, .composer { padding: 12px 14px; }
+.agent-card, .controls-panel, .terminal-panel, .composer, .spec-panel, .command-approval { padding: 12px 14px; }
+.spec-panel textarea { resize: vertical; }
+.spec-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.spec-items { display: grid; gap: 6px; margin: 0; padding-inline-start: 24px; overflow-wrap: anywhere; }
+.spec-items:empty, #command-approvals:empty { display: none; }
+.spec-items summary { cursor: pointer; }
+.spec-items p { white-space: pre-wrap; max-height: 180px; overflow: auto; }
+.command-approval { margin-bottom: 8px; overflow-wrap: anywhere; }
+.api-fields {
+  opacity: 1;
+  transition: opacity var(--motion) ease, display var(--motion) allow-discrete;
+}
+.api-fields[inert] { display: none; opacity: 0; }
+@starting-style {
+  .api-fields { opacity: 0; }
+}
 .agent-card strong, .agent-card small, .control-button small { display: block; overflow-wrap: anywhere; }
 .controls-grid { margin-top: 8px; }
 .control-button { text-align: left; }
@@ -157,6 +172,7 @@ option { background: var(--base); }
 .modal { max-height: calc(100dvh - 32px); overflow: auto; }
 .modal-head { margin-bottom: 18px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+#rollback-pause-note { margin-bottom: 14px; }
 .toasts { position: fixed; bottom: 16px; right: 16px; z-index: 4; max-width: min(400px, 90vw); pointer-events: none; }
 .toast { margin-top: 8px; padding: 10px 14px; background: var(--base); }
 .mobile-only { display: none; }

@@ -5,13 +5,17 @@ let token = sessionStorage.getItem("loomis-token");
 let project, socket, magicTimer;
 let selection = 0;
 let magicAttempt = 0;
+let statusRevision = 0;
+let specBusy = false;
+let actionBusy = false;
 
 async function api(path, body, accessToken = token) {
   const headers = {};
+  const multipart = body instanceof FormData;
   if (accessToken) headers.Authorization = "Bearer " + accessToken;
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (body !== undefined && !multipart) headers["Content-Type"] = "application/json";
   const response = await fetch("/api/" + path, {
-    headers, method: body === undefined ? "GET" : "POST", body: JSON.stringify(body),
+    headers, method: body === undefined ? "GET" : "POST", body: multipart ? body : JSON.stringify(body),
   });
   const data = await response.json();
   if (!response.ok) {
@@ -213,13 +217,132 @@ function clearTerminal() {
 byId("clear-terminal").onclick = clearTerminal;
 
 function setStatus(status) {
+  const enteringDraft = status === "draft" && byId("spec-panel").classList.contains("hidden");
   if (project) project.status = status;
   byId("project-status").textContent = ({
     draft: "Черновик", planning: "Планирование", council: "Консилиум",
+    awaiting_approval: "План на утверждении",
     running: "В работе", paused: "Пауза", completed: "Завершён", deleted: "Удалён",
   })[status] || status;
   const pause = document.querySelector('[data-action="pause"]');
   pause.querySelector("strong").textContent = status === "paused" ? "Продолжить" : "Пауза";
+  renderProjectControls();
+  if (enteringDraft) loadSpecItems(project.id, selection).catch((error) => notify(error.message));
+}
+
+function renderProjectControls() {
+  const status = project?.status;
+  const available = {
+    draft: ["build_spec"], planning: ["council"], awaiting_approval: ["approve"],
+    running: ["pause", "rollback"], paused: ["pause", "rollback"], completed: ["rollback"],
+  }[status] || [];
+  byId("spec-panel").classList.toggle("hidden", status !== "draft");
+  byId("project-controls").classList.toggle("hidden", !available.length || status === "draft");
+  all("[data-action]").forEach((button) => {
+    const action = button.dataset.action;
+    const visible = available.includes(action);
+    button.classList.toggle("hidden", !visible);
+    button.disabled = !visible || actionBusy ||
+      (action === "build_spec" && (specBusy || !byId("spec-items").childElementCount));
+  });
+  byId("spec-add").disabled = byId("spec-attach").disabled = specBusy || actionBusy;
+}
+
+function appendSpecItem({title, content}) {
+  const item = document.createElement("li");
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  const text = document.createElement("p");
+  summary.textContent = title === "Текст" ? content.slice(0, 100) : title;
+  text.textContent = content;
+  details.append(summary, text);
+  item.append(details);
+  byId("spec-items").append(item);
+}
+
+async function loadSpecItems(projectId, current) {
+  specBusy = true;
+  renderProjectControls();
+  try {
+    const items = await api("projects/" + projectId + "/spec-items");
+    if (current !== selection) return;
+    byId("spec-items").replaceChildren();
+    items.forEach(appendSpecItem);
+    byId("spec-empty").classList.toggle("hidden", items.length > 0);
+  } finally {
+    if (current === selection) {
+      specBusy = false;
+      renderProjectControls();
+    }
+  }
+}
+
+async function addSpecItem(body) {
+  if (project?.status !== "draft" || specBusy || actionBusy) return false;
+  const current = selection;
+  specBusy = true;
+  renderProjectControls();
+  try {
+    const item = await api("projects/" + project.id + "/spec-items", body);
+    if (current !== selection) return false;
+    appendSpecItem(item);
+    byId("spec-empty").classList.add("hidden");
+    return true;
+  } catch (error) {
+    notify(error.message);
+    return false;
+  } finally {
+    if (current === selection) {
+      specBusy = false;
+      renderProjectControls();
+    }
+  }
+}
+
+byId("spec-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const input = byId("spec-text");
+  const text = input.value.trim();
+  if (text && await addSpecItem({text}) && input.value.trim() === text) input.value = "";
+};
+byId("spec-attach").onclick = () => byId("spec-file").click();
+byId("spec-file").onchange = ({target}) => {
+  const file = target.files[0];
+  target.value = "";
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  addSpecItem(form);
+};
+
+function showCommandApproval({id, command}, projectId) {
+  const panel = document.createElement("section");
+  const heading = document.createElement("h3");
+  const text = document.createElement("p");
+  const buttons = document.createElement("div");
+  panel.className = "command-approval glass-panel stack";
+  buttons.className = "spec-buttons";
+  heading.textContent = "Подтвердите команду";
+  text.textContent = command;
+  for (const [approved, label] of [[true, "Разрешить"], [false, "Отклонить"]]) {
+    const button = document.createElement("button");
+    button.className = "button secondary";
+    button.textContent = label;
+    button.onclick = async () => {
+      for (const option of buttons.children) option.disabled = true;
+      try {
+        await api("projects/" + projectId + "/approvals/" + id, {approved});
+        panel.remove();
+      } catch (error) {
+        notify(error.message);
+        if (error.status === 409) panel.remove();
+        for (const option of buttons.children) option.disabled = false;
+      }
+    };
+    buttons.append(button);
+  }
+  panel.append(heading, text, buttons);
+  byId("command-approvals").append(panel);
 }
 
 function connect(projectId, current) {
@@ -231,10 +354,12 @@ function connect(projectId, current) {
     if (current !== selection) return;
     const event = JSON.parse(data);
     if (event.type === "status") {
+      statusRevision++;
       setStatus(event.status);
       if (event.status === "deleted") loadProjects().catch((error) => notify(error.message));
     }
     if (event.type === "log") terminalLine(event.message);
+    if (event.type === "approval") showCommandApproval(event, projectId);
   };
   socket.onclose = () => {
     if (current !== selection) return;
@@ -246,6 +371,12 @@ function connect(projectId, current) {
 async function selectProject(item) {
   const current = ++selection;
   project = item;
+  specBusy = actionBusy = false;
+  byId("spec-panel").classList.add("hidden");
+  byId("spec-form").reset();
+  byId("spec-items").replaceChildren();
+  byId("spec-empty").classList.remove("hidden");
+  byId("command-approvals").replaceChildren();
   socket?.close();
   connection(false);
   clearTerminal();
@@ -256,7 +387,7 @@ async function selectProject(item) {
   byId("terminal-channel").textContent = item ? "/ws/" + item.id : "/ws";
   setStatus(item?.status || "—");
   all(".project-button").forEach((button) => button.setAttribute("aria-current", button.dataset.id === String(item?.id)));
-  all("[data-action], #add-agent-button").forEach((button) => { button.disabled = !item; });
+  byId("add-agent-button").disabled = !item;
   if (!item) return;
   connect(item.id, current);
   await loadAgents(item.id, current);
@@ -301,18 +432,28 @@ async function loadProjects(preferredId = project?.id) {
 }
 
 async function runProjectAction(button) {
-  if (!project) return;
+  if (!project || button.disabled) return;
   const current = selection;
+  const revision = statusRevision;
+  const path = "projects/" + project.id + "/actions";
   let action = button.dataset.action;
   if (action === "pause" && project.status === "paused") action = "resume";
-  button.disabled = true;
+  actionBusy = true;
+  renderProjectControls();
   try {
-    const result = await api("projects/" + project.id + "/actions", {action});
-    if (current === selection) setStatus(result.status);
+    if (action === "rollback" && project.status === "running") {
+      const paused = await api(path, {action: "pause"});
+      if (current === selection && revision === statusRevision) setStatus(paused.status);
+    }
+    const result = await api(path, {action});
+    if (current === selection && revision === statusRevision) setStatus(result.status);
   } catch (error) {
     notify(error.message);
   } finally {
-    if (current === selection) button.disabled = false;
+    if (current === selection) {
+      actionBusy = false;
+      renderProjectControls();
+    }
   }
 }
 
@@ -323,6 +464,7 @@ all("[data-action]").forEach((button) => button.onclick = () => {
     return;
   }
   const current = selection;
+  byId("rollback-pause-note").classList.toggle("hidden", project.status !== "running");
   showModal("rollback-modal");
   byId("confirm-rollback").onclick = () => {
     showModal();
@@ -378,6 +520,13 @@ function showModal(id) {
 }
 byId("new-project-button").onclick = byId("sidebar-create").onclick = () => showModal("project-modal");
 byId("add-agent-button").onclick = () => showModal("agent-modal");
+function renderAgentFields() {
+  const isApi = byId("agent-provider").value === "api";
+  byId("agent-api-fields").inert = !isApi;
+  byId("agent-base-url").disabled = byId("agent-api-key").disabled = !isApi;
+  byId("agent-base-url").required = isApi;
+}
+byId("agent-provider").onchange = renderAgentFields;
 all(".close-modal").forEach((button) => button.onclick = () => showModal());
 byId("modal-backdrop").onclick = (event) => { if (event.target === event.currentTarget) showModal(); };
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") showModal(); });
@@ -406,10 +555,17 @@ byId("agent-form").onsubmit = async (event) => {
   const button = event.submitter;
   button.disabled = true;
   try {
+    const provider = byId("agent-provider").value;
+    const settings = {};
+    if (provider === "api") {
+      settings.base_url = byId("agent-base-url").value.trim();
+      settings.api_key = byId("agent-api-key").value.trim();
+    }
     await api("projects/" + projectId + "/agents", {
-      name: byId("agent-name").value, provider: byId("agent-provider").value, model: byId("agent-model").value,
+      name: byId("agent-name").value, provider, model: byId("agent-model").value, settings,
     });
     event.target.reset();
+    renderAgentFields();
     showModal();
     await loadAgents(projectId, current);
   } catch (error) {

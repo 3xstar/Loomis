@@ -11,4 +11,4 @@ def build_agent(provider, model, settings, approval=None):
         )
     if provider.lower() in {"cli", "opencode", "qwen", "claude"}:
         return CliAgent(settings.get("command", model), settings.get("question_command"), approval)
-    return ApiAgent(model, settings["base_url"], settings.get("api_key_env"))
+    return ApiAgent(model, settings["base_url"], settings.get("api_key_env"), api_key=settings.get("api_key"))

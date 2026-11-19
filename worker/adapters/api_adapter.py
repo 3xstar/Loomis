@@ -39,16 +39,17 @@ def run_file_tool(workspace, name, path, content=None):
 
 
 class ApiAgent(BaseAgent):
-    def __init__(self, model: str, base_url: str, api_key_env: str | None = None):
+    def __init__(self, model: str, base_url: str, api_key_env: str | None = None, *, api_key: str | None = None):
         self.model = model
         self.base_url = base_url
         self.api_key_env = api_key_env
+        self.api_key = api_key
 
     async def _run(self, prompt, timeout, workspace=None):
         tokens = 0
         messages = [{"role": "user", "content": prompt}]
         try:
-            key = os.environ[self.api_key_env] if self.api_key_env else "ollama"
+            key = self.api_key or (os.environ[self.api_key_env] if self.api_key_env else "ollama")
             async with asyncio.timeout(timeout), AsyncOpenAI(
                 base_url=self.base_url, api_key=key, max_retries=0
             ) as client:

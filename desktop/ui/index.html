@@ -112,20 +112,37 @@
       </header>
 
       <div class="workspace">
+        <section id="spec-panel" class="spec-panel glass-panel stack hidden" aria-labelledby="spec-heading">
+          <h3 id="spec-heading">Буфер ТЗ</h3>
+          <form id="spec-form" class="stack">
+            <label class="field"><span>Текст ТЗ</span><textarea id="spec-text" rows="4" required></textarea></label>
+            <div class="spec-buttons">
+              <button id="spec-add" class="button secondary" type="submit">Добавить текст</button>
+              <button id="spec-attach" class="button secondary" type="button">Прикрепить документ</button>
+              <input id="spec-file" class="hidden" type="file" accept=".pdf,.docx,.txt,.md">
+            </div>
+          </form>
+          <p id="spec-empty" aria-live="polite">Буфер пока пуст.</p>
+          <ul id="spec-items" class="spec-items" aria-label="Элементы ТЗ"></ul>
+          <button class="button primary wide" type="button" data-action="build_spec">✅ Собрать SPEC.md и перейти к планированию</button>
+        </section>
+
         <section class="agents-section">
           <div class="section-head"><div><h3>ИИ-агенты</h3></div><button id="add-agent-button" class="button secondary small">+ Добавить агента</button></div>
           <div id="agent-grid" class="agent-grid"></div>
         </section>
 
-        <section class="controls-panel glass-panel">
+        <section id="project-controls" class="controls-panel glass-panel hidden">
           <div class="controls-copy"><h3>Цикл проекта</h3></div>
           <div class="controls-grid">
             <button class="control-button" data-action="council"><span class="control-icon">◈</span><span><strong>Запустить консилиум</strong><small>стартовый план</small></span></button>
             <button class="control-button" data-action="approve"><span class="control-icon">✓</span><span><strong>Утвердить план</strong><small>начать исполнение</small></span></button>
-            <button class="control-button" data-action="pause"><span class="control-icon">Ⅱ</span><span><strong>Пауза / Продолжить</strong><small>toggle runtime</small></span></button>
+            <button class="control-button" data-action="pause"><span class="control-icon">Ⅱ</span><span><strong>Пауза</strong></span></button>
             <button class="control-button danger" data-action="rollback"><span class="control-icon">↺</span><span><strong>Откатить Git-шаг</strong><small>безопасная точка</small></span></button>
           </div>
         </section>
+
+        <div id="command-approvals" aria-live="polite"></div>
 
         <section class="terminal-panel glass-panel">
           <div class="terminal-head">
@@ -165,7 +182,10 @@
           <label class="field"><span>Тип</span><select id="agent-provider"><option value="codex">Codex CLI</option><option value="cli">Generic CLI</option><option value="api">OpenAI API</option></select></label>
           <label class="field"><span>Модель</span><input id="agent-model" type="text" value="codex" required maxlength="255"></label>
         </div>
-        <p class="hint">Для API-агента модель можно указать вручную, например gpt-4o.</p>
+        <div id="agent-api-fields" class="stack api-fields" inert>
+          <label class="field"><span>Base URL</span><input id="agent-base-url" type="url" placeholder="https://nvidia.com" disabled></label>
+          <label class="field"><span>API Key</span><input id="agent-api-key" type="password" placeholder="nvapi-..." autocomplete="off" disabled></label>
+        </div>
         <button class="button primary wide" type="submit">Добавить агента</button>
       </form>
     </div>
@@ -174,6 +194,7 @@
         <h3 id="rollback-title">Откатить последний Git-шаг?</h3>
         <button class="icon-button close-modal" type="button" aria-label="Закрыть">✕</button>
       </div>
+      <p id="rollback-pause-note" class="hidden">Перед откатом Loomis приостановит выполнение проекта.</p>
       <div class="modal-actions">
         <button class="button secondary close-modal" type="button">Отмена</button>
         <button id="confirm-rollback" class="button danger" type="button">Откатить</button>
