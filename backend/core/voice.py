@@ -22,6 +22,6 @@ class VoiceTranscriber:
 
     async def transcribe(self, path: str | Path) -> str:
         path = Path(path)
-        if path.suffix.lower() not in {".ogg", ".mp3", ".wav", ".m4a", ".flac"}:
-            raise ValueError("Поддерживаются аудиофайлы .ogg, .mp3, .wav, .m4a и .flac.")
+        if path.suffix.lower() not in {".ogg", ".webm", ".mp3", ".wav", ".m4a", ".flac"}:
+            raise ValueError("Поддерживаются аудиофайлы .ogg, .webm, .mp3, .wav, .m4a и .flac.")
         return await asyncio.to_thread(self._transcribe, path)

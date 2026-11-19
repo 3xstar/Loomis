@@ -87,8 +87,8 @@ VERBOSITY = {
 def media_error(config, mime_type):
     provider = config.provider.lower()
     if mime_type.startswith("audio/"):
-        if provider not in CLI_PROVIDERS or not config.settings.get("supports_audio"):
-            return f"{config.name}: модель не поддерживает аудио. Нужен CLI-агент с Whisper."
+        if not config.settings.get("supports_audio"):
+            return f"{config.name}: поддержка аудио отключена в настройках агента."
     elif not config.settings.get("supports_vision") or (provider in CLI_PROVIDERS and provider != "codex"):
         return f"{config.name}: модель не поддерживает изображения."
     return None

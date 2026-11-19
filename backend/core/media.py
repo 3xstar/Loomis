@@ -11,6 +11,7 @@ MEDIA_TYPES = {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".ogg": "audio/ogg",
+    ".webm": "audio/webm",
     ".mp3": "audio/mpeg",
     ".wav": "audio/wav",
     ".m4a": "audio/mp4",
@@ -25,7 +26,7 @@ def make_media(project_id: int, filename: str, data: bytes) -> ProjectMedia:
     suffix = Path(name).suffix.lower()
     mime_type = MEDIA_TYPES.get(suffix)
     if mime_type is None:
-        raise ValueError("Поддерживаются изображения PNG, JPG, WebP и аудио OGG, MP3, WAV, M4A, FLAC.")
+        raise ValueError("Поддерживаются изображения PNG, JPG, WebP и аудио OGG, WebM, MP3, WAV, M4A, FLAC.")
     if not data or len(data) > MAX_MEDIA_BYTES:
         raise ValueError("Размер медиафайла должен быть от 1 байта до 5 МБ.")
     signatures = {

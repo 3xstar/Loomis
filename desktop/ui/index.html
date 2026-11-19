@@ -72,6 +72,7 @@
     <aside class="sidebar glass-panel">
       <div class="sidebar-head">
         <div class="brand-row"><div class="logo-mark small">L</div><div><strong>Loomis</strong></div></div>
+        <button id="settings-button" class="icon-button" type="button" title="Настройки" aria-label="Настройки"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m10 3-.7 2.2-1.9 1.1-2.3-.5-2 3.4 1.6 1.7v2.2l-1.6 1.7 2 3.4 2.3-.5 1.9 1.1.7 2.2h4l.7-2.2 1.9-1.1 2.3.5 2-3.4-1.6-1.7v-2.2l1.6-1.7-2-3.4-2.3.5-1.9-1.1L14 3Z"/><circle cx="12" cy="12" r="3"/></svg></button>
       </div>
 
       <div class="user-card">
@@ -80,7 +81,8 @@
         <button id="logout-button" class="icon-button subtle" title="Выйти" aria-label="Выйти"><svg viewBox="0 0 24 24"><path d="M10 5H5v14h5"/><path d="m13 8 4 4-4 4"/><path d="M17 12H9"/></svg></button>
       </div>
 
-      <div class="section-label"><span>Проекты</span><button id="new-project-button" class="text-action">+ Создать</button></div>
+      <button id="hub-button" class="button secondary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 3v3m6-3v3M9 18v3m6-3v3M3 9h3m-3 6h3m12-6h3m-3 6h3m-12-5h4v4h-4z"/></svg> Хаб нейросетей</button>
+      <div class="section-label"><span>Проекты</span><button id="new-project-button" class="text-action">Создать</button></div>
       <nav id="project-list" class="project-list" aria-label="Проекты"></nav>
 
       <div class="sidebar-foot">
@@ -101,15 +103,7 @@
           <span id="project-status" class="status-pill">idle</span>
         </div>
         <div class="topbar-actions">
-          <select id="autonomy-mode" aria-label="Режим работы агентов" disabled>
-            <option value="autonomous">Автономный</option>
-            <option value="consultative">С вопросами</option>
-            <option value="step_by_step">Пошаговый</option>
-          </select>
-          <select id="failover-mode" aria-label="Передача задачи при поломке" disabled>
-            <option value="auto">Авто-передача</option>
-            <option value="manual">С подтверждением</option>
-          </select>
+          <button id="stats-button" class="button secondary" type="button" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg> Статистика</button>
           <button class="button secondary" type="button" data-action="regenerate_plan" disabled>Пересобрать план</button>
           <button id="theme-switch-top" class="theme-switch" type="button" aria-label="Светлая тема"></button>
         </div>
@@ -123,6 +117,8 @@
             <div class="spec-buttons">
               <button id="spec-add" class="button secondary" type="submit">Добавить текст</button>
               <button id="spec-attach" class="button secondary" type="button">Прикрепить документ</button>
+              <button id="spec-image-button" class="button secondary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg> Изображение</button>
+              <input id="spec-image" class="hidden" type="file" accept=".png,.jpg,.jpeg,.webp">
               <input id="spec-file" class="hidden" type="file" accept=".pdf,.docx,.txt,.md">
             </div>
           </form>
@@ -132,7 +128,7 @@
         </section>
 
         <section class="agents-section">
-          <div class="section-head"><div><h3>ИИ-агенты</h3></div><button id="add-agent-button" class="button secondary small">+ Добавить агента</button></div>
+          <div class="section-head"><div><h3>ИИ-агенты</h3></div><button id="add-agent-button" class="button secondary small">Добавить агента</button></div>
           <div id="agent-grid" class="agent-grid"></div>
         </section>
 
@@ -156,7 +152,7 @@
           </div>
           <div id="terminal-controls" class="terminal-head hidden">
             <div id="terminal-tabs" class="terminal-tabs" role="group" aria-label="Терминалы агентов"></div>
-            <div class="terminal-actions"><span id="terminal-count">0 строк</span><button id="clear-terminal" class="text-action" type="button">Очистить</button></div>
+            <div class="terminal-actions"><span id="terminal-count">0 записей</span><button id="font-smaller" class="button secondary small" type="button" aria-label="Уменьшить шрифт">A-</button><button id="font-larger" class="button secondary small" type="button" aria-label="Увеличить шрифт">A+</button><button id="clear-terminal" class="text-action" type="button">Очистить</button></div>
           </div>
           <div id="work-output">
             <div id="team" class="chat-stream" role="log" aria-label="Общий чат ИИ"></div>
@@ -175,8 +171,19 @@
                 <div id="agent-menu" class="agent-menu" role="group" aria-label="Выбор агента" hidden></div>
               </div>
             </div>
+            <div id="team-controls" class="composer-top">
+              <div id="team-targets" class="choice-list" role="group" aria-label="Адресаты"></div>
+              <button id="plan-feedback" class="text-action" type="button">На доработку плана</button>
+            </div>
+            <div id="chat-attachment" class="composer-top hidden">
+              <span id="attachment-name"></span>
+              <button id="remove-attachment" class="text-action" type="button">Убрать вложение</button>
+            </div>
             <div class="composer-row">
-              <textarea id="message-input" rows="1" placeholder="Спросите агента о проекте…" required disabled></textarea>
+              <input id="chat-file" class="hidden" type="file" accept=".png,.jpg,.jpeg,.webp">
+              <button id="chat-attach" class="icon-button" type="button" title="Прикрепить изображение" aria-label="Прикрепить изображение"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg></button>
+              <button id="chat-record" class="icon-button" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение" aria-pressed="false"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1m-7 8v3m-4 0h8"/></svg></button>
+              <textarea id="message-input" rows="1" placeholder="Спросите агента о проекте…" maxlength="32000" disabled></textarea>
               <button id="send-button" class="send-button" type="submit" title="Отправить" aria-label="Отправить" disabled><svg viewBox="0 0 24 24"><path d="m5 12 14-7-3 14-4-6-7-1Z"/><path d="m12 13 4-5"/></svg></button>
             </div>
             <p class="composer-hint">Enter — отправить · Shift+Enter — новая строка</p>
@@ -196,6 +203,11 @@
       <form id="project-form" class="stack">
         <label class="field"><span>Название</span><input id="project-name" type="text" placeholder="Например, Loomis Cloud" required maxlength="255"></label>
         <label class="field"><span>Описание</span><textarea id="project-description" rows="3" placeholder="Коротко о задаче и ожидаемом результате"></textarea></label>
+        <div class="glass-tabs" aria-label="Подключение агентов">
+          <button id="project-hub-tab" class="tab active" type="button" aria-pressed="true">Из хаба</button>
+          <button id="project-manual-tab" class="tab" type="button" aria-pressed="false">Добавить новую вручную</button>
+        </div>
+        <div id="project-presets" class="choice-list" role="group" aria-label="Модели проекта"></div>
         <button class="button primary wide" type="submit">Создать проект</button>
       </form>
     </div>
@@ -216,6 +228,14 @@
     </div>
     <div id="agent-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="agent-title">
       <div class="modal-head"><h3 id="agent-title">Подключить ИИ</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <div id="agent-add-tabs" class="glass-tabs" aria-label="Подключение агентов">
+        <button id="agent-hub-tab" class="tab" type="button" aria-pressed="false">Из хаба</button>
+        <button id="agent-manual-tab" class="tab" type="button" aria-pressed="false">Добавить новую вручную</button>
+      </div>
+      <form id="agent-import-form" class="stack hidden">
+        <div id="agent-presets" class="choice-list" role="group" aria-label="Модели проекта"></div>
+        <button id="import-submit" class="button primary wide" type="submit" disabled>Подключить выбранные модели</button>
+      </form>
       <form id="agent-form" class="stack" novalidate>
         <label class="field"><span>Имя</span><input id="agent-name" type="text" placeholder="Codex Core" required maxlength="100"></label>
         <div class="field-row">
@@ -227,6 +247,10 @@
           <label class="field"><span>API Key</span><input id="agent-api-key" type="password" autocomplete="new-password" disabled></label>
         </div>
         <label id="agent-cli-fields" class="field"><span>Команда запуска</span><input id="agent-command" type="text" placeholder="codex exec --json --sandbox workspace-write -" required></label>
+        <div class="choice-list">
+          <label class="choice-chip"><input id="agent-vision" type="checkbox"> Изображения</label>
+          <label class="choice-chip"><input id="agent-audio" type="checkbox"> Аудио</label>
+        </div>
         <p id="agent-test-status" class="agent-test-status hidden" role="status">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9"/></svg>
           Проверка агента…
@@ -234,6 +258,60 @@
         <p id="agent-error" class="form-error" role="alert"></p>
         <button id="agent-submit" class="button primary wide" type="submit">Добавить агента</button>
       </form>
+    </div>
+    <div id="settings-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+      <div class="modal-head"><h3 id="settings-modal-title">Настройки</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <div class="stack">
+        <label class="field">
+          <span>Режим работы нейросетей</span>
+          <select id="autonomy-mode" disabled>
+            <option value="autonomous">Автономный</option>
+            <option value="consultative">С вопросами</option>
+            <option value="step_by_step">Пошаговый</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Режим передачи при поломке</span>
+          <select id="failover-mode" disabled>
+            <option value="auto">Авто-передача</option>
+            <option value="manual">С подтверждением</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Краткость отчётов нейросетей</span>
+          <select id="verbosity-mode" disabled>
+            <option value="concise">Кратко по сути</option>
+            <option value="balanced">Сбалансированно</option>
+            <option value="detailed">Подробно</option>
+          </select>
+        </label>
+        <label class="switch-row"><span>Рабочие логи в Telegram</span><input id="telegram-logs" type="checkbox" role="switch"><span id="telegram-logs-state" aria-hidden="true"></span></label>
+      </div>
+    </div>
+    <div id="hub-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="hub-modal-title">
+      <div class="modal-head"><h3 id="hub-modal-title">Хаб нейросетей</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <ul id="hub-models" class="hub-models" aria-live="polite"></ul>
+      <form id="hub-form" class="stack">
+        <label class="field"><span>Название</span><input name="name" required minlength="2" maxlength="100"></label>
+        <div class="field-row">
+          <label class="field"><span>Тип</span><select id="hub-provider" name="provider"></select></label>
+          <label class="field"><span>Модель</span><input name="model" required maxlength="255"></label>
+        </div>
+        <div id="hub-api-fields" class="stack">
+          <label class="field"><span>Base URL</span><input name="base_url" type="url"></label>
+          <label class="field"><span>API Key</span><input name="api_key" type="password" autocomplete="new-password"></label>
+        </div>
+        <label id="hub-cli-field" class="field hidden"><span>Команда запуска</span><input name="command"></label>
+        <div class="choice-list">
+          <label class="choice-chip"><input name="vision" type="checkbox"> Изображения</label>
+          <label class="choice-chip"><input name="audio" type="checkbox"> Аудио</label>
+        </div>
+        <button class="button primary wide" type="submit">Сохранить модель</button>
+      </form>
+    </div>
+    <div id="stats-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="stats-modal-title">
+      <div class="modal-head"><h3 id="stats-modal-title">Статистика проекта</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <div id="stats-body" aria-live="polite"></div>
     </div>
     <div id="rollback-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="rollback-title">
       <div class="modal-head">

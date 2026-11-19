@@ -10,6 +10,10 @@ let specBusy = false;
 let actionBusy = false;
 let messageBusy = false;
 let selectedAgent;
+let attachment, recording, microphonePending;
+let telegramLogsEnabled = false;
+const teamTargets = new Set();
+const deletedAgents = new Set();
 const agentSelector = byId("agent-selector");
 const agentMenu = byId("agent-menu");
 
@@ -90,6 +94,8 @@ async function signIn(accessToken, isCurrent = () => true) {
   const user = await api("auth/me", undefined, accessToken);
   if (!isCurrent()) return;
   token = accessToken;
+  telegramLogsEnabled = user.tg_logs_enabled;
+  renderTelegramLogs();
   sessionStorage.setItem("loomis-token", token);
   byId("user-name").textContent = user.username || "Loomis";
   byId("user-avatar").textContent = byId("user-name").textContent[0].toUpperCase();
@@ -225,7 +231,7 @@ function renderMarkdown(body, text, terminal) {
   let list;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const item = !terminal && line.match(/^\s*(?:[-+*]|\d+[.)])\s+(.+)/);
+    const item = line.match(/^\s*(?:[-+*]|\d+[.)])\s+(.+)/);
     if (item) {
       const tag = /^\s*\d/.test(line) ? "ol" : "ul";
       if (list?.localName !== tag) {
@@ -259,9 +265,11 @@ function messageNode(event, channel) {
   const own = event.sender_name === "User";
   const entry = element("article", channel === "terminal" ? "terminal-entry" : own ? "chat-message own-message" : "chat-message");
   const head = element("header", "message-header");
-  if (channel !== "terminal") head.append(element("strong", "", own ? "Вы" : event.sender_name));
+  const name = event.sender_name || event.agent_name || agentsInProject.find((agent) => agent.id === event.agent_id)?.name;
+  head.append(element(channel === "terminal" ? "h4" : "strong", "", own ? "Вы" : name || "Агент"));
   if (channel === "team" && event.target_name) head.append(element("span", "recipient", event.target_name));
-  const stamp = new Date(event.created_at || Date.now());
+  const created = event.created_at;
+  const stamp = created ? new Date(/(?:Z|[+-]\d{2}:\d{2})$/i.test(created) ? created : created + "Z") : new Date();
   const time = element("time", "", timeFormat.format(stamp));
   time.dateTime = stamp.toISOString();
   head.append(time);
@@ -295,7 +303,7 @@ function refreshStream(reset = false) {
 
 function receiveMessage(event, channel) {
   const key = channel === "team" ? 0 : event.agent_id;
-  if (key == null) return;
+  if (key == null || deletedAgents.has(event.agent_id)) return;
   const bucket = streams[channel];
   if (!bucket.has(key)) bucket.set(key, []);
   const entries = bucket.get(key);
@@ -329,17 +337,78 @@ byId("clear-terminal").onclick = () => {
   refreshStream(true);
 };
 
+const terminalFontKey = "loomis-terminal-font";
+let terminalFont = Number(localStorage.getItem(terminalFontKey)) || 13;
+function setTerminalFont(size) {
+  terminalFont = Math.max(10, Math.min(28, size));
+  byId("terminal").style.setProperty("--terminal-font", terminalFont + "px");
+  byId("font-smaller").disabled = terminalFont === 10;
+  byId("font-larger").disabled = terminalFont === 28;
+  localStorage.setItem(terminalFontKey, String(terminalFont));
+}
+setTerminalFont(terminalFont);
+byId("font-smaller").onclick = () => setTerminalFont(terminalFont - 1);
+byId("font-larger").onclick = () => setTerminalFont(terminalFont + 1);
+
+function choiceChip(label, checked, onChange) {
+  const chip = element("label", "choice-chip");
+  const input = element("input");
+  input.type = "checkbox";
+  input.checked = checked;
+  input.onchange = () => onChange(input.checked);
+  chip.append(input, label);
+  return chip;
+}
+
+function renderTeamTargets() {
+  const enabled = agentsInProject.filter((agent) => agent.enabled);
+  const list = byId("team-targets");
+  const focused = document.activeElement.closest(".choice-chip");
+  const pick = (id, label, checked, change) => {
+    const chip = choiceChip(label, checked, () => {
+      change();
+      renderTeamTargets();
+    });
+    chip.dataset.target = id;
+    return chip;
+  };
+  const eligible = new Set(enabled.map((agent) => agent.id));
+  for (const id of teamTargets) if (!eligible.has(id)) teamTargets.delete(id);
+  list.replaceChildren(pick("all", "Все", !teamTargets.size, () => teamTargets.clear()),
+    ...enabled.map(({id, name}) => pick(id, name, teamTargets.has(id), () => {
+      if (teamTargets.has(id)) teamTargets.delete(id);
+      else teamTargets.add(id);
+    })));
+  if (focused && !focused.isConnected) {
+    [...list.children].find((chip) => chip.dataset.target === focused.dataset.target)?.firstChild.focus();
+  }
+}
+
+function setAttachment(file) {
+  attachment = file;
+  byId("chat-attachment").classList.toggle("hidden", !file);
+  byId("attachment-name").textContent = file?.name || "";
+}
+
 function syncComposer() {
   const team = view === "team";
-  const available = team ? project && !["draft", "council", "deleted"].includes(project.status) : selectedAgent;
+  const available = project && !["draft", "council", "deleted"].includes(project.status)
+    && (team ? agentsInProject.some((agent) => agent.enabled) : selectedAgent);
   const input = byId("message-input");
-  input.disabled = byId("send-button").disabled = !available || messageBusy;
-  input.placeholder = team ? "Предложите правки плана…" : "Напишите агенту…";
-  input.setAttribute("aria-label", team ? "Правки плана" : "Сообщение агенту");
+  input.disabled = byId("chat-attach").disabled = !available || messageBusy;
+  byId("send-button").disabled = input.disabled || Boolean(recording);
+  byId("chat-record").disabled = !recording && (input.disabled || microphonePending);
+  byId("plan-feedback").disabled = input.disabled || Boolean(recording);
+  input.placeholder = team ? "Напишите выбранным агентам…" : "Напишите агенту…";
+  input.setAttribute("aria-label", team ? "Сообщение команде" : "Сообщение агенту");
 }
 
 function selectView(next) {
-  if (view !== next) byId("message-input").value = "";
+  if (view !== next) {
+    byId("message-input").value = "";
+    discardRecording();
+    setAttachment();
+  }
   view = next;
   all("[data-view]").forEach((button) => {
     const active = button.dataset.view === view;
@@ -350,6 +419,7 @@ function selectView(next) {
   byId("terminal-controls").classList.toggle("hidden", view !== "terminal");
   byId("message-form").classList.toggle("hidden", view === "terminal");
   byId("direct-controls").classList.toggle("hidden", view !== "direct");
+  byId("team-controls").classList.toggle("hidden", view !== "team");
   syncComposer();
   refreshStream(true);
 }
@@ -421,7 +491,7 @@ function renderProjectControls() {
   rebuild.disabled = !project || actionBusy || ["draft", "council", "deleted"].includes(status)
     || !agentsInProject.some((agent) => agent.enabled);
   syncComposer();
-  byId("spec-add").disabled = byId("spec-attach").disabled = specBusy || actionBusy;
+  byId("spec-add").disabled = byId("spec-attach").disabled = byId("spec-image-button").disabled = specBusy || actionBusy;
 }
 
 function appendSpecItem({title, content}) {
@@ -491,6 +561,37 @@ byId("spec-file").onchange = ({target}) => {
   addSpecItem(form);
 };
 
+function mediaForm(file, channel, caption = "", targets = []) {
+  const data = new FormData();
+  data.append("file", file);
+  data.append("channel", channel);
+  data.append("caption", caption);
+  for (const id of targets) data.append("target_agent_ids", id);
+  return data;
+}
+
+byId("spec-image-button").onclick = () => byId("spec-image").click();
+byId("spec-image").onchange = async ({target}) => {
+  const file = target.files[0];
+  target.value = "";
+  if (!file || project?.status !== "draft" || specBusy || actionBusy) return;
+  const current = selection;
+  const {id} = project;
+  specBusy = true;
+  renderProjectControls();
+  try {
+    await api("projects/" + id + "/media", mediaForm(file, "spec"));
+    if (current === selection) await loadSpecItems(id, current);
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    if (current === selection) {
+      specBusy = false;
+      renderProjectControls();
+    }
+  }
+};
+
 function showCommandApproval({id, command, kind}, projectId) {
   const panel = document.createElement("section");
   const heading = document.createElement("h3");
@@ -550,6 +651,10 @@ function connect(projectId, current) {
 
 async function selectProject(item) {
   const current = ++selection;
+  discardRecording();
+  setAttachment();
+  teamTargets.clear();
+  deletedAgents.clear();
   project = item;
   specBusy = actionBusy = false;
   byId("spec-panel").classList.add("hidden");
@@ -570,11 +675,12 @@ async function selectProject(item) {
   selectedAgent = undefined;
   messageBusy = false;
   renderAgentSelector([]);
+  renderTeamTargets();
   byId("current-project-name").textContent = item?.name || "Выберите проект";
   renderProjectModes();
   setStatus(item?.status || "—");
   all(".project-button").forEach((button) => button.setAttribute("aria-current", button.dataset.id === String(item?.id)));
-  byId("add-agent-button").disabled = !item;
+  byId("stats-button").disabled = byId("add-agent-button").disabled = !item;
   if (!item) return;
   connect(item.id, current);
   await loadAgents(item.id, current);
@@ -583,6 +689,8 @@ async function selectProject(item) {
 async function loadAgents(projectId, current) {
   const agents = await api("projects/" + projectId + "/agents");
   if (current !== selection) return;
+  const ids = new Set(agents.map((agent) => agent.id));
+  for (const agent of agentsInProject) if (!ids.has(agent.id)) removeAgentHistory(agent);
   agentsInProject = agents;
   lights.clear();
   const cards = agents.map((agent) => {
@@ -616,6 +724,7 @@ async function loadAgents(projectId, current) {
   });
   byId("agent-grid").replaceChildren(...(cards.length ? cards : ["В проекте пока нет агентов."]));
   renderAgentSelector(agents);
+  renderTeamTargets();
   renderTerminalTabs();
   renderProjectControls();
 }
@@ -636,7 +745,11 @@ function updateLight(id) {
     : "";
 }
 
-const projectModes = [["autonomy-mode", "autonomy_mode", "autonomous"], ["failover-mode", "failover_mode", "auto"]];
+const projectModes = [
+  ["autonomy-mode", "autonomy_mode", "autonomous"],
+  ["failover-mode", "failover_mode", "auto"],
+  ["verbosity-mode", "verbosity_level", "concise"],
+];
 function renderProjectModes() {
   for (const [id, field, fallback] of projectModes) {
     byId(id).value = project?.[field] || fallback;
@@ -672,7 +785,11 @@ function setAgentMenu(open, restoreFocus = false) {
 }
 
 function selectAgent(agent) {
-  if (selectedAgent?.id !== agent?.id && view === "direct") byId("message-input").value = "";
+  if (selectedAgent?.id !== agent?.id && view === "direct") {
+    byId("message-input").value = "";
+    discardRecording();
+    setAttachment();
+  }
   selectedAgent = agent;
   if (agent) byId("agent-selector-label").textContent = agent.name;
   syncComposer();
@@ -785,27 +902,112 @@ byId("message-input").onkeydown = (event) => {
     if (!byId("send-button").disabled) byId("message-form").requestSubmit();
   }
 };
-byId("message-form").onsubmit = async (event) => {
-  event.preventDefault();
+byId("chat-attach").onclick = () => byId("chat-file").click();
+byId("chat-file").onchange = ({target}) => {
+  const file = target.files[0];
+  target.value = "";
+  if (file && !byId("chat-attach").disabled) setAttachment(file);
+};
+byId("remove-attachment").onclick = () => setAttachment();
+
+function discardRecording() {
+  microphonePending = undefined;
+  if (!recording) return;
+  const {recorder} = recording;
+  recording = undefined;
+  if (recorder.state !== "inactive") recorder.stop();
+  recorder.stream.getTracks().forEach((track) => track.stop());
+  byId("chat-record").setAttribute("aria-pressed", "false");
+  byId("chat-record").title = "Записать голосовое сообщение";
+}
+
+byId("chat-record").onclick = async () => {
+  if (recording) {
+    if (recording.recorder.state !== "inactive") recording.recorder.stop();
+    return;
+  }
+  const request = Symbol();
+  microphonePending = request;
+  syncComposer();
+  let stream;
+  try {
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      throw new Error("Запись с микрофона недоступна в этом окне.");
+    }
+    const formats = [["audio/webm;codecs=opus", "webm"], ["audio/ogg;codecs=opus", "ogg"], ["audio/mp4", "m4a"]];
+    const format = formats.find(([mime]) => MediaRecorder.isTypeSupported(mime));
+    if (!format) throw new Error("Браузер не поддерживает форматы аудиозаписи Loomis.");
+    stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    if (microphonePending !== request || byId("message-input").disabled) return;
+    const [mimeType, extension] = format;
+    const recorder = new MediaRecorder(stream, {mimeType});
+    const parts = [];
+    let bytes = 0;
+    recorder.ondataavailable = ({data}) => {
+      if (data.size) parts.push(data);
+      bytes += data.size;
+      if (bytes >= 4 * 1024 * 1024 && recorder.state === "recording") recorder.stop();
+    };
+    recorder.onstop = () => {
+      stream.getTracks().forEach((track) => track.stop());
+      if (recording?.recorder !== recorder) return;
+      discardRecording();
+      if (bytes) setAttachment(new File(parts, "Голосовое сообщение." + extension, {type: mimeType}));
+      syncComposer();
+    };
+    recorder.onerror = () => {
+      if (recording?.recorder !== recorder) return;
+      discardRecording();
+      syncComposer();
+      notify("Не удалось записать голосовое сообщение.");
+    };
+    recorder.start(1000);
+    recording = {recorder};
+    byId("chat-record").setAttribute("aria-pressed", "true");
+    byId("chat-record").title = "Остановить запись";
+  } catch (error) {
+    if (microphonePending === request) notify(error.message);
+  } finally {
+    if (!recording || recording.recorder.stream !== stream) stream?.getTracks().forEach((track) => track.stop());
+    if (microphonePending === request) microphonePending = undefined;
+    syncComposer();
+  }
+};
+
+async function sendMessage(feedback = false) {
   const input = byId("message-input");
   const agentId = selectedAgent?.id;
   const mode = view;
   const message = input.value.trim();
-  if (!project || !message || input.disabled || mode === "terminal") return;
+  const file = attachment;
+  if (!project || input.disabled || recording || mode === "terminal") return;
+  if (feedback && (!message || file)) {
+    notify("Для доработки плана введите текст без вложения.");
+    return;
+  }
+  if (!message && !file) return;
   const current = selection;
   const path = "projects/" + project.id;
   const revision = statusRevision;
+  const targets = mode === "team" ? [...teamTargets] : [agentId];
+  const targetIds = targets.length ? targets : null;
   messageBusy = true;
   syncComposer();
   try {
-    if (mode === "team") {
-      const result = await api(path + "/council/feedback", {feedback: message});
+    if (feedback) {
+      const result = await api(path + "/council/feedback", {feedback: message, target_agent_ids: targetIds});
       if (current === selection && revision === statusRevision) setStatus(result.status);
+    } else if (file) {
+      await api(path + "/media", mediaForm(file, mode === "team" ? "team_chat" : "direct", message, targets));
+    } else if (mode === "team") {
+      await api(path + "/chat", {question: message, target_agent_ids: targetIds});
     } else {
       await api(path + "/agents/" + agentId + "/question", {question: message});
     }
-    if (current === selection && mode === view && (mode === "team" || selectedAgent?.id === agentId)
-        && input.value.trim() === message) input.value = "";
+    if (current === selection && mode === view && (mode === "team" || selectedAgent?.id === agentId)) {
+      if (input.value.trim() === message) input.value = "";
+      if (attachment === file) setAttachment();
+    }
   } catch (error) {
     notify(error.message);
   } finally {
@@ -814,7 +1016,13 @@ byId("message-form").onsubmit = async (event) => {
       syncComposer();
     }
   }
+}
+
+byId("message-form").onsubmit = (event) => {
+  event.preventDefault();
+  sendMessage();
 };
+byId("plan-feedback").onclick = () => sendMessage(true);
 
 const contextMenu = byId("context-menu");
 let contextTarget, contextTrigger, modalTrigger;
@@ -886,6 +1094,19 @@ byId("context-delete").onclick = () => {
   byId("confirm-delete").onclick = ({currentTarget}) => mutateFromModal(currentTarget, target, "DELETE");
 };
 
+function removeAgentHistory({id, name}) {
+  deletedAgents.add(id);
+  teamTargets.delete(id);
+  streams.direct.delete(id);
+  streams.terminal.delete(id);
+  const messages = streams.team.get(0) || [];
+  streams.team.set(0, messages.filter(({event}) => event.agent_id !== id
+    && (event.agent_id != null || (event.sender_name !== name && event.target_name !== "@" + name))));
+  byId("direct").replaceChildren();
+  byId("terminal").replaceChildren();
+  refreshStream(true);
+}
+
 async function mutateFromModal(button, target, method, body, onError = (error) => notify(error.message)) {
   const revision = modalRevision;
   const session = token;
@@ -896,7 +1117,16 @@ async function mutateFromModal(button, target, method, body, onError = (error) =
     if (session !== token) return;
     try {
       if (target.kind === "project") await loadProjects(project?.id, true);
-      else if (target.current === selection) await loadAgents(target.projectId, target.current);
+      else if (target.current === selection) {
+        if (method === "DELETE") {
+          removeAgentHistory(target.item);
+          agentsInProject = agentsInProject.filter((agent) => agent.id !== target.item.id);
+          renderAgentSelector(agentsInProject);
+          renderTeamTargets();
+          renderTerminalTabs();
+        }
+        await loadAgents(target.projectId, target.current);
+      }
     } catch (error) {
       notify(error.message);
     }
@@ -921,20 +1151,23 @@ function showModal(id) {
   });
   byId("app-screen").inert = Boolean(id);
   if (id) {
-    byId(id).querySelector("input, .modal-actions .close-modal").focus();
+    const modal = byId(id);
+    const field = [...modal.querySelectorAll("input:enabled, select:enabled")]
+      .find((input) => input.getClientRects().length && !input.closest("[inert]"));
+    (field || modal.querySelector(".close-modal")).focus();
   } else {
     modalTrigger?.focus();
     modalTrigger = null;
   }
 }
-byId("new-project-button").onclick = () => showModal("project-modal");
+
 byId("add-agent-button").onclick = () => openAgentModal();
 const cliProviders = new Set(["codex", "claude", "opencode", "qwen", "cli"]);
 const agentForm = byId("agent-form");
 const agentProvider = byId("agent-provider");
 let agentTarget;
 
-function openAgentModal(target) {
+function openAgentModal(target, manual = false, preselected = []) {
   if (!project) return;
   agentTarget = target || {kind: "agent", path: "projects/" + project.id + "/agents", projectId: project.id, current: selection};
   const agent = target?.item;
@@ -953,10 +1186,15 @@ function openAgentModal(target) {
   byId("agent-base-url").value = settings.base_url || settings.baseUrl || "";
   byId("agent-api-key").placeholder = settings.has_api_key ? "Ключ сохранён · введите новый для замены" : "";
   byId("agent-command").value = settings.command || "";
+  byId("agent-vision").checked = Boolean(settings.supports_vision);
+  byId("agent-audio").checked = Boolean(settings.supports_audio);
   byId("agent-title").textContent = agent ? "Настройки агента" : "Подключить ИИ";
   byId("agent-submit").textContent = agent ? "Сохранить" : "Добавить агента";
   renderAgentFields();
+  byId("agent-add-tabs").classList.toggle("hidden", Boolean(agent));
+  selectAgentAddTab(Boolean(agent) || manual);
   showModal("agent-modal");
+  if (!agent) loadPresetChoices("agent-presets", agentsInProject.map(({name}) => name), preselected);
 }
 
 function clearAgentErrors() {
@@ -988,21 +1226,6 @@ document.addEventListener("keydown", (event) => {
 });
 byId("mobile-menu").onclick = () => document.querySelector(".sidebar").classList.toggle("open");
 
-byId("project-form").onsubmit = async (event) => {
-  event.preventDefault();
-  const button = event.submitter;
-  button.disabled = true;
-  try {
-    const created = await api("projects", {name: byId("project-name").value, description: byId("project-description").value});
-    event.target.reset();
-    showModal();
-    await loadProjects(created.id);
-  } catch (error) {
-    notify(error.message);
-  } finally {
-    button.disabled = false;
-  }
-};
 const agentFields = {
   name: ["agent-name", "Имя должно содержать от 2 до 100 символов."],
   model: ["agent-model", "Введите имя модели длиной до 255 символов."],
@@ -1036,7 +1259,10 @@ agentForm.onsubmit = async (event) => {
   const provider = agentProvider.value;
   const isCli = cliProviders.has(provider.toLowerCase());
   const model = byId("agent-model").value.trim() || (isCli ? provider : "");
-  const settings = {};
+  const settings = {
+    supports_vision: byId("agent-vision").checked,
+    supports_audio: byId("agent-audio").checked,
+  };
   const errors = [];
   if ([...name].length < 2 || [...name].length > 100) errors.push("name");
   if (!model || [...model].length > 255) errors.push("model");
@@ -1069,6 +1295,8 @@ agentForm.onsubmit = async (event) => {
   };
   const fields = [...agentForm.querySelectorAll("input:enabled")];
   fields.forEach((field) => { field.readOnly = true; });
+  byId("agent-vision").disabled = byId("agent-audio").disabled = true;
+  byId("agent-hub-tab").disabled = byId("agent-manual-tab").disabled = true;
   agentProvider.disabled = button.disabled = true;
   status.classList.remove("hidden");
   let failure;
@@ -1081,12 +1309,294 @@ agentForm.onsubmit = async (event) => {
   } finally {
     status.classList.add("hidden");
     fields.forEach((field) => { field.readOnly = false; });
+    byId("agent-vision").disabled = byId("agent-audio").disabled = false;
+    byId("agent-hub-tab").disabled = byId("agent-manual-tab").disabled = false;
     agentProvider.disabled = button.disabled = false;
   }
   if (revision !== modalRevision || target.current !== selection) return;
   if (failure) showError(failure);
   else await mutateFromModal(button, target, target.item ? "PATCH" : "POST", candidate, showError);
 };
+
+function renderTelegramLogs() {
+  byId("telegram-logs").checked = telegramLogsEnabled;
+  byId("telegram-logs-state").textContent = telegramLogsEnabled ? "Вкл" : "Выкл";
+}
+byId("settings-button").onclick = () => {
+  renderTelegramLogs();
+  showModal("settings-modal");
+};
+byId("telegram-logs").onchange = async ({target}) => {
+  const session = token;
+  target.disabled = true;
+  byId("telegram-logs-state").textContent = target.checked ? "Вкл" : "Выкл";
+  try {
+    const user = await api("auth/me", {tg_logs_enabled: target.checked}, session, "PATCH");
+    if (session === token) telegramLogsEnabled = user.tg_logs_enabled;
+  } catch (error) {
+    if (session === token) notify(error.message);
+  } finally {
+    target.disabled = false;
+    renderTelegramLogs();
+  }
+};
+
+function selectTab(prefix, manual) {
+  for (const [kind, active] of [["hub", !manual], ["manual", manual]]) {
+    const tab = byId(prefix + "-" + kind + "-tab");
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-pressed", String(active));
+  }
+}
+function selectAgentAddTab(manual) {
+  selectTab("agent", manual);
+  byId("agent-import-form").classList.toggle("hidden", manual);
+  agentForm.classList.toggle("hidden", !manual);
+}
+function selectProjectAddTab(manual) {
+  selectTab("project", manual);
+  byId("project-presets").classList.toggle("hidden", manual);
+}
+byId("agent-hub-tab").onclick = () => selectAgentAddTab(false);
+byId("agent-manual-tab").onclick = () => selectAgentAddTab(true);
+byId("project-hub-tab").onclick = () => selectProjectAddTab(false);
+byId("project-manual-tab").onclick = () => selectProjectAddTab(true);
+
+function checkedPresets(id) {
+  return [...byId(id).querySelectorAll("input:checked")].map((input) => Number(input.value));
+}
+
+async function loadPresetChoices(id, existingNames = [], preselected = []) {
+  const list = byId(id);
+  const revision = modalRevision;
+  const importing = id === "agent-presets";
+  const sync = () => {
+    if (importing) byId("import-submit").disabled = !checkedPresets(id).length;
+  };
+  list.textContent = "Загрузка моделей…";
+  sync();
+  try {
+    const presets = await api("hub/models");
+    if (revision !== modalRevision) return;
+    const available = presets.filter(({name}) => !existingNames.includes(name));
+    list.replaceChildren(...available.map((preset) => {
+      const label = [preset.name, preset.config_json.model].join(" · ");
+      const chip = choiceChip(label, preselected.includes(preset.id), sync);
+      chip.firstChild.value = preset.id;
+      return chip;
+    }));
+    if (!available.length) list.textContent = presets.length ? "Все модели уже подключены." : "В хабе пока нет моделей.";
+    sync();
+  } catch (error) {
+    if (revision === modalRevision) list.textContent = error.message;
+  }
+}
+byId("new-project-button").onclick = () => {
+  selectProjectAddTab(false);
+  showModal("project-modal");
+  loadPresetChoices("project-presets");
+};
+byId("project-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const button = event.submitter;
+  const manual = byId("project-manual-tab").getAttribute("aria-pressed") === "true";
+  const presetIds = manual ? [] : checkedPresets("project-presets");
+  const revision = modalRevision;
+  const session = token;
+  const form = event.currentTarget;
+  button.disabled = true;
+  try {
+    const created = await api("projects", {name: byId("project-name").value, description: byId("project-description").value}, session);
+    let importError;
+    if (presetIds.length) {
+      try {
+        await api("projects/" + created.id + "/agents/from-hub", {preset_ids: presetIds}, session);
+      } catch (error) {
+        importError = error;
+      }
+    }
+    if (session !== token) return;
+    const modalCurrent = revision === modalRevision;
+    if (modalCurrent) {
+      form.reset();
+      showModal();
+    }
+    await loadProjects(created.id);
+    if (importError) notify("Проект создан. " + importError.message);
+    if (modalCurrent && byId("modal-backdrop").inert && project?.id === created.id && (manual || importError)) {
+      openAgentModal(undefined, manual, importError ? presetIds : []);
+    }
+  } catch (error) {
+    if (session === token) notify(error.message);
+  } finally {
+    button.disabled = false;
+  }
+};
+
+byId("agent-import-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const ids = checkedPresets("agent-presets");
+  if (!ids.length || agentTarget?.current !== selection) return;
+  const button = event.submitter;
+  const target = agentTarget;
+  const revision = modalRevision;
+  const session = token;
+  const choices = [...byId("agent-presets").querySelectorAll("input")];
+  button.disabled = true;
+  choices.forEach((input) => { input.disabled = true; });
+  try {
+    await api(target.path + "/from-hub", {preset_ids: ids}, session);
+    if (revision === modalRevision) showModal();
+    if (target.current === selection && session === token) await loadAgents(target.projectId, target.current);
+  } catch (error) {
+    if (session === token) notify(error.message);
+  } finally {
+    if (revision === modalRevision) {
+      choices.forEach((input) => { input.disabled = false; });
+      button.disabled = !checkedPresets("agent-presets").length;
+    }
+  }
+};
+
+const hubForm = byId("hub-form");
+const hubProvider = byId("hub-provider");
+hubProvider.replaceChildren(...[...agentProvider.options].map((option) => option.cloneNode(true)));
+hubProvider.value = "api";
+
+function renderHubFields() {
+  const isApi = !cliProviders.has(hubProvider.value);
+  byId("hub-api-fields").classList.toggle("hidden", !isApi);
+  byId("hub-cli-field").classList.toggle("hidden", isApi);
+  const fields = hubForm.elements;
+  fields.namedItem("base_url").disabled = fields.namedItem("api_key").disabled = !isApi;
+  fields.namedItem("base_url").required = fields.namedItem("api_key").required = isApi;
+  fields.namedItem("command").disabled = isApi;
+  fields.namedItem("command").required = !isApi && hubProvider.value !== "codex";
+}
+hubProvider.onchange = renderHubFields;
+
+async function renderHubModels(revision = modalRevision) {
+  const list = byId("hub-models");
+  list.textContent = "Загрузка моделей…";
+  try {
+    const presets = await api("hub/models");
+    if (revision !== modalRevision) return;
+    list.replaceChildren(...presets.map((preset) => {
+      const row = element("li", "hub-model");
+      const copy = element("div");
+      const details = [preset.adapter_type, preset.config_json.model, preset.config_json.base_url,
+        preset.supports_vision && "Изображения", preset.supports_audio && "Аудио"].filter(Boolean);
+      copy.append(element("strong", "", preset.name), element("small", "", details.join(" · ")));
+      const remove = element("button", "icon-button danger");
+      remove.type = "button";
+      remove.title = "Удалить модель";
+      remove.setAttribute("aria-label", "Удалить модель " + preset.name);
+      remove.innerHTML = icon('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7l1-3h4l1 3"/>');
+      remove.onclick = async () => {
+        remove.disabled = true;
+        try {
+          await api("hub/models/" + preset.id, undefined, token, "DELETE");
+          if (revision === modalRevision) await renderHubModels(revision);
+        } catch (error) {
+          if (revision === modalRevision) notify(error.message);
+          remove.disabled = false;
+        }
+      };
+      row.append(copy, remove);
+      return row;
+    }));
+    if (!presets.length) list.append(element("li", "hint", "Сохранённых моделей пока нет."));
+  } catch (error) {
+    if (revision === modalRevision) list.textContent = error.message;
+  }
+}
+
+byId("hub-button").onclick = () => {
+  hubForm.reset();
+  hubProvider.value = "api";
+  renderHubFields();
+  showModal("hub-modal");
+  renderHubModels();
+};
+hubForm.onsubmit = async (event) => {
+  event.preventDefault();
+  const data = new FormData(hubForm);
+  const button = event.submitter;
+  const type = data.get("provider");
+  const config = {model: data.get("model").trim()};
+  if (cliProviders.has(type)) {
+    const command = data.get("command").trim();
+    if (command) config.command_template = command;
+  } else {
+    config.base_url = data.get("base_url").trim();
+    config.api_key = data.get("api_key").trim();
+  }
+  const revision = modalRevision;
+  button.disabled = true;
+  try {
+    await api("hub/models", {
+      name: data.get("name").trim(),
+      adapter_type: type,
+      config_json: config,
+      supports_vision: data.has("vision"),
+      supports_audio: data.has("audio"),
+    });
+    if (revision === modalRevision) {
+      hubForm.reset();
+      hubProvider.value = type;
+      renderHubFields();
+      await renderHubModels(revision);
+    }
+  } catch (error) {
+    if (revision === modalRevision) notify(error.message);
+  } finally {
+    button.disabled = false;
+  }
+};
+
+const statsNumber = new Intl.NumberFormat("ru");
+byId("stats-button").onclick = async () => {
+  if (!project) return;
+  showModal("stats-modal");
+  const revision = modalRevision;
+  const body = byId("stats-body");
+  body.textContent = "Загрузка статистики…";
+  try {
+    const stats = await api("projects/" + project.id + "/stats");
+    if (revision !== modalRevision) return;
+    const total = element("p", "stats-total");
+    total.append(element("strong", "", statsNumber.format(stats.total_tokens)), " токенов по проекту");
+    body.replaceChildren(total);
+    if (!stats.agents.length) {
+      body.append(element("p", "hint", "В проекте пока нет агентов."));
+      return;
+    }
+    const table = element("table", "stats-table");
+    const header = table.createTHead().insertRow();
+    for (const title of ["Нейросеть", "Токены", "Доля выполненных задач"]) {
+      const column = element("th", "", title);
+      column.scope = "col";
+      header.append(column);
+    }
+    const rows = table.createTBody();
+    for (const agent of stats.agents) {
+      const row = rows.insertRow();
+      const name = element("th", "", agent.name);
+      name.scope = "row";
+      row.append(name);
+      row.insertCell().textContent = statsNumber.format(agent.tokens);
+      const bar = element("progress");
+      bar.max = 100;
+      bar.value = agent.contribution_percent;
+      bar.setAttribute("aria-label", "Доля выполненных задач: " + agent.name);
+      row.insertCell().append(statsNumber.format(agent.contribution_percent) + " %", bar);
+    }
+    body.append(table);
+  } catch (error) {
+    if (revision === modalRevision) body.textContent = error.message;
+  }
+};
+
 byId("logout-button").onclick = () => {
   token = null;
   sessionStorage.removeItem("loomis-token");
