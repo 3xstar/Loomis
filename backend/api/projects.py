@@ -339,6 +339,28 @@ class AgentCandidateTest(AgentCreate):
     agent_id: int | None = None
 
 
+@router.post("/{project_id}/agents", response_model=AgentView, status_code=201)
+async def add_agent(data: AgentCreate, project: OwnedProject, session: Session):
+    agent = AgentConfig(project_id=project.id, **data.model_dump())
+    agent.settings = validate_agent_settings(agent.provider, agent.settings, agent.model)
+    return await persist_new_agent(agent, project, session)
+
+
+async def persist_new_agent(agent, project, session):
+    async with orchestrator.runtime(project.id).boundary:
+        await require_agent_changes(project, session)
+        await test_config(project.id, agent)
+        agent.tested_at = utc_now()
+        session.add(agent)
+        if agent.enabled:
+            orchestrator.invalidate_plan(project)
+        await save_agent(session)
+        if agent.enabled:
+            await orchestrator.plan_invalidated(project)
+        await orchestrator.publish_traffic(agent)
+    return agent
+
+
 @router.post("/{project_id}/agents/test")
 async def test_agent(data: AgentCandidateTest | ExistingAgentTest, project: OwnedProject, session: Session):
     if isinstance(data, AgentCandidateTest):
@@ -372,28 +394,6 @@ async def require_agent_changes(project, session):
     await session.refresh(project)
     if project.status == "council":
         raise HTTPException(409, "Дождитесь завершения консилиума.")
-
-
-@router.post("/{project_id}/agents", response_model=AgentView, status_code=201)
-async def add_agent(data: AgentCreate, project: OwnedProject, session: Session):
-    agent = AgentConfig(project_id=project.id, **data.model_dump())
-    agent.settings = validate_agent_settings(agent.provider, agent.settings, agent.model)
-    return await persist_new_agent(agent, project, session)
-
-
-async def persist_new_agent(agent, project, session):
-    async with orchestrator.runtime(project.id).boundary:
-        await require_agent_changes(project, session)
-        await test_config(project.id, agent)
-        agent.tested_at = utc_now()
-        session.add(agent)
-        if agent.enabled:
-            orchestrator.invalidate_plan(project)
-        await save_agent(session)
-        if agent.enabled:
-            await orchestrator.plan_invalidated(project)
-        await orchestrator.publish_traffic(agent)
-    return agent
 
 
 @router.get("/{project_id}/agents/{agent_id}", response_model=AgentView)
