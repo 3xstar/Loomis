@@ -5,7 +5,7 @@
   --motion: 260ms;
   --ink: #edf2ff;
   --muted: #a4afc5;
-  --glass: rgba(20, 28, 49, 0.66);
+  --glass: rgba(20, 28, 49, 0.48);
   --surface: #a8bbff12;
   --line: rgba(255, 255, 255, 0.14);
   --accent: #b2c7ff;
@@ -13,9 +13,9 @@
   --danger: #ff9daf;
   --terminal: #0d1220;
   --glass-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.22), 0 16px 40px rgba(0, 0, 0, 0.35);
-  --orb-a: #163884;
-  --orb-b: #4130a5;
-  --orb-c: #216f9c;
+  --orb-a: #285bc1;
+  --orb-b: #6848cf;
+  --orb-c: #238bb2;
   --menu-glass: rgba(23, 32, 56, 0.9);
 }
 :root[data-theme="light"] {
@@ -23,7 +23,7 @@
   --base: #e8eef9;
   --ink: #192437;
   --muted: #4f607a;
-  --glass: rgba(255, 255, 255, 0.68);
+  --glass: rgba(255, 255, 255, 0.49);
   --surface: #324c8510;
   --line: rgba(255, 255, 255, 0.8);
   --accent: #294eb6;
@@ -68,9 +68,9 @@ body {
   animation: drift var(--drift, 25s) var(--delay, 0s) ease-in-out infinite alternate,
     orb-hue 26s var(--delay, 0s) ease-in-out infinite alternate;
 }
-.orb-a { --orb-color: var(--orb-a); top: -29%; left: -12%; }
-.orb-b { --orb-color: var(--orb-b); --drift: 32s; --delay: -13s; top: 26%; right: -21%; }
-.orb-c { --orb-color: var(--orb-c); --drift: 29s; --delay: -8s; bottom: -53%; left: 22%; }
+.orb-a { --orb-color: var(--orb-a); top: -12%; left: -11%; }
+.orb-b { --orb-color: var(--orb-b); --drift: 32s; --delay: -13s; top: 16%; right: -15%; }
+.orb-c { --orb-color: var(--orb-c); --drift: 29s; --delay: -8s; bottom: -19%; left: 24%; }
 @keyframes drift {
   from { transform: translate3d(-5%, -6%, 0) scale(0.9); }
   to { transform: translate3d(17%, 14%, 0) scale(1.14); }
@@ -117,8 +117,19 @@ button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled { opacity: .45; cursor: default; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.button, .tab, .icon-button, .control-button, .project-button, .send-button, .theme-switch {
+.button, .tab, .icon-button, .control-button, .project-button, .send-button, .theme-switch, .agent-selector {
   border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 8px 12px;
+}
+button svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  vertical-align: -2px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 button:not(:disabled):hover { box-shadow: inset 0 0 0 1px var(--accent); }
 .tab { border-color: transparent; background: transparent; }
@@ -183,9 +194,51 @@ option { background: var(--base); }
 .terminal-title span, .terminal-actions { font-size: 12px; }
 .terminal { contain: layout paint; flex: 1; min-height: 0; overflow: auto; margin-top: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--terminal); font: 13px/1.6 "IBM Plex Mono", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .composer-top { margin-bottom: 8px; }
+.agent-picker { position: relative; min-width: 0; }
+.agent-selector {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 8px 14px;
+  border-radius: 12px;
+}
+#agent-selector-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-selector svg { width: 14px; height: 14px; transition: transform var(--motion) ease; }
+.agent-selector[aria-expanded="true"] svg { transform: rotate(180deg); }
+.composer:has(.agent-selector[aria-expanded="true"]) { position: relative; z-index: 1; }
+.agent-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  gap: 3px;
+  width: max-content;
+  min-width: 100%;
+  max-width: max(100%, min(260px, 45vw));
+  max-height: min(240px, 28vh);
+  overflow: auto;
+  padding: 5px;
+  background: var(--menu-glass);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--glass-shadow);
+}
+.agent-menu[hidden] { display: none; }
+.agent-menu button {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 6px 9px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.agent-menu button[aria-pressed="true"] { color: var(--accent); background: var(--surface); }
 .composer-row textarea { flex: 1; resize: vertical; }
+.composer-row textarea:disabled { opacity: .55; }
 .composer-hint { margin-top: 5px; font-size: 12px; }
-.send-button { font-size: 20px; }
+.send-button { align-self: stretch; }
 .context-menu {
   position: fixed;
   z-index: 5;
@@ -209,6 +262,9 @@ option { background: var(--base); }
   transform: translate3d(0, -5px, 0) scale(.95);
 }
 .context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   border: 0;
   border-radius: 9px;
   background: transparent;

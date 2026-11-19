@@ -8,6 +8,12 @@ let magicAttempt = 0;
 let statusRevision = 0;
 let specBusy = false;
 let actionBusy = false;
+let messageBusy = false;
+let selectedAgent;
+const agentSelector = byId("agent-selector");
+const agentMenu = byId("agent-menu");
+
+const icon = (paths) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
 
 async function api(path, body, accessToken = token, method = body === undefined ? "GET" : "POST") {
   const headers = {};
@@ -40,7 +46,10 @@ function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("loomis-theme", theme);
   all(".theme-switch").forEach((button) => {
-    button.textContent = theme === "dark" ? "☾" : "☀";
+    button.innerHTML = icon(theme === "dark"
+      ? '<path d="M20.9 13.3A9 9 0 0 1 10.7 3.1a9 9 0 1 0 10.2 10.2Z"/>'
+      : '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.4 1.4m11.2 11.2L19 19M5 19l1.4-1.4M17.6 6.4 19 5"/>');
+    button.setAttribute("aria-label", theme === "dark" ? "Светлая тема" : "Тёмная тема");
     button.title = theme === "dark" ? "Dark Liquid Glass" : "Light iOS Glass";
     button.setAttribute("aria-pressed", theme === "light");
   });
@@ -171,7 +180,8 @@ let logCursor = 0;
 let logCount = 0;
 
 function terminalLine(message) {
-  pendingLogs[logCursor] = {message, time: Date.now()};
+  const text = String(message).replace(/[0-9#*]\uFE0F?\u20E3|(?:\p{Extended_Pictographic}|\p{Emoji_Presentation})\uFE0F?[\u{E0020}-\u{E007F}]*(?:\u200D(?=\p{Extended_Pictographic}))?/gu, "");
+  pendingLogs[logCursor] = {message: text, time: Date.now()};
   logCursor = (logCursor + 1) % logLimit;
   logCount = Math.min(logCount + 1, logLimit);
   if (logFrame === null) logFrame = requestAnimationFrame(flushLogs);
@@ -375,8 +385,9 @@ async function selectProject(item) {
   socket?.close();
   clearTerminal();
   byId("agent-grid").replaceChildren();
-  byId("agent-select").replaceChildren();
-  byId("send-button").disabled = true;
+  selectedAgent = undefined;
+  messageBusy = false;
+  renderAgentSelector([]);
   byId("current-project-name").textContent = item?.name || "Выберите проект";
   byId("terminal-channel").textContent = item ? "/ws/" + item.id : "/ws";
   setStatus(item?.status || "—");
@@ -407,10 +418,52 @@ async function loadAgents(projectId, current) {
     return card;
   });
   byId("agent-grid").replaceChildren(...(cards.length ? cards : ["В проекте пока нет агентов."]));
-  const options = agents.filter((agent) => agent.enabled).map((agent) => new Option(agent.name, agent.id));
-  byId("agent-select").replaceChildren(...options);
-  byId("send-button").disabled = !options.length;
+  renderAgentSelector(agents);
 }
+
+function setAgentMenu(open, restoreFocus = false) {
+  agentMenu.hidden = !open;
+  agentSelector.setAttribute("aria-expanded", String(open));
+  if (open) agentMenu.querySelector('[aria-pressed="true"]')?.focus();
+  if (restoreFocus) agentSelector.focus();
+}
+
+function selectAgent(agent) {
+  selectedAgent = agent;
+  if (agent) byId("agent-selector-label").textContent = agent.name;
+  byId("message-input").disabled = !agent;
+  byId("send-button").disabled = !agent || messageBusy;
+}
+
+function renderAgentSelector(agents) {
+  const enabled = agents.filter((agent) => agent.enabled);
+  const next = enabled.find((agent) => agent.id === selectedAgent?.id) || enabled[0];
+  setAgentMenu(false);
+  agentSelector.disabled = !next;
+  agentSelector.title = next ? "" : agents.length ? "Нет активных агентов" : "Сначала подключите хотя бы одного ИИ-агента";
+  selectAgent(next);
+  if (!next) byId("agent-selector-label").textContent = agents.length ? "Нет активных агентов" : "Нет агентов";
+  agentMenu.replaceChildren(...enabled.map((agent) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = agent.name;
+    button.setAttribute("aria-pressed", String(agent === next));
+    button.onclick = () => {
+      agentMenu.querySelector('[aria-pressed="true"]')?.setAttribute("aria-pressed", "false");
+      button.setAttribute("aria-pressed", "true");
+      selectAgent(agent);
+      setAgentMenu(false, true);
+    };
+    return button;
+  }));
+}
+
+agentSelector.onclick = () => {
+  if (!agentSelector.disabled) setAgentMenu(agentMenu.hidden);
+};
+document.addEventListener("focusin", (event) => {
+  if (!agentSelector.parentElement.contains(event.target)) setAgentMenu(false);
+});
 
 async function loadProjects(preferredId = project?.id, preserveSelection = false) {
   const session = token;
@@ -491,10 +544,11 @@ byId("message-input").onkeydown = (event) => {
 byId("message-form").onsubmit = async (event) => {
   event.preventDefault();
   const input = byId("message-input");
-  const agentId = byId("agent-select").value;
+  const agentId = selectedAgent?.id;
   const question = input.value.trim();
-  if (!project || !agentId || !question) return;
+  if (!project || !agentId || !question || messageBusy) return;
   const current = selection;
+  messageBusy = true;
   byId("send-button").disabled = true;
   try {
     const result = await api("projects/" + project.id + "/agents/" + agentId + "/question", {question});
@@ -505,7 +559,10 @@ byId("message-form").onsubmit = async (event) => {
   } catch (error) {
     notify(error.message);
   } finally {
-    if (current === selection) byId("send-button").disabled = false;
+    if (current === selection) {
+      messageBusy = false;
+      byId("send-button").disabled = !selectedAgent;
+    }
   }
 };
 
@@ -517,7 +574,9 @@ function openContextMenu(event, target) {
   event.preventDefault();
   contextTrigger = event.currentTarget;
   contextTarget = target;
-  byId("context-edit").textContent = target.kind === "project" ? "✏️ Переименовать" : "⚙️ Редактировать";
+  const edit = byId("context-edit");
+  edit.innerHTML = icon('<path d="m14 5 5 5M4 20l1-5L16 4a2 2 0 0 1 3 0l1 1a2 2 0 0 1 0 3L9 19l-5 1Z"/>');
+  edit.append(target.kind === "project" ? "Переименовать" : "Редактировать");
   const margin = 8;
   const anchor = contextTrigger.getBoundingClientRect();
   const x = event.clientX || (event.clientY ? 0 : anchor.left);
@@ -537,6 +596,7 @@ function closeContextMenu(restoreFocus = false) {
 
 document.addEventListener("click", (event) => {
   if (!contextMenu.contains(event.target)) closeContextMenu();
+  if (!agentSelector.parentElement.contains(event.target)) setAgentMenu(false);
 });
 window.addEventListener("resize", () => closeContextMenu());
 contextMenu.addEventListener("keydown", (event) => {
@@ -673,6 +733,7 @@ byId("modal-backdrop").onclick = (event) => { if (event.target === event.current
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (!contextMenu.inert) closeContextMenu(true);
+  else if (!agentMenu.hidden) setAgentMenu(false, true);
   else showModal();
 });
 byId("mobile-menu").onclick = () => document.querySelector(".sidebar").classList.toggle("open");
@@ -771,7 +832,7 @@ if (savedToken) {
 }
 
 const orbs = [...all("#ambient-bg .orb")];
-const orbDepths = [32, -24, 18];
+const orbDepths = [75, -55, 35];
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let orbFrame = null;
 let orbX = 0;
@@ -798,7 +859,7 @@ function moveOrbs(x, y) {
 }
 
 window.addEventListener("pointermove", (event) => {
-  moveOrbs(event.clientX / innerWidth - 0.5, event.clientY / innerHeight - 0.5);
+  moveOrbs(2 * event.clientX / innerWidth - 1, 2 * event.clientY / innerHeight - 1);
 }, {passive: true});
 document.documentElement.addEventListener("pointerleave", () => moveOrbs(0, 0));
 reducedMotion.addEventListener("change", () => {
