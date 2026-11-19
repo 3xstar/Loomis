@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+websockets
+aiogram>=3.4.0
+sqlalchemy[asyncio]>=2.0.0
+aiosqlite
+pydantic-settings
+openai
+httpx
+faster-whisper
+pypdf
+python-docx>=1.1.2
+GitPython
+passlib[bcrypt]
+python-multipart
