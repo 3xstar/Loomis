@@ -1,4 +1,5 @@
 import re
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,7 +19,7 @@ from backend.api.ws import manager
 from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
 from backend.core.media import MAX_MEDIA_BYTES, make_media, media_spec_content
-from backend.core.orchestrator import orchestrator, probe_agent
+from backend.core.orchestrator import count_tokens, orchestrator, probe_agent
 from backend.database.models import AgentConfig, AgentMessage, Project, ProjectMedia, SpecItem, TaskLog, UserModelPreset, utc_now
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
@@ -96,12 +97,14 @@ class AgentView(BaseModel):
     model: str
     settings: dict
     enabled: bool
+    total_tokens_used: int
     traffic_state: str
     last_error: str | None
 
     @field_serializer("settings")
     def public_settings(self, settings: dict) -> dict:
-        public = {name: value for name, value in settings.items() if name not in {"api_key", "apiKey"}}
+        public = {name: value for name, value in settings.items()
+                  if name not in {"api_key", "apiKey", "supports_vision", "supports_audio"}}
         public["has_api_key"] = bool(clean_api_key(settings.get("api_key") or settings.get("apiKey")))
         return public
 
@@ -226,7 +229,8 @@ async def edit_project(data: ProjectPatch, project: OwnedProject, session: Sessi
     required = {"name", "deadline_minutes", "meeting_interval_minutes", "autonomy_mode", "failover_mode", "verbosity_level"}
     if any(field in required and value is None for field, value in updates.items()):
         raise HTTPException(422, "Обязательные настройки проекта не могут быть пустыми.")
-    async with orchestrator.runtime(project.id).boundary:
+    boundary = orchestrator.runtime(project.id).boundary if "workspace_path" in updates else nullcontext()
+    async with boundary:
         await session.refresh(project)
         if project.status in {"running", "council"} and "workspace_path" in updates:
             raise HTTPException(409, "Сначала приостановите проект.")
@@ -294,6 +298,8 @@ def invalid_agent_field(field: str, message: str) -> None:
 def validate_agent_settings(provider: str, settings: dict, model: str) -> dict:
     config = settings.copy()
     config.pop("has_api_key", None)
+    config.pop("supports_vision", None)
+    config.pop("supports_audio", None)
     if provider.lower() in CLI_PROVIDERS:
         command = setting_text(config.get("command"))
         if not command:
@@ -326,7 +332,7 @@ def validate_agent_settings(provider: str, settings: dict, model: str) -> dict:
 
 async def test_config(project_id, agent):
     try:
-        await probe_agent(project_id, agent)
+        return await probe_agent(project_id, agent)
     except TimeoutError as exc:
         raise HTTPException(400, "Таймаут проверки агента (15 секунд).") from exc
     except Exception as exc:
@@ -354,9 +360,11 @@ async def add_agent(data: AgentCreate, project: OwnedProject, session: Session):
 async def persist_new_agent(agent, project, session):
     async with orchestrator.runtime(project.id).boundary:
         await require_agent_changes(project, session)
-        await test_config(project.id, agent)
+        tokens = await test_config(project.id, agent)
         agent.tested_at = utc_now()
         session.add(agent)
+        agent.total_tokens_used = tokens
+        await count_tokens(session, project.owner_id, agent, tokens)
         if agent.enabled:
             orchestrator.invalidate_plan(project)
         await save_agent(session)
@@ -375,13 +383,18 @@ async def test_agent(data: AgentCandidateTest | ExistingAgentTest, project: Owne
             existing = await owned_agent(data.agent_id, project, session)
             existing_settings = existing.settings
         agent.settings = merged_agent_settings(agent.provider, agent.model, existing_settings, agent.settings)
-        await test_config(project.id, agent)
+        if data.agent_id is not None and existing.provider == agent.provider and existing.model == agent.model:
+            agent.id = existing.id
+            agent.preset_id = existing.preset_id
+        tokens = await test_config(project.id, agent)
+        await count_tokens(session, project.owner_id, agent, tokens)
+        await session.commit()
         return {"status": "success"}
     async with orchestrator.runtime(project.id).boundary:
         await require_agent_changes(project, session)
         agent = await owned_agent(data.agent_id, project, session)
         try:
-            await test_config(project.id, agent)
+            tokens = await test_config(project.id, agent)
         except HTTPException as exc:
             if agent.traffic_state != "asking":
                 await orchestrator.traffic(agent, "error", exc.detail)
@@ -390,6 +403,7 @@ async def test_agent(data: AgentCandidateTest | ExistingAgentTest, project: Owne
             agent.traffic_state = "waiting"
         agent.tested_at = utc_now()
         agent.cooldown_until = None
+        await count_tokens(session, project.owner_id, agent, tokens)
         await session.commit()
         await orchestrator.publish_traffic(agent)
     return {"status": "success"}
@@ -429,7 +443,14 @@ async def update_agent(data, project, agent, session):
     candidate = AgentConfig(
         name=updates.get("name", agent.name), provider=provider, model=model, settings=updates["settings"],
     )
-    await test_config(project.id, candidate)
+    same_model = (provider, model) == (agent.provider, agent.model)
+    if same_model:
+        candidate.preset_id = agent.preset_id
+    tokens = await test_config(project.id, candidate)
+    await count_tokens(session, project.owner_id, candidate, tokens)
+    if not same_model:
+        agent.preset_id = None
+    agent.total_tokens_used += tokens
     active_roster_changed = (agent.enabled or updates.get("enabled", False)) and any(
         getattr(agent, field) != value for field, value in updates.items()
     )
@@ -561,8 +582,6 @@ class PresetCreate(BaseModel):
     name: AgentName
     adapter_type: ProviderName
     config_json: PresetConfig
-    supports_vision: bool = False
-    supports_audio: bool = False
 
     def agent_settings(self):
         config = self.config_json.model_dump(exclude_none=True)
@@ -571,7 +590,6 @@ class PresetCreate(BaseModel):
                 config["command"] = command
             elif self.adapter_type.lower() == "codex":
                 config["command"] = "codex exec --json --sandbox workspace-write -"
-        config.update(supports_vision=self.supports_vision, supports_audio=self.supports_audio)
         return validate_agent_settings(self.adapter_type, config, self.config_json.model)
 
 
@@ -581,6 +599,7 @@ class PresetView(PresetCreate):
     id: int
     owner_id: int
     created_at: datetime
+    total_tokens_used: int
 
     @field_serializer("config_json")
     def public_config(self, config: PresetConfig):
@@ -637,10 +656,12 @@ async def import_presets(data: HubImport, project: OwnedProject, session: Sessio
             names.add(preset.name)
             agents.append(AgentConfig(
                 project_id=project.id, name=preset.name, provider=preset.adapter_type,
-                model=preset.config_json.model, settings=preset.agent_settings(),
+                model=preset.config_json.model, settings=preset.agent_settings(), preset_id=preset_id,
             ))
         for agent in agents:
-            await test_config(project.id, agent)
+            tokens = await test_config(project.id, agent)
+            agent.total_tokens_used = tokens
+            await count_tokens(session, project.owner_id, agent, tokens)
             agent.tested_at = utc_now()
         session.add_all(agents)
         orchestrator.invalidate_plan(project)
@@ -660,13 +681,18 @@ async def project_stats(project: OwnedProject, session: Session):
             (TaskLog.operation == "execute") & (TaskLog.status == "success"),
         ), 1), else_=0)).label("completed"),
     ).where(TaskLog.project_id == project.id).group_by(TaskLog.agent_id).subquery())
+    logged_tokens = func.coalesce(logs.c.tokens, 0)
     rows = (await session.execute(select(
-        AgentConfig.id, AgentConfig.name, func.coalesce(logs.c.tokens, 0),
+        AgentConfig.id, AgentConfig.name,
+        case((AgentConfig.total_tokens_used > logged_tokens, AgentConfig.total_tokens_used), else_=logged_tokens),
         func.coalesce(logs.c.completed, 0),
     ).outerjoin(logs, logs.c.agent_id == AgentConfig.id).where(
         AgentConfig.project_id == project.id
     ).order_by(AgentConfig.id))).all()
-    total = await session.scalar(select(func.coalesce(func.sum(logs.c.tokens), 0)))
+    unassigned_tokens = await session.scalar(select(func.coalesce(func.sum(logs.c.tokens), 0)).where(
+        logs.c.agent_id.is_(None)
+    ))
+    total = unassigned_tokens + sum(row[2] for row in rows)
     completed = sum(row[3] for row in rows)
     return {
         "total_tokens": total,

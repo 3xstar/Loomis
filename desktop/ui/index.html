@@ -247,10 +247,6 @@
           <label class="field"><span>API Key</span><input id="agent-api-key" type="password" autocomplete="new-password" disabled></label>
         </div>
         <label id="agent-cli-fields" class="field"><span>Команда запуска</span><input id="agent-command" type="text" placeholder="codex exec --json --sandbox workspace-write -" required></label>
-        <div class="choice-list">
-          <label class="choice-chip"><input id="agent-vision" type="checkbox"> Изображения</label>
-          <label class="choice-chip"><input id="agent-audio" type="checkbox"> Аудио</label>
-        </div>
         <p id="agent-test-status" class="agent-test-status hidden" role="status">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9"/></svg>
           Проверка агента…
@@ -302,10 +298,6 @@
           <label class="field"><span>API Key</span><input name="api_key" type="password" autocomplete="new-password"></label>
         </div>
         <label id="hub-cli-field" class="field hidden"><span>Команда запуска</span><input name="command"></label>
-        <div class="choice-list">
-          <label class="choice-chip"><input name="vision" type="checkbox"> Изображения</label>
-          <label class="choice-chip"><input name="audio" type="checkbox"> Аудио</label>
-        </div>
         <button class="button primary wide" type="submit">Сохранить модель</button>
       </form>
     </div>

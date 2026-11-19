@@ -8,6 +8,7 @@ from openai import APITimeoutError, AsyncOpenAI, OpenAIError
 
 from worker.sandbox import workspace_file
 from .base import AgentResult, BaseAgent
+from .media import audio_payload, refuses_media
 
 
 def file_tools():
@@ -54,15 +55,26 @@ class ApiAgent(BaseAgent):
         self.api_key = api_key
         self.instruction = instruction
         self.images = images
+        self.tokens_used = 0
 
     async def _run(self, prompt, timeout, workspace=None):
+        self.tokens_used = 0
         tokens = 0
         content = prompt
         if self.images:
             content = [{"type": "text", "text": prompt}]
             for mime_type, data in self.images:
-                url = f"data:{mime_type};base64,{b64encode(data).decode('ascii')}"
-                content.append({"type": "image_url", "image_url": {"url": url}})
+                if mime_type.startswith("audio/"):
+                    try:
+                        fmt, audio = await asyncio.to_thread(audio_payload, mime_type, data)
+                    except (OSError, ValueError, IndexError):
+                        return AgentResult("error", "Не удалось прочитать аудиофайл.")
+                    content.append({"type": "input_audio", "input_audio": {
+                        "data": b64encode(audio).decode("ascii"), "format": fmt,
+                    }})
+                else:
+                    url = f"data:{mime_type};base64,{b64encode(data).decode('ascii')}"
+                    content.append({"type": "image_url", "image_url": {"url": url}})
         messages = [{"role": "user", "content": content}]
         if self.instruction:
             messages.insert(0, {"role": "system", "content": self.instruction})
@@ -76,9 +88,12 @@ class ApiAgent(BaseAgent):
                     response = await client.chat.completions.create(model=self.model, messages=messages, **options)
                     if response.usage:
                         tokens += response.usage.total_tokens
+                        self.tokens_used = tokens
                     message = response.choices[0].message
                     if workspace is None or not message.tool_calls:
-                        return AgentResult("success", message.content or "", tokens)
+                        answer = message.content or ""
+                        status = "unsupported_media" if self.images and refuses_media(answer) else "success"
+                        return AgentResult(status, answer, tokens)
                     messages.append(message.model_dump(exclude_none=True, include={"role", "content", "tool_calls"}))
                     for call in message.tool_calls:
                         try:
@@ -92,10 +107,16 @@ class ApiAgent(BaseAgent):
         except TimeoutError:
             return AgentResult("timeout", "Agent deadline expired", tokens)
         except OpenAIError as exc:
-            status = "rate_limit" if getattr(exc, "status_code", None) == 429 else "error"
+            code = getattr(exc, "status_code", None)
             message = str(exc)
+            status = "rate_limit" if code == 429 else "error"
+            if self.images and (code in {400, 415, 422} or
+                                (code not in {401, 402, 403, 429} and refuses_media(message))):
+                return AgentResult("unsupported_media", "Провайдер отклонил мультимодальный запрос.", tokens)
             if key:
                 message = message.replace(key, "[redacted]")
+            if self.images:
+                message = f"Ошибка мультимодального запроса{f' (HTTP {code})' if code else ''}."
             return AgentResult(status, message, tokens)
         except (KeyError, ValueError, IndexError) as exc:
             return AgentResult("error", str(exc), tokens)

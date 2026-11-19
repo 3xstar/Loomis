@@ -37,24 +37,45 @@ async def starting_council(workspace: Path, agents, feedback: str | None = None,
         return f"## {name}\n{result.message}"
 
     history = ""
+    active = list(agents)
+    failed = set()
     for number in (1, 2):
         outcomes = await asyncio.gather(
-            *(discuss(name, agent, number, history) for name, agent in agents), return_exceptions=True
+            *(discuss(name, agent, number, history) for name, agent in active), return_exceptions=True
         )
-        for outcome in outcomes:
+        replies = []
+        for (name, agent), outcome in zip(active, outcomes):
             if isinstance(outcome, BaseException):
-                raise outcome
-        history += f"\n\n# Раунд {number}\n" + "\n\n".join(outcomes)
-    lead = agents[0][1]
+                if not isinstance(outcome, Exception):
+                    raise outcome
+                failed.add(name)
+                if publish:
+                    await publish(agent, f"Агент выбыл из консилиума. {outcome}")
+            else:
+                replies.append(outcome)
+        active = [(name, agent) for name, agent in active if name not in failed]
+        if not active:
+            raise ValueError("Ни один агент не завершил раунд консилиума.")
+        history += f"\n\n# Раунд {number}\n" + "\n\n".join(replies)
     scope = "Сохрани не затронутые правками задачи и зоны ответственности остальных агентов." if previous else ""
     plan_prompt = (
         "Собери полный PLAN.md на основе двух раундов. Распредели задачи и файлы по именам агентов, "
         "устрани пересечения, придерживайся заданной очереди и укажи критерии проверки. "
         f"Учти правки пользователя. {scope} Верни только Markdown."
     )
-    plan = await (synthesize(lead, plan_prompt, f"{context}\n\n{history}") if synthesize else
-                  lead.ask_question(plan_prompt, f"{context}\n\n{history}"))
-    if plan.status != "success" or not plan.message.strip():
+    for name, lead in active:
+        order = "\n".join(f"{index}. {name}" for index, name in enumerate(
+            (member for member in roster if member not in failed), 1,
+        ))
+        plan_context = f"{context}\n\n{history}\n\nАктуальная очередь:\n{order}"
+        plan = await (synthesize(lead, plan_prompt, plan_context) if synthesize else
+                      lead.ask_question(plan_prompt, plan_context))
+        if plan.status == "success" and plan.message.strip():
+            break
+        failed.add(name)
+        if publish:
+            await publish(lead, f"Не удалось собрать PLAN.md. {plan.message}")
+    else:
         raise ValueError("Не удалось собрать единый PLAN.md.")
     if publish:
         await publish(lead, plan.message)

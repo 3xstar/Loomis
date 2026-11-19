@@ -87,14 +87,15 @@ class WorkerPool:
     def __init__(self):
         self.nodes = {}
 
-    async def dispatch(self, node, agent, project_id, operation, prompt, context, timeout, *, instruction="", images=()):
+    async def dispatch(self, node, agent, project_id, operation, prompt, context, timeout, *,
+                       instruction="", images=(), on_interrupted=None):
         from base64 import b64encode
         from uuid import uuid4
 
         from worker.adapters.base import AgentResult
 
         if sum(len(data) for _, data in images) > MAX_WORKER_IMAGE_BYTES:
-            return AgentResult("error", "Общий размер изображений для воркера превышает 20 МБ.")
+            return AgentResult("error", "Общий размер вложений для воркера превышает 20 МБ.")
         peer = self.nodes.get(node)
         if peer is None or agent not in peer["agents"]:
             return AgentResult("error", "Воркер или агент недоступен.")
@@ -111,10 +112,14 @@ class WorkerPool:
                     "instruction": instruction,
                     "images": [(mime, b64encode(data).decode("ascii")) for mime, data in images],
                 })
-                return await future
+                return await asyncio.shield(future)
             except asyncio.CancelledError:
                 try:
                     await asyncio.wait_for(peer["socket"].send_json({"type": "cancel", "id": key}), 3)
+                    if operation == "execute":
+                        interrupted = await asyncio.wait_for(future, 10)
+                        if on_interrupted is not None:
+                            on_interrupted(interrupted)
                 except (OSError, RuntimeError, WebSocketDisconnect, TimeoutError):
                     pass
                 raise
@@ -173,7 +178,7 @@ async def worker_events(socket: WebSocket):
                     peer["approval"] = asyncio.create_task(approve(str(packet["command"])[:4000], job))
                 continue
             status = packet["status"]
-            if status not in {"success", "rate_limit", "timeout", "error"}:
+            if status not in {"success", "rate_limit", "timeout", "error", "unsupported_media"}:
                 raise ValueError("Unknown worker status")
             job[2].set_result(AgentResult(status, str(packet["message"]), int(packet["tokens"]), packet.get("terminal")))
     except (WebSocketDisconnect, TimeoutError, KeyError, TypeError, ValueError, AttributeError):

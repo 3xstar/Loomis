@@ -1,20 +1,24 @@
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+from html import escape
 from pathlib import Path
 from time import monotonic
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
+from aiogram.exceptions import TelegramRetryAfter
 
 from backend.api.ws import manager, workers
 from backend.bot.formatting import telegram_html
 from backend.database.db import async_session_factory
-from backend.database.models import AgentConfig, AgentMessage, Project, ProjectMedia, TaskLog, User
+from backend.database.models import AgentConfig, AgentMessage, Project, ProjectMedia, TaskLog, User, UserModelPreset
 from worker.adapters import CLI_PROVIDERS, build_agent
 from worker.adapters.base import AgentResult, BaseAgent
+from worker.adapters.media import refuses_media
 from worker.git_bridge import GitBridge
 from worker.quality_gate import check_quality
 from worker.sandbox import workspace_file
@@ -28,6 +32,7 @@ logger = logging.getLogger(__name__)
 class Runtime:
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     boundary: asyncio.Lock = field(default_factory=asyncio.Lock)
+    telegram_delivery: asyncio.Lock = field(default_factory=asyncio.Lock)
     task: asyncio.Task | None = None
     last_agent: int = 0
     next_meeting: float | None = None
@@ -75,6 +80,7 @@ async def probe_agent(project_id, config):
         raise ValueError(result.message or result.status)
     if not result.message.strip():
         raise ValueError("Провайдер вернул пустой ответ.")
+    return result.tokens
 
 
 VERBOSITY = {
@@ -84,14 +90,40 @@ VERBOSITY = {
 }
 
 
-def media_error(config, mime_type):
-    provider = config.provider.lower()
-    if mime_type.startswith("audio/"):
-        if not config.settings.get("supports_audio"):
-            return f"{config.name}: поддержка аудио отключена в настройках агента."
-    elif not config.settings.get("supports_vision") or (provider in CLI_PROVIDERS and provider != "codex"):
-        return f"{config.name}: модель не поддерживает изображения."
-    return None
+VISION_MODELS = re.compile(
+    r"gpt-(?:4o|4\.1|[56])|gemini|claude-(?:[345]|\w+[-_][345])|qwen[\w.-]*[-_]vl"
+    r"|llama-3\.2-(?:11|90)b-vision|step-[123]|pixtral|grok-(?:2-vision|4)|glm-4[.\w-]*v",
+    re.I,
+)
+AUDIO_MODELS = re.compile(r"gemini|gpt-4o.*(?:audio|realtime)|gpt-(?:audio|realtime)|"
+                          r"step-.*(?:audio|omni)|qwen.*(?:audio|omni)|voxtral", re.I)
+
+
+def media_candidate(provider, model, audio):
+    if provider.lower() in CLI_PROVIDERS:
+        return not audio and provider.lower() == "codex"
+    return bool((AUDIO_MODELS if audio else VISION_MODELS).search(model))
+
+
+async def count_tokens(session, owner_id, config, tokens):
+    if not tokens:
+        return
+    if config.id is not None:
+        await session.execute(update(AgentConfig).where(AgentConfig.id == config.id).values(
+            total_tokens_used=AgentConfig.total_tokens_used + tokens,
+        ))
+    preset = UserModelPreset
+    criteria = [preset.owner_id == owner_id]
+    if config.preset_id is not None:
+        criteria.append(preset.id == config.preset_id)
+    else:
+        criteria.extend([
+            func.lower(preset.adapter_type) == config.provider.lower(),
+            func.lower(preset.config_json["model"].as_string()) == config.model.lower(),
+        ])
+    await session.execute(update(preset).where(*criteria).values(
+        total_tokens_used=preset.total_tokens_used + tokens,
+    ))
 
 
 class ProjectAgent(BaseAgent):
@@ -110,6 +142,12 @@ class ProjectAgent(BaseAgent):
         started = datetime.now(timezone.utc)
         clock = monotonic()
         result = AgentResult("error", "Операция прервана.")
+        agent = None
+
+        def record_interruption(interrupted):
+            nonlocal result
+            result = interrupted
+
         try:
             if manage_traffic:
                 await self.engine.traffic(config, "working")
@@ -119,7 +157,8 @@ class ProjectAgent(BaseAgent):
                     worker_operation = "question" if operation in {"handoff", "plan"} else operation
                     result = await workers.dispatch(node, config.settings.get("worker_agent", config.name),
                                                     project.id, worker_operation, prompt, context, timeout,
-                                                    instruction=instruction, images=images)
+                                                    instruction=instruction, images=images,
+                                                    on_interrupted=record_interruption)
                 else:
                     agent = build_agent(config.provider, config.model, config.settings,
                                         lambda command: self.engine.request_approval(project.id, command),
@@ -132,6 +171,10 @@ class ProjectAgent(BaseAgent):
                         result = await agent.ask_question(prompt, context)
         except TimeoutError:
             result = AgentResult("timeout", "Дедлайн истёк.")
+        except asyncio.CancelledError:
+            if agent is not None:
+                result.tokens = getattr(agent, "tokens_used", 0)
+            raise
         except Exception as exc:
             result = AgentResult("error", str(exc) or type(exc).__name__)
         finally:
@@ -140,6 +183,7 @@ class ProjectAgent(BaseAgent):
                                     operation="execute_attempt" if operation == "execute" else operation,
                                     sender_name=config.name, started_at=started, duration_seconds=monotonic() - clock,
                                     status=result.status, tokens=result.tokens))
+                await count_tokens(session, project.owner_id, config, result.tokens)
                 if result.status == "rate_limit":
                     row = await session.get(AgentConfig, config.id)
                     if row is not None:
@@ -152,8 +196,8 @@ class ProjectAgent(BaseAgent):
         )
         if manage_traffic:
             await self.engine.traffic(
-                config, "waiting" if result.status == "success" else "error",
-                None if result.status == "success" else result.message,
+                config, "waiting" if result.status in {"success", "unsupported_media"} else "error",
+                None if result.status in {"success", "unsupported_media"} else result.message,
             )
         return result
 
@@ -161,8 +205,16 @@ class ProjectAgent(BaseAgent):
         return await self.run("execute", prompt, workspace=work_dir, timeout=timeout)
 
     async def ask_question(self, question, context):
-        images = await self.engine.spec_images(self.project.id, self.config)
-        return await self.run("question", question, context, images=images)
+        images = await self.engine.spec_images(self.project.id)
+        return await self.run_with_spec_images("question", question, context, images=images)
+
+    async def run_with_spec_images(self, operation, prompt, context="", *, images, **options):
+        result = await self.run(operation, prompt, context, images=images, **options)
+        if images and result.status == "unsupported_media":
+            retry = await self.run(operation, prompt, context, **options)
+            retry.tokens += result.tokens
+            return retry
+        return result
 
     async def participate_in_meeting(self, history):
         return await self.run("meeting", "", history)
@@ -173,6 +225,7 @@ class Orchestrator:
         self.runtimes = {}
         self.approvals = {}
         self.bot = None
+        self.telegram_projects: dict[int, int] = {}
         self.replies = set()
 
     def runtime(self, project_id):
@@ -225,6 +278,25 @@ class Orchestrator:
                 "agent_name": config.name if config else None,
                 "media_id": row.media_id,
             })
+        if self.bot and any(row.channel == "team_chat" for row in rows) and self.telegram_projects:
+            async with async_session_factory() as session:
+                owner = await session.scalar(select(User).join(
+                    Project, Project.owner_id == User.id
+                ).where(Project.id == project_id))
+            if owner and owner.telegram_id and self.telegram_projects.get(owner.id) == project_id:
+                self.background_reply(self.send_team_chat(project_id, owner.id, owner.telegram_id, sender, target, content))
+
+    async def send_team_chat(self, project_id, owner_id, chat_id, sender, target, content):
+        heading = escape(f"{sender} → {target}"[:200])
+        async with self.runtime(project_id).telegram_delivery:
+            for part in telegram_html(content or "—"):
+                while self.telegram_projects.get(owner_id) == project_id:
+                    try:
+                        await self.bot.send_message(chat_id, f"<b>{heading}</b>\n{part}", parse_mode="HTML")
+                    except TelegramRetryAfter as exc:
+                        await asyncio.sleep(exc.retry_after)
+                    else:
+                        break
 
     async def publish_traffic(self, config):
         await manager.broadcast(config.project_id, {
@@ -291,7 +363,8 @@ class Orchestrator:
             raise ValueError("Рабочая папка не задана.")
         return Path(project.workspace_path).resolve(strict=True)
 
-    async def notify(self, project_id, message, markup=None, event_type="log", config=None, *, critical=False):
+    async def notify(self, project_id, message, markup=None, event_type="log", config=None, *,
+                     critical=False, in_team_chat=False):
         event = {"type": event_type, "project_id": project_id, "message": message}
         if config is not None:
             event.update(agent_id=config.id, agent_name=config.name)
@@ -303,6 +376,8 @@ class Orchestrator:
                     Project, Project.owner_id == User.id
                 ).where(Project.id == project_id))
             if owner and owner.telegram_id and (owner.tg_logs_enabled or markup or critical):
+                if in_team_chat and self.telegram_projects.get(owner.id) == project_id:
+                    return
                 try:
                     for index, part in enumerate(telegram_html(message)):
                         await self.bot.send_message(owner.telegram_id, part, parse_mode="HTML",
@@ -362,7 +437,7 @@ class Orchestrator:
                 for config in configs:
                     if config.tested_at is None:
                         try:
-                            await probe_agent(project_id, config)
+                            tokens = await probe_agent(project_id, config)
                         except TimeoutError as exc:
                             error = "Таймаут проверки агента (15 секунд)."
                             await self.traffic(config, "error", error)
@@ -373,6 +448,7 @@ class Orchestrator:
                         async with async_session_factory() as session:
                             row = await session.get(AgentConfig, config.id)
                             row.tested_at = datetime.now(timezone.utc)
+                            await count_tokens(session, project.owner_id, config, tokens)
                             await session.commit()
                         await self.traffic(config, "waiting")
                 self.require_plan(project, configs, approved=False)
@@ -465,10 +541,12 @@ class Orchestrator:
             config = agent.config
             await self.message(project_id, config.name, "@All", "team_chat", content, config,
                                mirror="direct" if targeted else None)
+            await self.notify(project_id, f"{config.name}\n\n{content}", event_type="step_log", config=config,
+                              in_team_chat=True)
 
         async def synthesize(agent, prompt, context):
-            images = await self.spec_images(project_id, agent.config)
-            return await agent.run("plan", prompt, context, images=images)
+            images = await self.spec_images(project_id)
+            return await agent.run_with_spec_images("plan", prompt, context, images=images)
 
         try:
             agents = [(item.name, ProjectAgent(self, project, item)) for item in selected]
@@ -495,53 +573,47 @@ class Orchestrator:
             target = " ".join(f"@{item.name}" for item in selected) if target_agent_ids is not None else "@All"
             await self.message(project_id, "User", target, "team_chat", question, media=media)
             context = self.context(self.workspace(project), ("SPEC.md", "PLAN.md", "Project_context.md"))
-            audio = None
-            if (media and media.mime_type.startswith("audio/") and
-                    any(not media_error(config, media.mime_type) for config in selected)):
-                audio = asyncio.create_task(self.transcribe_question(media))
-
             async def respond(config):
-                response = await self.ask(project, config, question, context, media, audio=audio)
+                response = await self.ask(project, config, question, context, media)
                 await self.message(project_id, config.name, "@User", "team_chat", response.message, config,
                                    mirror="direct" if target_agent_ids is not None else None)
                 return {"agent_id": config.id, "status": response.status,
                         "message": response.message, "tokens": response.tokens}
 
-            try:
-                return await asyncio.gather(*(respond(config) for config in selected))
-            finally:
-                if audio is not None and not audio.done():
-                    audio.cancel()
-                    await asyncio.gather(audio, return_exceptions=True)
+            return await asyncio.gather(*(respond(config) for config in selected))
 
+    async def ask(self, project, config, question, context, media=None):
+        agent = ProjectAgent(self, project, config)
+        if media is None:
+            return await agent.ask_question(question, context)
+        result = await agent.run("question", question, context, images=[(media.mime_type, media.data)])
+        if result.status != "unsupported_media" and not (
+            result.status == "success" and refuses_media(result.message)
+        ):
+            return result
+        audio = media.mime_type.startswith("audio/")
+        async with async_session_factory() as session:
+            agents = await session.scalars(select(AgentConfig).where(
+                AgentConfig.project_id == project.id, AgentConfig.id != config.id,
+                AgentConfig.enabled.is_(True), AgentConfig.traffic_state != "error",
+            ).order_by(AgentConfig.id))
+            presets = await session.scalars(select(UserModelPreset).where(
+                UserModelPreset.owner_id == project.owner_id,
+            ).order_by(UserModelPreset.id))
+            names = [f"@{item.name}" for item in agents if media_candidate(item.provider, item.model, audio)]
+            names += [item.name for item in presets
+                      if (item.adapter_type.lower(), item.config_json.get("model", "").lower()) !=
+                      (config.provider.lower(), config.model.lower()) and
+                      media_candidate(item.adapter_type, item.config_json.get("model", ""), audio)]
+        kind = "аудио" if audio else "изображений"
+        message = f"Эта модель не поддерживает анализ {kind}."
+        if names:
+            message += f" Рекомендую подключить или обратиться к {names[0]}."
+        else:
+            message += f" Рекомендую подключить модель с поддержкой {kind}."
+        return AgentResult("unsupported_media", message, result.tokens)
 
-    @staticmethod
-    async def transcribe_question(media):
-        from .media import transcribe_media
-
-        try:
-            return await transcribe_media(media)
-        except Exception:
-            logger.exception("Audio transcription failed for project %s", media.project_id)
-            return None
-
-    async def ask(self, project, config, question, context, media=None, *, audio=None):
-        if media and (error := media_error(config, media.mime_type)):
-            return AgentResult("unsupported_media", error)
-        images = await self.spec_images(project.id, config)
-        if media:
-            if media.mime_type.startswith("audio/"):
-                transcript = await audio if audio is not None else await self.transcribe_question(media)
-                if transcript is None:
-                    return AgentResult("error", "Не удалось распознать аудиофайл.")
-                question += f"\n\nРасшифровка аудио:\n{transcript}"
-            else:
-                images.append((media.mime_type, media.data))
-        return await ProjectAgent(self, project, config).run("question", question, context, images=images)
-
-    async def spec_images(self, project_id, config):
-        if media_error(config, "image/png"):
-            return []
+    async def spec_images(self, project_id):
         async with async_session_factory() as session:
             rows = (await session.execute(select(ProjectMedia.mime_type, ProjectMedia.data).where(
                 ProjectMedia.project_id == project_id, ProjectMedia.spec_item_id.is_not(None),
@@ -619,7 +691,13 @@ class Orchestrator:
             )
         ]
         if runtime.handoff:
+            intended = next((item for item in configs if item.id == runtime.handoff[0]), None)
             config = next((item for item in available if item.id == runtime.handoff[0]), None)
+            if config is None and intended is not None and available:
+                await self.failover(project, available, runtime, intended,
+                                    "Принять следующий шаг по PLAN.md.", runtime.handoff[1],
+                                    intended.last_error or "Агент недоступен.")
+                return
         else:
             config = next((item for item in available if item.id > runtime.last_agent),
                           available[0] if available else None)
@@ -642,9 +720,26 @@ class Orchestrator:
             await self.notify(project.id, summary, event_type="meeting")
             runtime.next_meeting = monotonic() + interval
             runtime.meeting_base = None
+            _, current = await self.load(project.id)
+            working_ids = {item.id for item in current if item.traffic_state != "error"}
+            available = [item for item in available if item.id in working_ids]
+            if config.id not in working_ids:
+                failed = next(item for item in current if item.id == config.id)
+                await self.failover(project, available, runtime, failed,
+                                    "Выполнить свою часть PLAN.md.", runtime.handoff[1] if runtime.handoff else "",
+                                    failed.last_error or "Сбой на собрании.")
+                return
         remote = config.settings.get("worker")
         if remote:
-            await bridge.synchronize()
+            try:
+                await bridge.synchronize()
+            except (TimeoutError, OSError, RuntimeError) as exc:
+                error = str(exc) or "Истёк таймаут синхронизации воркера."
+                await self.traffic(config, "error", error)
+                await self.failover(project, available, runtime, config, "Выполнить свою часть PLAN.md.",
+                                    runtime.handoff[1] if runtime.handoff else "", error,
+                                    diagnostic="Этап: синхронизация рабочего репозитория.")
+                return
         checkpoint = await bridge.checkpoint()
         runtime.meeting_base = runtime.meeting_base or checkpoint
         clock = asyncio.get_running_loop()
@@ -656,7 +751,9 @@ class Orchestrator:
         await self.traffic(config, "working")
         agent = ProjectAgent(self, project, config)
         clarification = ""
-        images = await self.spec_images(project.id, config)
+        images = await self.spec_images(project.id)
+        stage = "подтверждение передачи задачи" if handoff else "исполнение задачи"
+        recent = ""
         try:
             async with asyncio.timeout_at(deadline):
                 if handoff:
@@ -664,15 +761,18 @@ class Orchestrator:
                         "handoff", f"Ты {config.name}. Кратко сообщи команде, какую работу начнёшь. {task}",
                         f"{handoff}\n{runtime.answer}", timeout=max(0.01, deadline - clock.time()),
                     )
+                    if receipt.status == "timeout":
+                        raise TimeoutError(receipt.message)
                     if receipt.status != "success" or not receipt.message.strip():
                         raise RuntimeError(receipt.message.strip() or "Агент не подтвердил передачу задачи.")
                     await self.message(project.id, config.name, "@All", "team_chat",
                                        f"Принял передачу.\n{receipt.message}", config)
                 while True:
+                    stage = "исполнение задачи"
                     if remote:
                         await bridge.push()
                     correction = f"Исправь ошибки проверки перед передачей хода:\n{feedback[:15000]}" if feedback else ""
-                    result = await agent.run(
+                    result = await agent.run_with_spec_images(
                         "execute", f"{context}\n\nТы {config.name}. {task}\n"
                         f"{handoff}\n{runtime.answer}\n{correction}\n"
                         "В итоговом отчёте опиши результат и инструкции следующему исполнителю. "
@@ -683,6 +783,9 @@ class Orchestrator:
                         "Если все задачи плана завершены, верни отдельную строку LOOMIS_COMPLETE.",
                         workspace=workspace, timeout=max(0.01, deadline - clock.time()), images=images,
                     )
+                    recent = result.message
+                    if result.status == "timeout":
+                        raise TimeoutError(result.message)
                     if result.status != "success":
                         raise RuntimeError(result.message or result.status)
                     if remote:
@@ -693,23 +796,24 @@ class Orchestrator:
                         if clarification:
                             break
                     self.require_plan(project, configs, approved=True)
+                    stage = "проверка результата"
                     feedback = await check_quality(
                         project.test_command, workspace, max(0.01, deadline - clock.time()),
                         lambda command: self.request_approval(project.id, command),
                     )
                     if feedback is None:
+                        stage = "сохранение результата"
                         await bridge.commit()
                         break
                     await self.message(project.id, config.name, "@All", "terminal", feedback, config)
         except (TimeoutError, OSError, ValueError, RuntimeError) as exc:
-            error = str(exc) or "Дедлайн шага истёк."
+            error = str(exc) or f"Истёк дедлайн задачи ({project.deadline_minutes} мин.)."
             await self.traffic(config, "error", error)
-            await bridge.rollback_last_step()
-            if remote:
-                await bridge.push()
-            if runtime.meeting_base == checkpoint:
-                runtime.meeting_base = None
-            await self.failover(project, configs, available, runtime, config, task, handoff, error)
+            diagnostic, partial_diff = await self.diagnose_failure(
+                bridge, checkpoint, config, stage, feedback or recent, remote,
+            )
+            await self.failover(project, available, runtime, config, task, handoff, error,
+                                diagnostic=diagnostic, partial_diff=partial_diff)
             return
         if clarification:
             await bridge.rollback_last_step()
@@ -747,7 +851,7 @@ class Orchestrator:
             f"Результат и инструкции:\n{result.message}"
         )
         await self.message(project.id, config.name, target, "team_chat", report, config)
-        await self.notify(project.id, report, event_type="step_log", config=config)
+        await self.notify(project.id, report, event_type="step_log", config=config, in_team_chat=True)
         if complete:
             runtime.ready.clear()
             await self.status(project.id, "completed", turn_state=runtime.snapshot())
@@ -758,34 +862,88 @@ class Orchestrator:
         else:
             await self.save_turn(project.id, runtime)
 
-    async def failover(self, project, configs, available, runtime, broken, task, handoff, error):
-        candidates = {item.id: item for item in available if item.id != broken.id}
-        successor = next((item for item in configs if item.id > broken.id and item.id in candidates), None)
-        if successor is None:
-            successor = next((candidates[key] for key in reversed(runtime.successful_agents)
-                              if key < broken.id and key in candidates), None)
-        runtime.handoff = None
+    async def diagnose_failure(self, bridge, checkpoint, config, stage, last_output, remote):
+        notes = [f"Этап: {stage}."]
+        if remote:
+            try:
+                await bridge.pull()
+            except (RuntimeError, OSError, TimeoutError):
+                notes.append("Не удалось получить последние изменения с воркера.")
+        diff = ""
+        try:
+            status = await bridge.git("status", "--short", "--untracked-files=all")
+            changes = await bridge.git("diff", "--stat", checkpoint, "--", ".")
+            diff = await bridge.diff(checkpoint)
+            notes.append(f"Изменения в репозитории:\n{(changes or status or 'Нет изменений')[:900]}")
+            if status and status != changes:
+                notes.append(status[:500])
+            # The successor must work against the approved plan.
+            if await bridge.git("diff", "--name-only", checkpoint, "--", "PLAN.md"):
+                await bridge.git("restore", f"--source={checkpoint}", "--staged", "--worktree", "--", "PLAN.md")
+        except (RuntimeError, OSError, TimeoutError):
+            notes.append("Не удалось собрать полный git diff.")
+        if not last_output:
+            async with async_session_factory() as session:
+                last_output = await session.scalar(select(AgentMessage.content).where(
+                    AgentMessage.project_id == config.project_id, AgentMessage.agent_id == config.id,
+                    AgentMessage.channel == "terminal",
+                ).order_by(AgentMessage.id.desc()).limit(1))
+        if last_output:
+            notes.append(f"Последний вывод: {last_output.strip()[-600:]}")
+        return "\n".join(notes), diff[:20000]
+
+    async def failover(self, project, available, runtime, broken, task, handoff, error, *,
+                       diagnostic="", partial_diff=""):
+        candidates = [item for item in available if item.id != broken.id]
+        following = [item for item in candidates if item.id > broken.id]
+        # Prefer the remaining cycle, then fall back to earlier agents if it is exhausted.
+        candidates = following or list(reversed(candidates))
+        if candidates:
+            plan = self.context(self.workspace(project), ("PLAN.md",))
+            terms = set(re.findall(r"[\w.-]{4,}", f"{error}\n{diagnostic}".lower()))
+            sections = re.split(r"(?m)(?=^#{1,6}\s)", plan.lower())
+            lines = plan.lower().splitlines()
+
+            def relevance(item):
+                name = re.compile(rf"(?<!\w){re.escape(item.name.lower())}(?!\w)")
+                role = " ".join([section for section in sections if name.search(section.partition("\n")[0])]
+                                + [line for line in lines if name.search(line)])
+                words = set(re.findall(r"[\w.-]{4,}", role))
+                return len(terms & words), item.id in runtime.successful_agents
+
+            successor = max(candidates, key=relevance)
+        else:
+            successor = None
         runtime.last_agent = broken.id
+        instruction = (
+            f"Агент {broken.name} выбыл из строя ({error}). Проанализируй текущее состояние "
+            "файлов в репозитории, доделай его незаконченную часть задачи по PLAN.md и затем выполни свою часть. "
+            f"Незавершённая задача: {task}"
+        )
         if successor is None:
+            runtime.handoff = (broken.id, f"{instruction}\n{diagnostic}\n{handoff}\n{partial_diff}")
             runtime.ready.clear()
             await self.status(project.id, "paused", turn_state=runtime.snapshot())
-            await self.notify(project.id, f"{broken.name}: {error}\nНет доступного агента для передачи задачи.", critical=True)
+            report = f"{broken.name}: {error}\n{diagnostic}\nНет доступного агента для передачи задачи."
+            await self.message(project.id, broken.name, "@All", "team_chat", report, broken)
+            await self.notify(project.id, report, event_type="step_log", config=broken, critical=True,
+                              in_team_chat=True)
             return
-        instruction = (
-            f"Агент {broken.name} сломался на задаче: {task} "
-            "Сначала проанализируй и доделай его незаконченную часть, затем приступай к своей"
-        )
         report = (
-            f"От: {broken.name}\nКому: @{successor.name}\nОшибка: {error}\n"
-            f"Инструкции: {instruction}\nИсходный контекст передачи:\n{handoff}"
+            f"Передача эстафеты @{successor.name}\n{instruction}\n{diagnostic}"
         )
-        await self.message(project.id, broken.name, f"@{successor.name}", "team_chat", report, broken)
-        runtime.handoff = (successor.id, report)
+        context = f"{report}\n\nИсходный контекст передачи:\n{handoff}"
+        if partial_diff:
+            context += f"\n\nGit diff на момент сбоя:\n{partial_diff}"
+        runtime.handoff = (successor.id, context)
         if project.failover_mode == "manual":
             runtime.pending_failover = f"{broken.name}: {error}\nПередать задачу @{successor.name}?"
             await self.pause_for_approval(project, runtime, runtime.pending_failover, "failover", broken)
         else:
             await self.save_turn(project.id, runtime)
+        await self.message(project.id, broken.name, f"@{successor.name}", "team_chat", report, broken)
+        await self.notify(project.id, report, event_type="step_log", config=broken, critical=True,
+                          in_team_chat=True)
 
     async def stop(self, project_id):
         runtime = self.runtimes.pop(project_id, None)

@@ -1,4 +1,27 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+
+
+PROJECT_ROWS = (
+    ("Общий чат ИИ", "Личный чат с ИИ"),
+    ("Агенты проекта", "План и Консилиум"),
+    ("▶️ Старт / Пауза", "⚙️ Настройки проекта"),
+    ("Статистика", "Все проекты"),
+)
+PROJECT_BUTTONS = {label for row in PROJECT_ROWS for label in row}
+
+
+def project_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=label) for label in row] for row in PROJECT_ROWS],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def inline_menu(rows) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=label, callback_data=data) for label, data in row] for row in rows
+    ])
 
 
 def main_menu(account_exists: bool) -> InlineKeyboardMarkup:
@@ -8,6 +31,7 @@ def main_menu(account_exists: bool) -> InlineKeyboardMarkup:
     else:
         rows = [[InlineKeyboardButton(text="➕ Новый проект", callback_data="new_project")],
                 [InlineKeyboardButton(text="Мои проекты", callback_data="projects")],
+                [InlineKeyboardButton(text="Хаб нейросетей", callback_data="hub")],
                 [InlineKeyboardButton(text="Мой профиль / Код привязки", callback_data="profile")]]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -61,7 +85,8 @@ def project_keyboard(project) -> InlineKeyboardMarkup:
         rows.extend([
             [InlineKeyboardButton(text="Добавить CLI-агента", callback_data=f"agent_add:{project_id}:cli"),
              InlineKeyboardButton(text="Добавить API-агента", callback_data=f"agent_add:{project_id}:api")],
-            [InlineKeyboardButton(text="Чат с агентом", callback_data=f"agent_list:{project_id}")],
+            [InlineKeyboardButton(text="Чат с агентом", callback_data=f"agent_list:{project_id}"),
+             InlineKeyboardButton(text="Общий чат", callback_data=f"team_chat:{project_id}")],
         ])
         actions = {
             "planning": [("Запустить стартовый консилиум", "council")],

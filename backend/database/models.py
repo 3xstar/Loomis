@@ -37,6 +37,7 @@ class UserModelPreset(Base):
     config_json: Mapped[dict] = mapped_column(JSON)
     supports_vision: Mapped[bool] = mapped_column(Boolean, default=False)
     supports_audio: Mapped[bool] = mapped_column(Boolean, default=False)
+    total_tokens_used: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -128,6 +129,8 @@ class AgentConfig(Base):
     provider: Mapped[str] = mapped_column(String(100))
     model: Mapped[str] = mapped_column(String(255))
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    preset_id: Mapped[int | None] = mapped_column(ForeignKey("user_model_presets.id", ondelete="SET NULL"))
+    total_tokens_used: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 

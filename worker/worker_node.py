@@ -16,6 +16,20 @@ from worker.adapters.base import AgentResult
 from worker.git_bridge import GitBridge
 
 
+async def save_worker_changes(bridge):
+    async def publish():
+        if await bridge.git("status", "--porcelain"):
+            await bridge.commit()
+            await bridge.push()
+
+    pending = asyncio.create_task(publish())
+    try:
+        await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        await pending
+        raise
+
+
 async def serve(url, name, config):
     async with connect(url, additional_headers={
         "Authorization": f"Bearer {os.environ['LOOMIS_WORKER_TOKEN']}"
@@ -28,6 +42,7 @@ async def serve(url, name, config):
 
         async def execute(request):
             nonlocal pending_approval
+            agent = None
 
             async def approve(command):
                 nonlocal pending_approval
@@ -56,11 +71,8 @@ async def serve(url, name, config):
                         await bridge.pull()
                         try:
                             result = await agent.execute_task(request["prompt"], workspace, request["timeout"])
-                            if result.status == "success":
-                                await bridge.commit()
-                                await bridge.push()
                         finally:
-                            await bridge.restore("HEAD")
+                            await save_worker_changes(bridge)
                     elif operation == "meeting":
                         result = await agent.participate_in_meeting(request["context"])
                     elif operation in {"question", "test"}:
@@ -68,9 +80,16 @@ async def serve(url, name, config):
                     else:
                         raise ValueError("Unknown worker operation")
             except TimeoutError:
-                result = AgentResult("timeout", "Worker deadline expired")
+                result = AgentResult("timeout", "Worker deadline expired", getattr(agent, "tokens_used", 0))
+            except asyncio.CancelledError:
+                await socket.send(json.dumps({
+                    "id": request["id"], **asdict(AgentResult(
+                        "timeout", "Worker execution interrupted", getattr(agent, "tokens_used", 0),
+                    )),
+                }))
+                raise
             except (KeyError, ValueError, OSError, RuntimeError) as exc:
-                result = AgentResult("error", str(exc))
+                result = AgentResult("error", str(exc), getattr(agent, "tokens_used", 0))
             await socket.send(json.dumps({"id": request["id"], **asdict(result)}))
 
         try:

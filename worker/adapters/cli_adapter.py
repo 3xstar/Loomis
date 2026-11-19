@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 
 from worker.sandbox import Approval, authorize_command
 from .base import AgentResult, BaseAgent
+from .media import refuses_media
 
 
 IMAGE_SUFFIXES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
@@ -47,14 +48,17 @@ async def run_shell(command: str, directory: Path, timeout: float, prompt: str =
 
 class CliAgent(BaseAgent):
     def __init__(self, command: str, question_command: str | None = None, approval: Approval | None = None,
-                 *, instruction="", images=()):
+                 *, instruction="", images=(), image_input=False):
         self.command = command
         self.question_command = question_command
         self.approval = approval
         self.instruction = instruction
         self.images = images
+        self.image_input = image_input
 
     async def _run(self, command, prompt, directory, timeout):
+        if self.images and (not self.image_input or any(mime not in IMAGE_SUFFIXES for mime, _ in self.images)):
+            return AgentResult("unsupported_media", "CLI-адаптер не принимает вложение этого типа.")
         try:
             await authorize_command(command, directory, self.approval)
             if self.instruction:
@@ -96,6 +100,8 @@ class CliAgent(BaseAgent):
         else:
             status = "error" if code else "success"
         message = ("\n".join(messages) or out) if status == "success" else err or out or f"CLI exit code {code}"
+        if self.images and status in {"success", "error"} and refuses_media(message):
+            status = "unsupported_media"
         return AgentResult(status, message.strip(), tokens, "\n".join(filter(None, (out, err))))
 
     async def execute_task(self, prompt, work_dir, timeout):

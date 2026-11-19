@@ -8,14 +8,14 @@ from aiogram.types import BotCommand
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import inspect
+from sqlalchemy import func, inspect, select, update
 from sqlalchemy.schema import CreateTable
 
 from backend.api import auth, projects, ws
 from backend.bot.handlers import router as bot_router
 from backend.core.orchestrator import orchestrator
 from backend.database.db import Base, engine
-from backend.database.models import TaskLog
+from backend.database.models import AgentConfig, Project, TaskLog, UserModelPreset
 from backend.settings import settings
 
 
@@ -38,6 +38,7 @@ def initialize_schema(connection) -> None:
             "media_id": "INTEGER REFERENCES project_media(id) ON DELETE SET NULL",
         },
         "task_logs": {"sender_name": "VARCHAR(100)"},
+        "user_model_presets": {"total_tokens_used": "BIGINT NOT NULL DEFAULT 0"},
         "projects": {
             "status": "VARCHAR(50) NOT NULL DEFAULT 'draft'",
             "test_command": "TEXT",
@@ -56,14 +57,35 @@ def initialize_schema(connection) -> None:
             "traffic_state": "VARCHAR(10) NOT NULL DEFAULT 'waiting'",
             "last_error": "TEXT",
             "tested_at": "TIMESTAMP",
+            "preset_id": "INTEGER REFERENCES user_model_presets(id) ON DELETE SET NULL",
+            "total_tokens_used": "BIGINT NOT NULL DEFAULT 0",
         },
     }
     legacy_messages = "agent_id" not in {column["name"] for column in inspector.get_columns("agent_messages")}
+    backfill_presets = "total_tokens_used" not in {
+        column["name"] for column in inspector.get_columns("user_model_presets")
+    }
     for table, fields in upgrades.items():
         columns = {column["name"] for column in inspector.get_columns(table)}
         for field, definition in fields.items():
             if field not in columns:
                 connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {field} {definition}")
+                if table == "agent_configs" and field == "total_tokens_used":
+                    connection.exec_driver_sql("""
+                        UPDATE agent_configs SET total_tokens_used = COALESCE((
+                            SELECT SUM(tokens) FROM task_logs WHERE task_logs.agent_id = agent_configs.id
+                        ), 0)
+                    """)
+
+    if backfill_presets:
+        historical_usage = (select(func.coalesce(func.sum(AgentConfig.total_tokens_used), 0))
+                            .join(Project, AgentConfig.project_id == Project.id)
+                            .where(Project.owner_id == UserModelPreset.owner_id,
+                                   func.lower(AgentConfig.provider) == func.lower(UserModelPreset.adapter_type),
+                                   func.lower(AgentConfig.model) ==
+                                   func.lower(UserModelPreset.config_json["model"].as_string()))
+                            .scalar_subquery())
+        connection.execute(update(UserModelPreset).values(total_tokens_used=historical_usage))
 
     connection.exec_driver_sql(
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_login_name ON users (login_name)"

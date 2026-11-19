@@ -1186,8 +1186,6 @@ function openAgentModal(target, manual = false, preselected = []) {
   byId("agent-base-url").value = settings.base_url || settings.baseUrl || "";
   byId("agent-api-key").placeholder = settings.has_api_key ? "Ключ сохранён · введите новый для замены" : "";
   byId("agent-command").value = settings.command || "";
-  byId("agent-vision").checked = Boolean(settings.supports_vision);
-  byId("agent-audio").checked = Boolean(settings.supports_audio);
   byId("agent-title").textContent = agent ? "Настройки агента" : "Подключить ИИ";
   byId("agent-submit").textContent = agent ? "Сохранить" : "Добавить агента";
   renderAgentFields();
@@ -1260,8 +1258,6 @@ agentForm.onsubmit = async (event) => {
   const isCli = cliProviders.has(provider.toLowerCase());
   const model = byId("agent-model").value.trim() || (isCli ? provider : "");
   const settings = {
-    supports_vision: byId("agent-vision").checked,
-    supports_audio: byId("agent-audio").checked,
   };
   const errors = [];
   if ([...name].length < 2 || [...name].length > 100) errors.push("name");
@@ -1295,7 +1291,6 @@ agentForm.onsubmit = async (event) => {
   };
   const fields = [...agentForm.querySelectorAll("input:enabled")];
   fields.forEach((field) => { field.readOnly = true; });
-  byId("agent-vision").disabled = byId("agent-audio").disabled = true;
   byId("agent-hub-tab").disabled = byId("agent-manual-tab").disabled = true;
   agentProvider.disabled = button.disabled = true;
   status.classList.remove("hidden");
@@ -1309,7 +1304,6 @@ agentForm.onsubmit = async (event) => {
   } finally {
     status.classList.add("hidden");
     fields.forEach((field) => { field.readOnly = false; });
-    byId("agent-vision").disabled = byId("agent-audio").disabled = false;
     byId("agent-hub-tab").disabled = byId("agent-manual-tab").disabled = false;
     agentProvider.disabled = button.disabled = false;
   }
@@ -1484,8 +1478,7 @@ async function renderHubModels(revision = modalRevision) {
     list.replaceChildren(...presets.map((preset) => {
       const row = element("li", "hub-model");
       const copy = element("div");
-      const details = [preset.adapter_type, preset.config_json.model, preset.config_json.base_url,
-        preset.supports_vision && "Изображения", preset.supports_audio && "Аудио"].filter(Boolean);
+      const details = [preset.adapter_type, preset.config_json.model, preset.config_json.base_url].filter(Boolean);
       copy.append(element("strong", "", preset.name), element("small", "", details.join(" · ")));
       const remove = element("button", "icon-button danger");
       remove.type = "button";
@@ -1538,8 +1531,6 @@ hubForm.onsubmit = async (event) => {
       name: data.get("name").trim(),
       adapter_type: type,
       config_json: config,
-      supports_vision: data.has("vision"),
-      supports_audio: data.has("audio"),
     });
     if (revision === modalRevision) {
       hubForm.reset();
