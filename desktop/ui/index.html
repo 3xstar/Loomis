@@ -93,7 +93,7 @@
       </div>
     </aside>
 
-    <main class="main-area">
+    <main id="project-page" class="main-area">
       <header class="topbar glass-panel">
         <div class="project-title">
           <button id="mobile-menu" class="icon-button mobile-only" aria-label="Меню"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
@@ -145,10 +145,14 @@
         <div id="command-approvals" aria-live="polite"></div>
 
         <section id="work-center" class="work-center glass-panel">
+          <div class="work-header">
           <div class="work-switch" role="group" aria-label="Режим рабочего центра">
             <button class="tab active" data-view="team" type="button" aria-pressed="true">Общий чат ИИ</button>
             <button class="tab" data-view="direct" type="button" aria-pressed="false">Личный чат</button>
             <button class="tab" data-view="terminal" type="button" aria-pressed="false">Терминал</button>
+          </div>
+            <button id="popout-button" class="icon-button" type="button" title="Открыть в отдельном окне" aria-label="Открыть в отдельном окне" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 5h6v6m0-6-8 8m1-7H6a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6"/></svg></button>
+            <button id="return-workspace" class="button secondary hidden" type="button">Вернуть в главное окно</button>
           </div>
           <div id="terminal-controls" class="terminal-head hidden">
             <div id="terminal-tabs" class="terminal-tabs" role="group" aria-label="Терминалы агентов"></div>
@@ -189,8 +193,28 @@
             <p class="composer-hint">Enter — отправить · Shift+Enter — новая строка</p>
           </form>
         </section>
+        <div id="workspace-placeholder" class="glass-panel hidden">
+          <button id="focus-workspace" class="button secondary" type="button">Перейти к отдельному окну</button>
+        </div>
       </div>
     </main>
+    <section id="hub-page" class="main-area hidden" aria-labelledby="hub-heading">
+      <header class="hub-toolbar glass-panel">
+        <h2 id="hub-heading">Хаб нейросетей</h2>
+        <button id="hub-back" class="button secondary" type="button">К проектам</button>
+        <input id="hub-search" type="search" aria-label="Поиск по названию или модели" placeholder="Название или модель">
+        <select id="hub-sort" aria-label="Сортировка моделей">
+          <option value="tokens">По потраченным токенам ↓</option>
+          <option value="name">По имени А–Я</option>
+          <option value="date">По дате добавления</option>
+        </select>
+        <button id="hub-add" class="button primary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Добавить модель в Хаб</button>
+      </header>
+      <div class="hub-content">
+        <p id="hub-status" role="status"></p>
+        <ul id="hub-models" class="hub-models"></ul>
+      </div>
+    </section>
   </section>
 
   <div id="context-menu" class="context-menu glass-panel" role="menu" aria-label="Действия" inert>
@@ -233,6 +257,7 @@
         <button id="agent-manual-tab" class="tab" type="button" aria-pressed="false">Добавить новую вручную</button>
       </div>
       <form id="agent-import-form" class="stack hidden">
+        <label class="field"><span>Поиск по Хабу</span><input id="agent-preset-search" type="search" placeholder="Название или модель"></label>
         <div id="agent-presets" class="choice-list" role="group" aria-label="Модели проекта"></div>
         <button id="import-submit" class="button primary wide" type="submit" disabled>Подключить выбранные модели</button>
       </form>
@@ -281,12 +306,16 @@
             <option value="detailed">Подробно</option>
           </select>
         </label>
+        <form id="deadline-form" class="stack">
+          <label class="field"><span>Дедлайн одного запроса агента (в минутах)</span><input id="request-deadline" type="number" list="deadline-options" min="1" max="1440" step="1" required disabled></label>
+          <datalist id="deadline-options"><option value="2"><option value="5"><option value="10"><option value="15"><option value="30"></datalist>
+          <button id="save-deadline" class="button secondary" type="submit" disabled>Сохранить дедлайн</button>
+        </form>
         <label class="switch-row"><span>Рабочие логи в Telegram</span><input id="telegram-logs" type="checkbox" role="switch"><span id="telegram-logs-state" aria-hidden="true"></span></label>
       </div>
     </div>
     <div id="hub-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="hub-modal-title">
-      <div class="modal-head"><h3 id="hub-modal-title">Хаб нейросетей</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
-      <ul id="hub-models" class="hub-models" aria-live="polite"></ul>
+      <div class="modal-head"><h3 id="hub-modal-title">Добавить модель в Хаб</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <form id="hub-form" class="stack">
         <label class="field"><span>Название</span><input name="name" required minlength="2" maxlength="100"></label>
         <div class="field-row">
@@ -319,6 +348,25 @@
   </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
-  <script src="/app.js" defer></script>
+  <div id="popout-root" class="hidden"></div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    if (params.get("popout") === "workspace") {
+      document.body.classList.add("popout-window");
+      document.title = "Loomis — рабочая область";
+      const root = document.getElementById("popout-root");
+      for (const node of [...document.body.children]) {
+        if (![root, document.currentScript].includes(node) && !["ambient-bg", "toasts"].includes(node.id)) node.remove();
+      }
+      root.classList.remove("hidden");
+      if (!window.opener?.loomisMountWorkspace?.(window, params.get("project_id"))) {
+        root.textContent = "Откройте рабочую область из главного окна Loomis.";
+      }
+    } else {
+      const appScript = document.createElement("script");
+      appScript.src = "/app.js";
+      document.body.append(appScript);
+    }
+  </script>
 </body>
 </html>

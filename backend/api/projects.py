@@ -593,6 +593,12 @@ class PresetCreate(BaseModel):
         return validate_agent_settings(self.adapter_type, config, self.config_json.model)
 
 
+class PresetPatch(BaseModel):
+    name: AgentName | None = None
+    adapter_type: ProviderName | None = None
+    config_json: dict | None = None
+
+
 class PresetView(PresetCreate):
     model_config = ConfigDict(from_attributes=True)
 
@@ -603,7 +609,10 @@ class PresetView(PresetCreate):
 
     @field_serializer("config_json")
     def public_config(self, config: PresetConfig):
-        return config.model_dump(exclude={"api_key"}, exclude_none=True)
+        return {
+            **config.model_dump(exclude={"api_key"}, exclude_none=True),
+            "has_api_key": bool(clean_api_key(config.api_key)),
+        }
 
 
 @hub_router.get("/models", response_model=list[PresetView])
@@ -618,6 +627,29 @@ async def create_preset(data: PresetCreate, session: Session, user: CurrentUser)
     data.agent_settings()
     preset = UserModelPreset(owner_id=user.id, **data.model_dump())
     session.add(preset)
+    await session.commit()
+    return preset
+
+
+@hub_router.patch("/models/{preset_id}", response_model=PresetView)
+async def edit_preset(preset_id: int, data: PresetPatch, session: Session, user: CurrentUser):
+    preset = await session.scalar(select(UserModelPreset).where(
+        UserModelPreset.owner_id == user.id, UserModelPreset.id == preset_id
+    ).with_for_update())
+    if preset is None:
+        raise HTTPException(404, "Пресет не найден.")
+    try:
+        candidate = PresetCreate(
+            name=data.name or preset.name,
+            adapter_type=data.adapter_type or preset.adapter_type,
+            config_json={**preset.config_json, **(data.config_json or {})},
+        )
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_context=False, include_input=False)) from exc
+    candidate.agent_settings()
+    preset.name = candidate.name
+    preset.adapter_type = candidate.adapter_type
+    preset.config_json = candidate.config_json.model_dump()
     await session.commit()
     return preset
 

@@ -1,4 +1,5 @@
-const byId = (id) => document.getElementById(id);
+let workspaceWindow;
+const byId = (id) => document.getElementById(id) || workspaceWindow?.document.getElementById(id);
 const all = (selector) => document.querySelectorAll(selector);
 
 let token = sessionStorage.getItem("loomis-token");
@@ -42,12 +43,13 @@ function notify(message) {
   const toast = document.createElement("div");
   toast.className = "toast glass-panel";
   toast.textContent = message;
-  byId("toasts").append(toast);
+  (workspaceWindow?.document.getElementById("toasts") || byId("toasts")).append(toast);
   setTimeout(() => toast.remove(), 4500);
 }
 
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
+  if (workspaceWindow) workspaceWindow.document.documentElement.dataset.theme = theme;
   localStorage.setItem("loomis-theme", theme);
   all(".theme-switch").forEach((button) => {
     button.innerHTML = icon(theme === "dark"
@@ -363,7 +365,7 @@ function choiceChip(label, checked, onChange) {
 function renderTeamTargets() {
   const enabled = agentsInProject.filter((agent) => agent.enabled);
   const list = byId("team-targets");
-  const focused = document.activeElement.closest(".choice-chip");
+  const focused = list.ownerDocument.activeElement?.closest(".choice-chip");
   const pick = (id, label, checked, change) => {
     const chip = choiceChip(label, checked, () => {
       change();
@@ -410,7 +412,7 @@ function selectView(next) {
     setAttachment();
   }
   view = next;
-  all("[data-view]").forEach((button) => {
+  workCenter.querySelectorAll("[data-view]").forEach((button) => {
     const active = button.dataset.view === view;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
@@ -423,8 +425,75 @@ function selectView(next) {
   syncComposer();
   refreshStream(true);
 }
-all("[data-view]").forEach((button) => button.onclick = () => selectView(button.dataset.view));
+const workCenter = byId("work-center");
+workCenter.querySelectorAll("[data-view]").forEach((button) => button.onclick = () => selectView(button.dataset.view));
 selectView(view);
+
+const workspacePlaceholder = byId("workspace-placeholder");
+const popoutButton = byId("popout-button");
+const returnWorkspace = byId("return-workspace");
+let pendingWindow;
+
+function moveWorkspace(destination, before = null) {
+  const pane = byId(view);
+  const scroll = pane.scrollTop;
+  destination.insertBefore(workCenter, before);
+  pane.scrollTop = scroll;
+}
+
+function dockWorkspace() {
+  const child = workspaceWindow || pendingWindow;
+  if (workspaceWindow) moveWorkspace(workspacePlaceholder.parentNode, workspacePlaceholder);
+  workspaceWindow = pendingWindow = undefined;
+  workspacePlaceholder.classList.add("hidden");
+  popoutButton.classList.remove("hidden");
+  returnWorkspace.classList.add("hidden");
+  child?.close();
+}
+
+window.loomisMountWorkspace = (child, projectId) => {
+  if (child !== pendingWindow || projectId !== String(project?.id)) return false;
+  const root = child.document.getElementById("popout-root");
+  child.document.documentElement.dataset.theme = document.documentElement.dataset.theme;
+  moveWorkspace(root);
+  workspaceWindow = child;
+  pendingWindow = undefined;
+  workspacePlaceholder.classList.remove("hidden");
+  popoutButton.classList.add("hidden");
+  returnWorkspace.classList.remove("hidden");
+  child.document.addEventListener("focusin", dismissAgentMenu);
+  child.addEventListener("pagehide", () => {
+    if (child === workspaceWindow) dockWorkspace();
+  }, {once: true});
+  return true;
+};
+
+popoutButton.onclick = () => {
+  if (!project) return;
+  if (pendingWindow && !pendingWindow.closed) {
+    pendingWindow.focus();
+    return;
+  }
+  const child = window.open("/?popout=workspace&project_id=" + project.id,
+    "LoomisWorkspace", "popup,width=900,height=700");
+  if (!child) {
+    notify("Не удалось открыть отдельное окно рабочей области.");
+    return;
+  }
+  pendingWindow = child;
+  setTimeout(() => {
+    if (pendingWindow !== child) return;
+    dockWorkspace();
+    notify("Не удалось подключить отдельное окно рабочей области.");
+  }, 5000);
+};
+returnWorkspace.onclick = () => {
+  dockWorkspace();
+  window.focus();
+  popoutButton.focus();
+};
+byId("focus-workspace").onclick = () => workspaceWindow?.focus();
+window.addEventListener("pagehide", dockWorkspace);
 
 const resizer = byId("work-resizer"), output = byId("work-output");
 const heightKey = "loomis-output-height";
@@ -650,6 +719,7 @@ function connect(projectId, current) {
 }
 
 async function selectProject(item) {
+  if (item?.id !== project?.id) dockWorkspace();
   const current = ++selection;
   discardRecording();
   setAttachment();
@@ -680,7 +750,8 @@ async function selectProject(item) {
   renderProjectModes();
   setStatus(item?.status || "—");
   all(".project-button").forEach((button) => button.setAttribute("aria-current", button.dataset.id === String(item?.id)));
-  byId("stats-button").disabled = byId("add-agent-button").disabled = !item;
+  popoutButton.disabled = byId("stats-button").disabled = byId("add-agent-button").disabled = !item;
+  renderDeadline();
   if (!item) return;
   connect(item.id, current);
   await loadAgents(item.id, current);
@@ -822,9 +893,10 @@ function renderAgentSelector(agents) {
 agentSelector.onclick = () => {
   if (!agentSelector.disabled) setAgentMenu(agentMenu.hidden);
 };
-document.addEventListener("focusin", (event) => {
+function dismissAgentMenu(event) {
   if (!agentSelector.parentElement.contains(event.target)) setAgentMenu(false);
-});
+}
+document.addEventListener("focusin", dismissAgentMenu);
 
 async function loadProjects(preferredId = project?.id, preserveSelection = false) {
   const session = token;
@@ -840,6 +912,8 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
     };
     button.onclick = () => {
       document.querySelector(".sidebar").classList.remove("open");
+      showHubPage(false);
+      if (project?.id === item.id) return;
       selectProject(item).catch((error) => notify(error.message));
     };
     return button;
@@ -1173,6 +1247,7 @@ function openAgentModal(target, manual = false, preselected = []) {
   const agent = target?.item;
   const settings = agent?.settings || {};
   agentForm.reset();
+  byId("agent-preset-search").value = "";
   agentProvider.querySelector("[data-custom]")?.remove();
   const provider = agent?.provider || "codex";
   if (!Array.from(agentProvider.options).some((option) => option.value === provider)) {
@@ -1318,6 +1393,7 @@ function renderTelegramLogs() {
 }
 byId("settings-button").onclick = () => {
   renderTelegramLogs();
+  renderDeadline();
   showModal("settings-modal");
 };
 byId("telegram-logs").onchange = async ({target}) => {
@@ -1334,6 +1410,31 @@ byId("telegram-logs").onchange = async ({target}) => {
     renderTelegramLogs();
   }
 };
+
+function renderDeadline() {
+  byId("request-deadline").value = project?.deadline_minutes ?? "";
+  byId("request-deadline").disabled = byId("save-deadline").disabled = !project;
+}
+byId("deadline-form").onsubmit = async (event) => {
+  event.preventDefault();
+  if (!project) return;
+  const target = project;
+  const field = byId("request-deadline");
+  field.disabled = byId("save-deadline").disabled = true;
+  try {
+    const result = await api("projects/" + target.id, {deadline_minutes: Number(field.value)}, token, "PATCH");
+    target.deadline_minutes = result.deadline_minutes;
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    if (project === target) renderDeadline();
+  }
+};
+
+function matchesPreset({name, config_json: {model}}, query) {
+  const term = query.trim().toLocaleLowerCase("ru");
+  return [name, model].some((value) => value.toLocaleLowerCase("ru").includes(term));
+}
 
 function selectTab(prefix, manual) {
   for (const [kind, active] of [["hub", !manual], ["manual", manual]]) {
@@ -1377,14 +1478,25 @@ async function loadPresetChoices(id, existingNames = [], preselected = []) {
       const label = [preset.name, preset.config_json.model].join(" · ");
       const chip = choiceChip(label, preselected.includes(preset.id), sync);
       chip.firstChild.value = preset.id;
+      if (importing) {
+        chip.dataset.name = preset.name;
+        chip.dataset.model = preset.config_json.model;
+      }
       return chip;
     }));
+    if (importing) byId("agent-preset-search").oninput();
     if (!available.length) list.textContent = presets.length ? "Все модели уже подключены." : "В хабе пока нет моделей.";
     sync();
   } catch (error) {
     if (revision === modalRevision) list.textContent = error.message;
   }
 }
+byId("agent-preset-search").oninput = ({target} = {target: byId("agent-preset-search")}) => {
+  for (const row of byId("agent-presets").children) {
+    const {name, model} = row.dataset;
+    row.classList.toggle("hidden", !matchesPreset({name, config_json: {model}}, target.value));
+  }
+};
 byId("new-project-button").onclick = () => {
   selectProjectAddTab(false);
   showModal("project-modal");
@@ -1463,54 +1575,125 @@ function renderHubFields() {
   byId("hub-cli-field").classList.toggle("hidden", isApi);
   const fields = hubForm.elements;
   fields.namedItem("base_url").disabled = fields.namedItem("api_key").disabled = !isApi;
-  fields.namedItem("base_url").required = fields.namedItem("api_key").required = isApi;
+  fields.namedItem("base_url").required = isApi;
+  fields.namedItem("api_key").required = isApi && !editingPreset?.config_json.has_api_key;
   fields.namedItem("command").disabled = isApi;
   fields.namedItem("command").required = !isApi && hubProvider.value !== "codex";
 }
 hubProvider.onchange = renderHubFields;
 
-async function renderHubModels(revision = modalRevision) {
-  const list = byId("hub-models");
-  list.textContent = "Загрузка моделей…";
+let editingPreset;
+let hubPresets = [];
+let hubRequest = 0;
+const hubSearch = byId("hub-search");
+const hubSort = byId("hub-sort");
+const hubStatus = byId("hub-status");
+const hubCollator = new Intl.Collator("ru");
+const hubComparators = {
+  tokens: (a, b) => b.total_tokens_used - a.total_tokens_used,
+  name: (a, b) => hubCollator.compare(a.name, b.name),
+  date: (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id,
+};
+
+function openHubForm(preset) {
+  editingPreset = preset;
+  const config = preset?.config_json;
+  hubForm.reset();
+  const type = preset?.adapter_type || "api";
+  hubProvider.querySelector("[data-custom]")?.remove();
+  if (![...hubProvider.options].some((option) => option.value === type)) {
+    const option = new Option(type, type);
+    option.dataset.custom = "";
+    hubProvider.add(option);
+  }
+  hubProvider.value = type;
+  const fields = hubForm.elements;
+  fields.namedItem("name").value = preset?.name || "";
+  fields.namedItem("model").value = config?.model || "";
+  fields.namedItem("base_url").value = config?.base_url || "";
+  fields.namedItem("command").value = config?.command_template || "";
+  fields.namedItem("api_key").placeholder = config?.has_api_key ? "Ключ сохранён" : "";
+  byId("hub-modal-title").textContent = preset ? "Настройки модели" : "Добавить модель в Хаб";
+  renderHubFields();
+  showModal("hub-modal");
+}
+
+function hubModelButton(label, paths, danger = false) {
+  const button = element("button", danger ? "icon-button danger" : "icon-button");
+  button.type = "button";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.innerHTML = icon(paths);
+  return button;
+}
+
+function renderHubModels() {
+  const matches = hubPresets.filter((preset) => matchesPreset(preset, hubSearch.value));
+  matches.sort(hubComparators[hubSort.value]);
+  hubStatus.textContent = matches.length ? "" : hubPresets.length ? "Модели не найдены." : "В Хабе пока нет моделей.";
+  byId("hub-models").replaceChildren(...matches.map((preset) => {
+    const card = element("li", "hub-model glass-panel");
+    const actions = element("div", "hub-model-actions");
+    const edit = hubModelButton("Редактировать " + preset.name, '<path d="m14 6 4 4M5 19l4-1 11-11-4-4L5 14z"/>');
+    const remove = hubModelButton("Удалить " + preset.name,
+      '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7l1-3h4l1 3"/>', true);
+    edit.onclick = () => openHubForm(preset);
+    remove.onclick = async () => {
+      if (!confirm("Удалить модель «" + preset.name + "» из Хаба?")) return;
+      remove.disabled = true;
+      try {
+        await api("hub/models/" + preset.id, undefined, token, "DELETE");
+        await loadHubModels();
+      } catch (error) {
+        notify(error.message);
+      } finally {
+        remove.disabled = false;
+      }
+    };
+    actions.append(edit, remove);
+    const provider = [...hubProvider.options].find((option) => option.value === preset.adapter_type)?.text || preset.adapter_type;
+    const usage = element("div", "hub-usage");
+    usage.append(element("strong", "", statsNumber.format(preset.total_tokens_used)),
+      element("small", "", "Токенов за всё время · все проекты"));
+    card.append(element("h3", "", preset.name),
+      element("small", "", provider + " / " + preset.config_json.model), usage, actions);
+    return card;
+  }));
+}
+
+async function loadHubModels() {
+  const revision = ++hubRequest;
+  const session = token;
+  hubStatus.textContent = "Загрузка моделей…";
   try {
     const presets = await api("hub/models");
-    if (revision !== modalRevision) return;
-    list.replaceChildren(...presets.map((preset) => {
-      const row = element("li", "hub-model");
-      const copy = element("div");
-      const details = [preset.adapter_type, preset.config_json.model, preset.config_json.base_url].filter(Boolean);
-      copy.append(element("strong", "", preset.name), element("small", "", details.join(" · ")));
-      const remove = element("button", "icon-button danger");
-      remove.type = "button";
-      remove.title = "Удалить модель";
-      remove.setAttribute("aria-label", "Удалить модель " + preset.name);
-      remove.innerHTML = icon('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7l1-3h4l1 3"/>');
-      remove.onclick = async () => {
-        remove.disabled = true;
-        try {
-          await api("hub/models/" + preset.id, undefined, token, "DELETE");
-          if (revision === modalRevision) await renderHubModels(revision);
-        } catch (error) {
-          if (revision === modalRevision) notify(error.message);
-          remove.disabled = false;
-        }
-      };
-      row.append(copy, remove);
-      return row;
-    }));
-    if (!presets.length) list.append(element("li", "hint", "Сохранённых моделей пока нет."));
+    if (revision !== hubRequest || session !== token) return;
+    hubPresets = presets;
+    renderHubModels();
   } catch (error) {
-    if (revision === modalRevision) list.textContent = error.message;
+    if (revision === hubRequest && session === token) hubStatus.textContent = error.message;
   }
 }
 
+function showHubPage(open) {
+  byId("project-page").classList.toggle("hidden", open);
+  byId("hub-page").classList.toggle("hidden", !open);
+  if (open) byId("hub-button").setAttribute("aria-current", "page");
+  else byId("hub-button").removeAttribute("aria-current");
+}
+
+hubSearch.oninput = hubSort.onchange = renderHubModels;
 byId("hub-button").onclick = () => {
-  hubForm.reset();
-  hubProvider.value = "api";
-  renderHubFields();
-  showModal("hub-modal");
-  renderHubModels();
+  document.querySelector(".sidebar").classList.remove("open");
+  showHubPage(true);
+  loadHubModels();
+  hubSearch.focus();
 };
+byId("hub-back").onclick = () => {
+  showHubPage(false);
+  byId("hub-button").focus();
+};
+byId("hub-add").onclick = () => openHubForm();
 hubForm.onsubmit = async (event) => {
   event.preventDefault();
   const data = new FormData(hubForm);
@@ -1518,28 +1701,26 @@ hubForm.onsubmit = async (event) => {
   const type = data.get("provider");
   const config = {model: data.get("model").trim()};
   if (cliProviders.has(type)) {
-    const command = data.get("command").trim();
-    if (command) config.command_template = command;
+    config.command_template = data.get("command").trim() || null;
   } else {
     config.base_url = data.get("base_url").trim();
-    config.api_key = data.get("api_key").trim();
+    const key = data.get("api_key").trim();
+    if (key) config.api_key = key;
   }
   const revision = modalRevision;
+  const session = token;
+  const preset = editingPreset;
   button.disabled = true;
   try {
-    await api("hub/models", {
+    await api(preset ? "hub/models/" + preset.id : "hub/models", {
       name: data.get("name").trim(),
       adapter_type: type,
       config_json: config,
-    });
-    if (revision === modalRevision) {
-      hubForm.reset();
-      hubProvider.value = type;
-      renderHubFields();
-      await renderHubModels(revision);
-    }
+    }, session, preset ? "PATCH" : "POST");
+    if (revision === modalRevision) showModal();
+    if (session === token) await loadHubModels();
   } catch (error) {
-    if (revision === modalRevision) notify(error.message);
+    if (session === token) notify(error.message);
   } finally {
     button.disabled = false;
   }
@@ -1590,6 +1771,10 @@ byId("stats-button").onclick = async () => {
 
 byId("logout-button").onclick = () => {
   token = null;
+  hubPresets = [];
+  hubSearch.value = "";
+  renderHubModels();
+  showHubPage(false);
   sessionStorage.removeItem("loomis-token");
   stopMagic();
   selectProject(undefined);

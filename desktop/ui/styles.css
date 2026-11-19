@@ -499,19 +499,41 @@ option { background: var(--base); }
 }
 .switch-row input:checked { background: var(--accent); }
 .switch-row input:checked::before { transform: translateX(16px); background: var(--primary-ink); }
-.hub-models { display: grid; gap: 8px; list-style: none; margin: 0 0 18px; padding: 0; }
-.hub-model {
+.main-area.hidden, #work-center .hidden, #agent-presets .hidden { display: none; }
+.hub-toolbar {
   display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--surface);
-  overflow-wrap: anywhere;
+  padding: 16px;
 }
-.hub-model small { display: block; }
+.hub-toolbar h2 { flex: 1 1 60%; margin: 0; }
+.hub-toolbar input { flex: 1 1 180px; min-width: 0; }
+.hub-toolbar select { width: auto; max-width: 100%; }
+.hub-content { overflow: auto; padding: 4px 4px 14px; }
+#hub-status { color: var(--muted); }
+#hub-status:empty { display: none; }
+.hub-models {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 14px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.hub-model { display: flex; flex-direction: column; gap: 7px; padding: 18px; overflow-wrap: anywhere; }
+.hub-model h3 { margin: 0; }
+.hub-model small { display: block; color: var(--muted); }
+.hub-usage { margin-top: auto; padding-top: 12px; }
+.hub-usage strong { color: var(--accent); font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+.hub-model-actions, .work-header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.hub-model-actions { justify-content: flex-end; }
+#hub-button[aria-current="page"] { color: var(--accent); }
+#workspace-placeholder { padding: 14px; }
+.popout-window #popout-root { display: flex; flex-direction: column; height: 100dvh; padding: 12px; }
+.popout-window #work-center { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: auto; }
+.popout-window #work-output { flex: 1 1 140px; min-height: 120px; }
+.popout-window #work-resizer { display: none; }
 #team-controls { flex-wrap: wrap; justify-content: space-between; align-items: flex-start; }
 #chat-attachment { flex-wrap: wrap; overflow-wrap: anywhere; }
 #chat-record[aria-pressed="true"] { color: var(--danger); border-color: currentColor; }
