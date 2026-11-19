@@ -77,8 +77,8 @@ class CliAgent(BaseAgent):
             status = "timeout"
         else:
             status = "error" if code else "success"
-        message = ("\n".join(messages) or out) if status == "success" else err or out
-        return AgentResult(status, message.strip(), tokens)
+        message = ("\n".join(messages) or out) if status == "success" else err or out or f"CLI exit code {code}"
+        return AgentResult(status, message.strip(), tokens, "\n".join(filter(None, (out, err))))
 
     async def execute_task(self, prompt, work_dir, timeout):
         return await self._run(self.command, prompt, work_dir, timeout)

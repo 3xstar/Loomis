@@ -75,11 +75,16 @@ class ApiAgent(BaseAgent):
                             output = str(exc)
                         messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
                 return AgentResult("error", "Tool round limit reached", tokens)
-        except (TimeoutError, APITimeoutError):
+        except APITimeoutError as exc:
+            return AgentResult("timeout", str(exc), tokens)
+        except TimeoutError:
             return AgentResult("timeout", "Agent deadline expired", tokens)
         except OpenAIError as exc:
             status = "rate_limit" if getattr(exc, "status_code", None) == 429 else "error"
-            return AgentResult(status, type(exc).__name__, tokens)
+            message = str(exc)
+            if key:
+                message = message.replace(key, "[redacted]")
+            return AgentResult(status, message, tokens)
         except (KeyError, ValueError, IndexError) as exc:
             return AgentResult("error", str(exc), tokens)
 

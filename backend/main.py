@@ -31,10 +31,18 @@ def initialize_schema(connection) -> None:
             "test_command": "TEXT",
             "meeting_interval_minutes": "INTEGER NOT NULL DEFAULT 15",
             "deadline_minutes": "INTEGER NOT NULL DEFAULT 10",
+            "autonomy_mode": "VARCHAR(20) NOT NULL DEFAULT 'autonomous'",
+            "failover_mode": "VARCHAR(10) NOT NULL DEFAULT 'auto'",
+            "plan_digest": "VARCHAR(64)",
+            "approved_plan_digest": "VARCHAR(64)",
+            "turn_state": "JSON",
         },
         "agent_configs": {
             "project_id": "INTEGER REFERENCES projects(id) ON DELETE CASCADE",
             "cooldown_until": "TIMESTAMP",
+            "traffic_state": "VARCHAR(10) NOT NULL DEFAULT 'waiting'",
+            "last_error": "TEXT",
+            "tested_at": "TIMESTAMP",
         },
     }
     for table, fields in upgrades.items():
@@ -65,6 +73,9 @@ async def lifespan(app: FastAPI):
             await connection.run_sync(initialize_schema)
             await connection.exec_driver_sql("UPDATE projects SET status='paused' WHERE status='running'")
             await connection.exec_driver_sql("UPDATE projects SET status='planning' WHERE status='council'")
+            await connection.exec_driver_sql(
+                "UPDATE agent_configs SET traffic_state='waiting' WHERE traffic_state='working'"
+            )
         if settings.bot_token:
             bot = Bot(token=settings.bot_token)
             orchestrator.bot = bot

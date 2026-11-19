@@ -9,6 +9,7 @@ class AgentResult:
     status: Literal["success", "timeout", "rate_limit", "error"]
     message: str
     tokens: int = 0
+    terminal: str | None = None
 
 
 class BaseAgent(ABC):

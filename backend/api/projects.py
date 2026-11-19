@@ -17,15 +17,17 @@ from backend.api.auth import CurrentUser, Session
 from backend.api.ws import manager
 from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
-from backend.core.orchestrator import orchestrator
-from backend.database.models import AgentConfig, Project, SpecItem
+from backend.core.orchestrator import orchestrator, probe_agent
+from backend.database.models import AgentConfig, Project, SpecItem, utc_now
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 ProjectName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
-AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=100)]
+AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=100, pattern=r"^[^\r\n]+$")]
 ProviderName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+AutonomyMode = Literal["autonomous", "consultative", "step_by_step"]
+FailoverMode = Literal["auto", "manual"]
 
 
 class ProjectCreate(BaseModel):
@@ -36,6 +38,8 @@ class ProjectCreate(BaseModel):
     test_command: str | None = None
     meeting_interval_minutes: int = Field(default=15, ge=1, le=1440)
     deadline_minutes: int = Field(default=10, ge=1, le=1440)
+    autonomy_mode: AutonomyMode = "autonomous"
+    failover_mode: FailoverMode = "auto"
 
 
 class ProjectPatch(BaseModel):
@@ -46,6 +50,8 @@ class ProjectPatch(BaseModel):
     test_command: str | None = None
     meeting_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
     deadline_minutes: int | None = Field(default=None, ge=1, le=1440)
+    autonomy_mode: AutonomyMode | None = None
+    failover_mode: FailoverMode | None = None
 
 
 class ProjectView(ProjectCreate):
@@ -85,6 +91,8 @@ class AgentView(BaseModel):
     model: str
     settings: dict
     enabled: bool
+    traffic_state: str
+    last_error: str | None
 
     @field_serializer("settings")
     def public_settings(self, settings: dict) -> dict:
@@ -210,18 +218,24 @@ async def add_spec_item(request: Request, project: OwnedProject, session: Sessio
 @router.patch("/{project_id}", response_model=ProjectView)
 async def edit_project(data: ProjectPatch, project: OwnedProject, session: Session):
     updates = data.model_dump(exclude_unset=True)
-    if any(field in updates and updates[field] is None for field in ("deadline_minutes", "meeting_interval_minutes")):
-        raise HTTPException(422, "Интервалы обязательны.")
-    if project.status in {"running", "council"} and "workspace_path" in updates:
-        raise HTTPException(409, "Сначала приостановите проект.")
-    if "name" in updates and updates["name"] is None:
-        raise HTTPException(422, "Имя проекта обязательно.")
-    if "workspace_path" in updates and updates["workspace_path"] is None:
-        updates["workspace_path"] = default_workspace(project)
-    for field, value in updates.items():
-        setattr(project, field, value)
-    await session.commit()
-    await session.refresh(project)
+    required = {"name", "deadline_minutes", "meeting_interval_minutes", "autonomy_mode", "failover_mode"}
+    if any(field in required and value is None for field, value in updates.items()):
+        raise HTTPException(422, "Обязательные настройки проекта не могут быть пустыми.")
+    async with orchestrator.runtime(project.id).boundary:
+        await session.refresh(project)
+        if project.status in {"running", "council"} and "workspace_path" in updates:
+            raise HTTPException(409, "Сначала приостановите проект.")
+        if "workspace_path" in updates and updates["workspace_path"] is None:
+            updates["workspace_path"] = default_workspace(project)
+        workspace_changed = "workspace_path" in updates and project.workspace_path != updates["workspace_path"]
+        for field, value in updates.items():
+            setattr(project, field, value)
+        if workspace_changed:
+            orchestrator.invalidate_plan(project)
+        await session.commit()
+        await session.refresh(project)
+        if workspace_changed:
+            await orchestrator.plan_invalidated(project)
     return project
 
 
@@ -305,12 +319,73 @@ def validate_agent_settings(provider: str, settings: dict, model: str) -> dict:
     return config
 
 
+async def test_config(project_id, agent):
+    try:
+        await probe_agent(project_id, agent)
+    except TimeoutError as exc:
+        raise HTTPException(400, "Таймаут проверки агента (15 секунд).") from exc
+    except Exception as exc:
+        raise HTTPException(400, str(exc) or type(exc).__name__) from exc
+
+
+class ExistingAgentTest(BaseModel):
+    agent_id: int
+
+
+class AgentCandidateTest(AgentCreate):
+    name: AgentName = "Проверка"
+
+
+@router.post("/{project_id}/agents/test")
+async def test_agent(data: AgentCandidateTest | ExistingAgentTest, project: OwnedProject, session: Session):
+    if isinstance(data, AgentCandidateTest):
+        agent = AgentConfig(project_id=project.id, **data.model_dump())
+        agent.settings = validate_agent_settings(agent.provider, agent.settings, agent.model)
+        await test_config(project.id, agent)
+        return {"status": "success"}
+    async with orchestrator.runtime(project.id).boundary:
+        await require_agent_changes(project, session)
+        agent = await owned_agent(data.agent_id, project, session)
+        try:
+            await test_config(project.id, agent)
+        except HTTPException as exc:
+            if agent.traffic_state != "asking":
+                await orchestrator.traffic(agent, "error", exc.detail)
+            raise
+        if agent.traffic_state != "asking":
+            agent.traffic_state = "waiting"
+        agent.tested_at = utc_now()
+        agent.cooldown_until = None
+        await session.commit()
+        await orchestrator.publish_traffic(agent)
+    return {"status": "success"}
+
+
+async def require_agent_changes(project, session):
+    await session.refresh(project)
+    if project.status == "council":
+        raise HTTPException(409, "Дождитесь завершения консилиума.")
+
+
 @router.post("/{project_id}/agents", response_model=AgentView, status_code=201)
 async def add_agent(data: AgentCreate, project: OwnedProject, session: Session):
     agent = AgentConfig(project_id=project.id, **data.model_dump())
     agent.settings = validate_agent_settings(agent.provider, agent.settings, agent.model)
-    session.add(agent)
-    await save_agent(session)
+    return await persist_new_agent(agent, project, session)
+
+
+async def persist_new_agent(agent, project, session):
+    async with orchestrator.runtime(project.id).boundary:
+        await require_agent_changes(project, session)
+        await test_config(project.id, agent)
+        agent.tested_at = utc_now()
+        session.add(agent)
+        if agent.enabled:
+            orchestrator.invalidate_plan(project)
+        await save_agent(session)
+        if agent.enabled:
+            await orchestrator.plan_invalidated(project)
+        await orchestrator.publish_traffic(agent)
     return agent
 
 
@@ -320,7 +395,15 @@ async def get_agent(agent: OwnedAgent):
 
 
 @router.patch("/{project_id}/agents/{agent_id}", response_model=AgentView)
-async def edit_agent(data: AgentPatch, agent: OwnedAgent, session: Session):
+async def edit_agent(data: AgentPatch, project: OwnedProject, agent: OwnedAgent, session: Session):
+    async with orchestrator.runtime(project.id).boundary:
+        await require_agent_changes(project, session)
+        agent = await owned_agent(agent.id, project, session)
+        await session.refresh(agent)
+        return await update_agent(data, project, agent, session)
+
+
+async def update_agent(data, project, agent, session):
     updates = data.model_dump(exclude_unset=True)
     if any(value is None for value in updates.values()):
         raise HTTPException(422, "Поля агента не могут быть пустыми.")
@@ -336,25 +419,53 @@ async def edit_agent(data: AgentPatch, agent: OwnedAgent, session: Session):
         if alias in supplied_settings and field not in supplied_settings:
             settings[field] = settings[alias]
     updates["settings"] = validate_agent_settings(provider, settings, model)
+    candidate = AgentConfig(
+        name=updates.get("name", agent.name), provider=provider, model=model, settings=updates["settings"],
+    )
+    await test_config(project.id, candidate)
+    active_roster_changed = (agent.enabled or updates.get("enabled", False)) and any(
+        getattr(agent, field) != value for field, value in updates.items()
+    )
+    if active_roster_changed:
+        orchestrator.invalidate_plan(project)
     for field, value in updates.items():
         setattr(agent, field, value)
+    agent.tested_at = utc_now()
+    agent.cooldown_until = None
+    if agent.traffic_state != "asking" or active_roster_changed:
+        agent.traffic_state = "waiting"
     await save_agent(session)
+    if active_roster_changed:
+        await orchestrator.plan_invalidated(project)
+    await orchestrator.publish_traffic(agent)
     return agent
 
 
 @router.delete("/{project_id}/agents/{agent_id}", status_code=204)
-async def delete_agent(agent: OwnedAgent, session: Session):
-    await session.delete(agent)
-    await session.commit()
+async def delete_agent(project: OwnedProject, agent: OwnedAgent, session: Session):
+    async with orchestrator.runtime(project.id).boundary:
+        await require_agent_changes(project, session)
+        agent = await owned_agent(agent.id, project, session)
+        await session.refresh(agent)
+        if agent.enabled:
+            orchestrator.invalidate_plan(project)
+        await session.delete(agent)
+        await session.commit()
+        if agent.enabled:
+            await orchestrator.plan_invalidated(project)
 
 
 
 class ProjectAction(BaseModel):
-    action: Literal["build_spec", "council", "approve", "pause", "resume", "rollback"]
+    action: Literal["build_spec", "council", "regenerate_plan", "approve", "pause", "resume", "rollback"]
 
 
 class AgentQuestion(BaseModel):
     question: str = Field(min_length=1, max_length=32000)
+
+
+class CouncilFeedback(BaseModel):
+    feedback: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32000)]
 
 
 class ApprovalDecision(BaseModel):
@@ -387,6 +498,14 @@ async def agent_question(project: OwnedProject, agent: OwnedAgent, data: AgentQu
     try:
         return await orchestrator.question(project.id, agent.id, data.question)
     except (ValueError, OSError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/{project_id}/council/feedback")
+async def council_feedback(project: OwnedProject, data: CouncilFeedback):
+    try:
+        return {"status": await orchestrator.action(project.id, "regenerate_plan", feedback=data.feedback)}
+    except (ValueError, OSError, RuntimeError) as exc:
         raise HTTPException(409, str(exc)) from exc
 
 

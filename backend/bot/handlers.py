@@ -17,7 +17,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.auth import Credentials, create_account, link_telegram, set_password
-from backend.api.projects import AgentCreate, ProjectCreate, create_project, default_workspace, save_agent
+from backend.api.projects import AgentCreate, ProjectCreate, create_project, default_workspace, persist_new_agent
 from backend.api.ws import manager
 from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
@@ -505,9 +505,11 @@ async def save_agent_config(message: Message, state: FSMContext, session: AsyncS
             raise ValueError("Ожидается объект JSON.")
         values["provider"] = data["provider"]
         agent = AgentCreate.model_validate(values)
-        session.add(AgentConfig(project_id=project.id, **agent.model_dump()))
-        await save_agent(session)
-    except (ValueError, HTTPException):
+        await persist_new_agent(AgentConfig(project_id=project.id, **agent.model_dump()), project, session)
+    except HTTPException as exc:
+        await message.answer(str(exc.detail)[:3900])
+        return
+    except ValueError:
         await message.answer("Проверьте JSON, модель и уникальность имени агента.")
         return
     await state.clear()

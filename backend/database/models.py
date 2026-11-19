@@ -64,6 +64,11 @@ class Project(Base):
     test_command: Mapped[str | None] = mapped_column(Text)
     meeting_interval_minutes: Mapped[int] = mapped_column(Integer, default=15, server_default="15")
     deadline_minutes: Mapped[int] = mapped_column(Integer, default=10, server_default="10")
+    autonomy_mode: Mapped[str] = mapped_column(String(20), default="autonomous", server_default="autonomous")
+    failover_mode: Mapped[str] = mapped_column(String(10), default="auto", server_default="auto")
+    plan_digest: Mapped[str | None] = mapped_column(String(64))
+    approved_plan_digest: Mapped[str | None] = mapped_column(String(64))
+    turn_state: Mapped[dict | None] = mapped_column(JSON)
 
     owner: Mapped["User"] = relationship(back_populates="projects")
     spec_items: Mapped[list["SpecItem"]] = relationship(back_populates="project", cascade="all, delete-orphan")
@@ -100,6 +105,21 @@ class AgentConfig(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    traffic_state: Mapped[str] = mapped_column(String(10), default="waiting", server_default="waiting")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    sender_name: Mapped[str] = mapped_column(String(100))
+    target_name: Mapped[str] = mapped_column(String(101))
+    channel: Mapped[str] = mapped_column(String(10))
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class TaskLog(Base):

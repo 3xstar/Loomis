@@ -169,7 +169,7 @@ async def worker_events(socket: WebSocket):
             status = packet["status"]
             if status not in {"success", "rate_limit", "timeout", "error"}:
                 raise ValueError("Unknown worker status")
-            job[2].set_result(AgentResult(status, str(packet["message"]), int(packet["tokens"])))
+            job[2].set_result(AgentResult(status, str(packet["message"]), int(packet["tokens"]), packet.get("terminal")))
     except (WebSocketDisconnect, TimeoutError, KeyError, TypeError, ValueError, AttributeError):
         pass
     finally:

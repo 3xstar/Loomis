@@ -322,14 +322,15 @@ byId("spec-file").onchange = ({target}) => {
   addSpecItem(form);
 };
 
-function showCommandApproval({id, command}, projectId) {
+function showCommandApproval({id, command, kind}, projectId) {
   const panel = document.createElement("section");
   const heading = document.createElement("h3");
   const text = document.createElement("p");
   const buttons = document.createElement("div");
   panel.className = "command-approval glass-panel stack";
   buttons.className = "spec-buttons";
-  heading.textContent = "Подтвердите команду";
+  heading.textContent = ({failover: "Подтвердите передачу задачи", step: "Подтвердите шаг"})[kind]
+    || "Подтвердите команду";
   text.textContent = command;
   for (const [approved, label] of [[true, "Разрешить"], [false, "Отклонить"]]) {
     const button = document.createElement("button");
@@ -364,7 +365,8 @@ function connect(projectId, current) {
       setStatus(event.status);
       if (event.status === "deleted") loadProjects().catch((error) => notify(error.message));
     }
-    if (event.type === "log") terminalLine(event.message);
+    if (event.type === "log" || event.type === "terminal") terminalLine(event.message);
+    if (event.type === "question") notify(event.message);
     if (event.type === "approval") showCommandApproval(event, projectId);
   };
   socket.onclose = () => {

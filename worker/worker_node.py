@@ -37,8 +37,8 @@ async def serve(url, name, config):
                     pending_approval = None
 
             try:
-                agent = build_agent(**agents[request["agent"]], approval=approve)
                 operation = request["operation"]
+                agent = build_agent(**agents[request["agent"]], approval=None if operation == "test" else approve)
                 async with asyncio.timeout(request["timeout"]):
                     if operation == "execute":
                         project_id = request["project_id"]
@@ -57,7 +57,7 @@ async def serve(url, name, config):
                             await bridge.restore("HEAD")
                     elif operation == "meeting":
                         result = await agent.participate_in_meeting(request["context"])
-                    elif operation == "question":
+                    elif operation in {"question", "test"}:
                         result = await agent.ask_question(request["prompt"], request["context"])
                     else:
                         raise ValueError("Unknown worker operation")
