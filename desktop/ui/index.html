@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>Loomis — локальная студия агентов</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient" aria-hidden="true">
+    <span class="orb orb-a"></span>
+    <span class="orb orb-b"></span>
+    <span class="orb orb-c"></span>
+    <span class="grain"></span>
+  </div>
+
+  <section id="auth-screen" class="screen auth-screen">
+    <div class="auth-card glass">
+      <div class="auth-brand">
+        <div class="logo-mark">L</div>
+        <div>
+          <h1>Loomis</h1>
+        </div>
+      </div>
+      <p class="auth-lead">Проекты, ИИ-агенты и консилиумы — в одном приватном окне.</p>
+
+      <div class="glass-tabs" role="tablist">
+        <button class="tab active" data-auth-tab="password" type="button">Пароль</button>
+        <button class="tab" data-auth-tab="magic" type="button">Telegram · Magic Login</button>
+      </div>
+
+      <div id="auth-password" class="auth-pane active">
+        <form id="password-form" class="stack" autocomplete="on">
+          <label class="field">
+            <span>Логин</span>
+            <input id="auth-username" name="username" type="text" autocomplete="username" placeholder="loomis@studio" required>
+          </label>
+          <label class="field">
+            <span>Пароль</span>
+            <input id="auth-password-input" name="password" type="password" autocomplete="current-password" placeholder="••••••••" required>
+          </label>
+          <button id="auth-submit" class="button primary wide" type="submit">Войти в Loomis</button>
+          <button id="auth-mode-toggle" class="link-button" type="button">Нет аккаунта? Зарегистрироваться</button>
+        </form>
+      </div>
+
+      <div id="auth-magic" class="auth-pane">
+        <form id="magic-form" class="stack">
+          <label class="field">
+            <span>Логин Loomis</span>
+            <input id="magic-username" type="text" placeholder="Ваш логин" required>
+          </label>
+          <button id="magic-submit" class="button primary wide" type="submit">
+            <span class="button-icon">✈</span> Запросить вход в Telegram
+          </button>
+          <p class="hint">Бот пришлёт карточку с подтверждением. Пароль не нужен.</p>
+        </form>
+        <div id="magic-status" class="magic-status hidden">
+          <div class="magic-beam"><span></span></div>
+          <strong id="magic-status-title">Ожидаем подтверждение…</strong>
+          <p id="magic-status-copy">Откройте Telegram и нажмите «Подтвердить вход».</p>
+          <div class="magic-meta"><span id="magic-countdown">04:59</span><button id="magic-cancel" class="link-button" type="button">Отменить</button></div>
+        </div>
+      </div>
+
+      <p id="auth-error" class="form-error" role="alert"></p>
+    </div>
+  </section>
+
+  <section id="app-screen" class="screen app-screen hidden">
+    <aside class="sidebar glass">
+      <div class="sidebar-head">
+        <div class="brand-row"><div class="logo-mark small">L</div><div><strong>Loomis</strong><span>agent studio</span></div></div>
+        <button id="sidebar-create" class="icon-button" title="Новый проект">+</button>
+      </div>
+
+      <div class="user-card">
+        <div id="user-avatar" class="avatar">L</div>
+        <div class="user-copy"><strong id="user-name">—</strong><span>Локальная сессия</span></div>
+        <button id="logout-button" class="icon-button subtle" title="Выйти">↪</button>
+      </div>
+
+      <div class="section-label"><span>Проекты</span><button id="new-project-button" class="text-action">+ Создать</button></div>
+      <nav id="project-list" class="project-list" aria-label="Проекты"></nav>
+
+      <div class="sidebar-foot">
+        <div class="telegram-status">
+          <span id="telegram-dot" class="status-dot"></span>
+          <div><strong>Telegram</strong><span id="telegram-label">Проверяем привязку…</span></div>
+        </div>
+        <div class="theme-row">
+          <span>Тема</span>
+          <button id="theme-switch-side" class="theme-switch" type="button" aria-label="Переключить тему"><span class="theme-knob"></span></button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar glass">
+        <div class="project-title">
+          <button id="mobile-menu" class="icon-button mobile-only" aria-label="Меню">☰</button>
+          <div>
+            <p class="eyebrow">Рабочая область</p>
+            <h2 id="current-project-name">Выберите проект</h2>
+          </div>
+          <span id="project-status" class="status-pill">idle</span>
+        </div>
+        <div class="topbar-actions">
+          <div id="connection-chip" class="connection-chip"><span class="status-dot"></span><span>offline</span></div>
+          <button id="theme-switch-top" class="theme-switch" type="button" aria-label="Переключить тему"><span class="theme-knob"></span></button>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <section class="agents-section">
+          <div class="section-head"><div><p class="eyebrow">Команда</p><h3>ИИ-агенты</h3></div><button id="add-agent-button" class="button secondary small">+ Добавить агента</button></div>
+          <div id="agent-grid" class="agent-grid"></div>
+        </section>
+
+        <section class="controls-panel glass">
+          <div class="controls-copy"><h3>Цикл проекта</h3></div>
+          <div class="controls-grid">
+            <button class="control-button" data-action="council"><span class="control-icon">◈</span><span><strong>Запустить консилиум</strong><small>стартовый план</small></span></button>
+            <button class="control-button" data-action="approve"><span class="control-icon">✓</span><span><strong>Утвердить план</strong><small>начать исполнение</small></span></button>
+            <button class="control-button" data-action="pause"><span class="control-icon">Ⅱ</span><span><strong>Пауза / Продолжить</strong><small>toggle runtime</small></span></button>
+            <button class="control-button danger" data-action="rollback"><span class="control-icon">↺</span><span><strong>Откатить Git-шаг</strong><small>безопасная точка</small></span></button>
+          </div>
+        </section>
+
+        <section class="terminal-panel glass">
+          <div class="terminal-head">
+            <div class="terminal-title"><span class="terminal-lights"><i></i><i></i><i></i></span><strong>Live terminal</strong><span id="terminal-channel">/ws</span></div>
+            <div class="terminal-actions"><span id="terminal-count">0 строк</span><button id="clear-terminal" class="text-action">Очистить</button></div>
+          </div>
+          <div id="terminal" class="terminal" role="log" aria-live="polite"></div>
+        </section>
+
+        <form id="message-form" class="composer glass">
+          <div class="composer-top"><label for="agent-select">Сообщение агенту</label><select id="agent-select"></select></div>
+          <div class="composer-row">
+            <textarea id="message-input" rows="1" placeholder="Спросите агента о проекте…" required></textarea>
+            <button id="send-button" class="send-button" type="submit" title="Отправить">↑</button>
+          </div>
+          <p class="composer-hint">Enter — отправить · Shift+Enter — новая строка</p>
+        </form>
+      </div>
+    </main>
+  </section>
+
+  <div id="modal-backdrop" class="modal-backdrop hidden">
+    <div id="project-modal" class="modal glass hidden" role="dialog" aria-modal="true">
+      <div class="modal-head"><div><p class="eyebrow">Новый проект</p><h3>Создать воркспейс</h3></div><button class="icon-button close-modal">✕</button></div>
+      <form id="project-form" class="stack">
+        <label class="field"><span>Название</span><input id="project-name" type="text" placeholder="Например, Loomis Cloud" required maxlength="255"></label>
+        <label class="field"><span>Описание</span><textarea id="project-description" rows="3" placeholder="Коротко о задаче и ожидаемом результате"></textarea></label>
+        <button class="button primary wide" type="submit">Создать проект</button>
+      </form>
+    </div>
+
+    <div id="agent-modal" class="modal glass hidden" role="dialog" aria-modal="true">
+      <div class="modal-head"><div><p class="eyebrow">Новый агент</p><h3>Подключить ИИ</h3></div><button class="icon-button close-modal">✕</button></div>
+      <form id="agent-form" class="stack">
+        <label class="field"><span>Имя</span><input id="agent-name" type="text" placeholder="Codex Core" required maxlength="100"></label>
+        <div class="field-row">
+          <label class="field"><span>Тип</span><select id="agent-provider"><option value="codex">Codex CLI</option><option value="cli">Generic CLI</option><option value="api">OpenAI API</option></select></label>
+          <label class="field"><span>Модель</span><input id="agent-model" type="text" value="codex" required maxlength="255"></label>
+        </div>
+        <p class="hint">Для API-агента модель можно указать вручную, например gpt-4o.</p>
+        <button class="button primary wide" type="submit">Добавить агента</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

@@ -12,6 +12,20 @@ def main_menu(account_exists: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def profile_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔑 Сгенерировать новый пароль", callback_data="profile:new_password")],
+        [InlineKeyboardButton(text="Мои проекты", callback_data="projects")],
+    ])
+
+
+def magic_login_keyboard(request_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить вход в Desktop", callback_data=f"magic_approve:{request_id}")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"magic_reject:{request_id}")],
+    ])
+
+
 def cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")

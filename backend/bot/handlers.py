@@ -13,21 +13,21 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.auth import Credentials, create_account, link_telegram
+from backend.api.auth import Credentials, create_account, link_telegram, set_password
 from backend.api.projects import AgentCreate, ProjectCreate, create_project, default_workspace, save_agent
 from backend.api.ws import manager
 from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
-from backend.core.voice import VoiceTranscriber
 from backend.core.orchestrator import orchestrator
-from backend.database.models import AgentConfig, Project, SpecItem, User
+from backend.core.voice import VoiceTranscriber
+from backend.database.models import AgentConfig, MagicLoginRequest, Project, SpecItem, User, utc_now
 from backend.settings import ROOT
 
 from .keyboards import (agent_chat_keyboard, cancel_keyboard, first_project_keyboard, main_menu,
-                        project_keyboard, projects_keyboard, spec_keyboard)
+                        profile_keyboard, project_keyboard, projects_keyboard, spec_keyboard)
 from .middlewares import AccountMiddleware
 from .states import AccountSetup, ProjectSetup
 
@@ -207,8 +207,59 @@ async def projects_callback(callback: CallbackQuery, session: AsyncSession, acco
 
 @router.callback_query(F.data == "profile")
 async def profile_callback(callback: CallbackQuery, account: User | None):
+    if account is None:
+        await callback.answer("Привяжите Telegram к аккаунту Loomis.", show_alert=True)
+        return
+    if not isinstance(callback.message, Message):
+        await callback.answer("Откройте профиль заново через /start.", show_alert=True)
+        return
     await callback.answer()
-    await callback.message.answer(f"Профиль: {account.username}\nTelegram привязан.")
+    await callback.message.answer(f"Профиль: {account.username}\nTelegram привязан.",
+                                  reply_markup=profile_keyboard())
+
+
+@router.callback_query(F.data == "profile:new_password")
+async def new_password_callback(callback: CallbackQuery, session: AsyncSession, account: User | None):
+    if account is None:
+        await callback.answer("Привяжите Telegram к аккаунту Loomis.", show_alert=True)
+        return
+    if not isinstance(callback.message, Message):
+        await callback.answer("Откройте профиль заново через /start.", show_alert=True)
+        return
+    password = secrets.token_urlsafe(18)
+    await callback.answer()
+    await set_password(session, account, password)
+    await callback.message.answer(
+        f"Новый пароль для {account.username}: {password}\nСохраните его. Старый пароль больше не действует."
+    )
+
+
+@router.callback_query(F.data.startswith("magic_approve:") | F.data.startswith("magic_reject:"))
+async def resolve_magic_login(callback: CallbackQuery, session: AsyncSession, account: User | None):
+    if (account is None or account.telegram_id != callback.from_user.id
+            or not isinstance(callback.message, Message)):
+        await callback.answer("Запрос входа недоступен.", show_alert=True)
+        return
+
+    action, request_id = callback.data.split(":", 1)
+    approved = action == "magic_approve"
+    now = utc_now()
+    resolved_id = await session.scalar(
+        update(MagicLoginRequest)
+        .where(MagicLoginRequest.request_id == request_id, MagicLoginRequest.user_id == account.id,
+               MagicLoginRequest.status == "pending", MagicLoginRequest.expires_at > now)
+        .values(status="approved" if approved else "rejected", resolved_at=now)
+        .returning(MagicLoginRequest.id)
+    )
+    if resolved_id is None:
+        await session.rollback()
+        await callback.answer("Запрос входа истёк или недоступен.", show_alert=True)
+        return
+
+    await session.commit()
+    await callback.answer()
+    text = "✅ Вход в Loomis Desktop подтверждён." if approved else "❌ Вход отклонён."
+    await callback.message.edit_text(text, reply_markup=None)
 
 
 @router.callback_query(F.data.startswith("project:"))

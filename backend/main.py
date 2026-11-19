@@ -1,11 +1,13 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 import uvicorn
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect
 
 from backend.api import auth, projects, ws
@@ -107,6 +109,12 @@ app.include_router(ws.router)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+app.mount("/", StaticFiles(
+    directory=Path(__file__).resolve().parents[1] / "desktop" / "ui",
+    html=True,
+), name="desktop")
 
 
 if __name__ == "__main__":

@@ -14,8 +14,8 @@ class ConnectionManager:
     def __init__(self):
         self.connections: dict[int, set[WebSocket]] = {}
 
-    async def connect(self, project_id: int, socket: WebSocket) -> None:
-        await socket.accept()
+    async def connect(self, project_id: int, socket: WebSocket, subprotocol: str | None = None) -> None:
+        await socket.accept(subprotocol=subprotocol)
         self.connections.setdefault(project_id, set()).add(socket)
 
     def disconnect(self, project_id: int, socket: WebSocket) -> None:
@@ -56,6 +56,11 @@ manager = ConnectionManager()
 @router.websocket("/ws/{project_id:int}")
 async def project_events(socket: WebSocket, project_id: int):
     scheme, _, token = socket.headers.get("authorization", "").partition(" ")
+    protocols = socket.scope.get("subprotocols", [])
+    subprotocol = None
+    if not scheme and len(protocols) == 2 and protocols[0] == "loomis":
+        scheme, token = "bearer", protocols[1]
+        subprotocol = "loomis"
     async with async_session_factory() as session:
         user = await user_for_token(session, token if scheme.lower() == "bearer" else None)
         project = None if user is None else await session.scalar(
@@ -65,7 +70,7 @@ async def project_events(socket: WebSocket, project_id: int):
         await socket.close(code=1008)
         return
 
-    await manager.connect(project_id, socket)
+    await manager.connect(project_id, socket, subprotocol=subprotocol)
     try:
         await socket.send_json({"type": "status", "project_id": project_id, "status": project.status})
         while (await socket.receive())["type"] != "websocket.disconnect":

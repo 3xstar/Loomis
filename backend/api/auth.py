@@ -6,15 +6,17 @@ import time
 from datetime import timedelta
 from typing import Annotated
 
+from aiogram.exceptions import TelegramAPIError
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.bot.keyboards import magic_login_keyboard
 from backend.database.db import get_session
-from backend.database.models import LinkToken, User, utc_now
+from backend.database.models import LinkToken, MagicLoginRequest, User, utc_now
 from backend.settings import settings
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -29,6 +31,10 @@ class Credentials(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+class MagicLoginStart(BaseModel):
+    username: Username
+
+
 class UserView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -41,16 +47,20 @@ def _derive(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 600_000).hex()
 
 
+async def set_password(session: AsyncSession, user: User, password: str) -> None:
+    salt = secrets.token_hex(16)
+    digest = await asyncio.to_thread(_derive, password, salt)
+    user.password_hash = f"{salt}:{digest}"
+    await session.commit()
+
+
 async def create_account(
     session: AsyncSession, username: str, password: str, telegram_id: int | None = None
 ) -> User:
-    salt = secrets.token_hex(16)
-    digest = await asyncio.to_thread(_derive, password, salt)
-    user = User(username=username, login_name=username.casefold(), telegram_id=telegram_id,
-                password_hash=f"{salt}:{digest}")
+    user = User(username=username, login_name=username.casefold(), telegram_id=telegram_id)
     session.add(user)
     try:
-        await session.commit()
+        await set_password(session, user, password)
     except IntegrityError:
         await session.rollback()
         raise HTTPException(409, "Имя пользователя или Telegram уже заняты.") from None
@@ -105,6 +115,69 @@ async def login(data: Credentials, session: Session):
     if user is None or not hmac.compare_digest(digest, expected):
         raise HTTPException(401, "Неверное имя пользователя или пароль.")
     return {"access_token": _access_token(user.id), "token_type": "bearer"}
+
+
+@router.post("/magic-login/request", status_code=202)
+async def request_magic_login(data: MagicLoginStart, session: Session):
+    from backend.core.orchestrator import orchestrator
+
+    user = await session.scalar(
+        select(User).where(User.login_name == data.username.casefold()).with_for_update()
+    )
+    if user is None or user.telegram_id is None:
+        raise HTTPException(404, "Аккаунт с привязанным Telegram не найден.")
+    bot = orchestrator.bot
+    if bot is None:
+        raise HTTPException(503, "Telegram-бот недоступен.")
+
+    request_id = secrets.token_urlsafe(32)
+    chat_id, username = user.telegram_id, user.username or data.username
+    await session.execute(delete(MagicLoginRequest).where(
+        MagicLoginRequest.user_id == user.id, MagicLoginRequest.status == "pending"
+    ))
+    session.add(MagicLoginRequest(request_id=request_id, user_id=user.id,
+                                  expires_at=utc_now() + timedelta(minutes=5)))
+    await session.commit()
+
+    try:
+        await bot.send_message(
+            chat_id,
+            f"🔐 Запрос входа в Loomis Desktop\nАккаунт: {username}\nЕсли это вы, подтвердите вход.",
+            reply_markup=magic_login_keyboard(request_id),
+        )
+    except TelegramAPIError:
+        await session.execute(delete(MagicLoginRequest).where(
+            MagicLoginRequest.request_id == request_id, MagicLoginRequest.status == "pending"
+        ))
+        await session.commit()
+        raise HTTPException(503, "Telegram-бот недоступен.") from None
+    return {"request_id": request_id, "expires_in": 300}
+
+
+@router.get("/magic-login/status/{request_id}")
+async def magic_login_status(request_id: str, session: Session):
+    now = utc_now()
+    result = (await session.execute(
+        select(MagicLoginRequest.status, User.id, User.username, MagicLoginRequest.expires_at <= now)
+        .join(User, User.id == MagicLoginRequest.user_id)
+        .where(MagicLoginRequest.request_id == request_id)
+    )).one_or_none()
+    if result is None:
+        raise HTTPException(404, "Запрос входа не найден.")
+
+    status, user_id, username, expired = result
+    if expired and status != "rejected":
+        status = "rejected"
+        await session.execute(update(MagicLoginRequest).where(
+            MagicLoginRequest.request_id == request_id, MagicLoginRequest.status != "rejected"
+        ).values(status=status, resolved_at=func.coalesce(MagicLoginRequest.resolved_at, now)))
+        await session.commit()
+    return {
+        "status": status,
+        "username": username,
+        "access_token": _access_token(user_id) if status == "approved" else None,
+        "token_type": "bearer" if status == "approved" else None,
+    }
 
 
 @router.get("/me", response_model=UserView)

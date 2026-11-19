@@ -13,3 +13,4 @@ python-docx>=1.1.2
 GitPython
 passlib[bcrypt]
 python-multipart
+pywebview
