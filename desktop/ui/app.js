@@ -9,18 +9,20 @@ let statusRevision = 0;
 let specBusy = false;
 let actionBusy = false;
 
-async function api(path, body, accessToken = token) {
+async function api(path, body, accessToken = token, method = body === undefined ? "GET" : "POST") {
   const headers = {};
   const multipart = body instanceof FormData;
   if (accessToken) headers.Authorization = "Bearer " + accessToken;
   if (body !== undefined && !multipart) headers["Content-Type"] = "application/json";
   const response = await fetch("/api/" + path, {
-    headers, method: body === undefined ? "GET" : "POST", body: multipart ? body : JSON.stringify(body),
+    headers, method, body: multipart ? body : JSON.stringify(body),
   });
+  if (response.status === 204) return;
   const data = await response.json();
   if (!response.ok) {
     const error = new Error(Array.isArray(data.detail) ? data.detail.map((item) => item.msg).join(", ") : data.detail || "Ошибка запроса");
     error.status = response.status;
+    error.detail = data.detail;
     throw error;
   }
   return data;
@@ -158,11 +160,6 @@ byId("magic-form").onsubmit = async (event) => {
     fail(error);
   }
 };
-
-function connection(online) {
-  byId("connection-chip").lastElementChild.textContent = online ? "В сети" : "Отключён";
-  byId("connection-chip").firstElementChild.classList.toggle("online", online);
-}
 
 const log = byId("terminal");
 const terminalCount = byId("terminal-count");
@@ -349,7 +346,6 @@ function connect(projectId, current) {
   if (current !== selection) return;
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   socket = new WebSocket(scheme + "//" + location.host + "/ws/" + projectId, ["loomis", token]);
-  socket.onopen = () => { if (current === selection) connection(true); };
   socket.onmessage = ({data}) => {
     if (current !== selection) return;
     const event = JSON.parse(data);
@@ -363,7 +359,6 @@ function connect(projectId, current) {
   };
   socket.onclose = () => {
     if (current !== selection) return;
-    connection(false);
     setTimeout(() => connect(projectId, current), 3500);
   };
 }
@@ -378,7 +373,6 @@ async function selectProject(item) {
   byId("spec-empty").classList.remove("hidden");
   byId("command-approvals").replaceChildren();
   socket?.close();
-  connection(false);
   clearTerminal();
   byId("agent-grid").replaceChildren();
   byId("agent-select").replaceChildren();
@@ -401,6 +395,12 @@ async function loadAgents(projectId, current) {
     const name = document.createElement("strong");
     const details = document.createElement("small");
     card.className = "agent-card glass-card";
+    card.tabIndex = 0;
+    card.oncontextmenu = (event) => {
+      openContextMenu(event, {
+        kind: "agent", item: agent, path: `projects/${projectId}/agents/${agent.id}`, projectId, current,
+      });
+    };
     name.textContent = agent.name;
     details.textContent = [agent.provider, agent.model, agent.enabled ? "Включён" : "Выключен"].join(" · ");
     card.append(name, details);
@@ -412,7 +412,7 @@ async function loadAgents(projectId, current) {
   byId("send-button").disabled = !options.length;
 }
 
-async function loadProjects(preferredId = project?.id) {
+async function loadProjects(preferredId = project?.id, preserveSelection = false) {
   const session = token;
   const projects = await api("projects");
   if (!token || token !== session) return;
@@ -421,6 +421,9 @@ async function loadProjects(preferredId = project?.id) {
     button.className = "project-button";
     button.dataset.id = item.id;
     button.textContent = item.name;
+    button.oncontextmenu = (event) => {
+      openContextMenu(event, {kind: "project", item, path: "projects/" + item.id});
+    };
     button.onclick = () => {
       document.querySelector(".sidebar").classList.remove("open");
       selectProject(item).catch((error) => notify(error.message));
@@ -428,6 +431,13 @@ async function loadProjects(preferredId = project?.id) {
     return button;
   });
   byId("project-list").replaceChildren(...(buttons.length ? buttons : ["Нет проектов"]));
+  const active = preserveSelection && projects.find((item) => item.id === project?.id);
+  if (active) {
+    project.name = active.name;
+    byId("current-project-name").textContent = active.name;
+    buttons[projects.indexOf(active)].setAttribute("aria-current", "true");
+    return;
+  }
   await selectProject(projects.find((item) => item.id === preferredId) || projects[0]);
 }
 
@@ -499,10 +509,99 @@ byId("message-form").onsubmit = async (event) => {
   }
 };
 
-let modalTrigger;
+const contextMenu = byId("context-menu");
+let contextTarget, contextTrigger, modalTrigger;
+let modalRevision = 0;
+
+function openContextMenu(event, target) {
+  event.preventDefault();
+  contextTrigger = event.currentTarget;
+  contextTarget = target;
+  byId("context-edit").textContent = target.kind === "project" ? "✏️ Переименовать" : "⚙️ Редактировать";
+  const margin = 8;
+  const anchor = contextTrigger.getBoundingClientRect();
+  const x = event.clientX || (event.clientY ? 0 : anchor.left);
+  const y = event.clientY || (event.clientX ? 0 : anchor.bottom);
+  contextMenu.style.left = Math.max(margin, Math.min(x, innerWidth - contextMenu.offsetWidth - margin)) + "px";
+  contextMenu.style.top = Math.max(margin, Math.min(y, innerHeight - contextMenu.offsetHeight - margin)) + "px";
+  contextMenu.inert = false;
+  byId("context-edit").focus({preventScroll: true});
+}
+
+function closeContextMenu(restoreFocus = false) {
+  if (contextMenu.inert) return;
+  contextMenu.inert = true;
+  if (restoreFocus) contextTrigger?.focus({preventScroll: true});
+  contextTarget = contextTrigger = null;
+}
+
+document.addEventListener("click", (event) => {
+  if (!contextMenu.contains(event.target)) closeContextMenu();
+});
+window.addEventListener("resize", () => closeContextMenu());
+contextMenu.addEventListener("keydown", (event) => {
+  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const first = byId("context-edit");
+  const last = byId("context-delete");
+  (event.key === "Home" || (event.key !== "End" && document.activeElement === last) ? first : last).focus();
+});
+
+byId("context-edit").onclick = () => {
+  const target = contextTarget;
+  closeContextMenu(true);
+  if (target.kind === "agent") {
+    openAgentModal(target);
+  } else {
+    byId("rename-name").value = target.item.name;
+    showModal("rename-modal");
+    byId("rename-form").onsubmit = (event) => {
+      event.preventDefault();
+      const name = byId("rename-name").value.trim();
+      if (!name) {
+        notify("Введите название проекта.");
+        return;
+      }
+      mutateFromModal(event.submitter, target, "PATCH", {name});
+    };
+  }
+};
+
+byId("context-delete").onclick = () => {
+  const target = contextTarget;
+  closeContextMenu(true);
+  const kind = target.kind === "project" ? "проект" : "агента";
+  byId("delete-title").textContent = `Удалить ${kind} «${target.item.name}»?`;
+  showModal("delete-modal");
+  byId("confirm-delete").onclick = ({currentTarget}) => mutateFromModal(currentTarget, target, "DELETE");
+};
+
+async function mutateFromModal(button, target, method, body, onError = (error) => notify(error.message)) {
+  const revision = modalRevision;
+  const session = token;
+  button.disabled = true;
+  try {
+    await api(target.path, body, session, method);
+    if (revision === modalRevision) showModal();
+    if (session !== token) return;
+    try {
+      if (target.kind === "project") await loadProjects(project?.id, true);
+      else if (target.current === selection) await loadAgents(target.projectId, target.current);
+    } catch (error) {
+      notify(error.message);
+    }
+  } catch (error) {
+    if (revision === modalRevision) onError(error);
+    else notify(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function showModal(id) {
   const backdrop = byId("modal-backdrop");
   if (!id && backdrop.inert) return;
+  modalRevision++;
   if (id && backdrop.inert) modalTrigger = document.activeElement;
   backdrop.inert = !id;
   backdrop.classList.toggle("hidden", !id);
@@ -518,18 +617,64 @@ function showModal(id) {
     modalTrigger = null;
   }
 }
-byId("new-project-button").onclick = byId("sidebar-create").onclick = () => showModal("project-modal");
-byId("add-agent-button").onclick = () => showModal("agent-modal");
+byId("new-project-button").onclick = () => showModal("project-modal");
+byId("add-agent-button").onclick = () => openAgentModal();
+const cliProviders = new Set(["codex", "claude", "opencode", "qwen", "cli"]);
+const agentForm = byId("agent-form");
+const agentProvider = byId("agent-provider");
+let agentTarget;
+
+function openAgentModal(target) {
+  if (!project) return;
+  agentTarget = target || {kind: "agent", path: "projects/" + project.id + "/agents", projectId: project.id, current: selection};
+  const agent = target?.item;
+  const settings = agent?.settings || {};
+  agentForm.reset();
+  agentProvider.querySelector("[data-custom]")?.remove();
+  const provider = agent?.provider || "codex";
+  if (!Array.from(agentProvider.options).some((option) => option.value === provider)) {
+    const option = new Option(provider, provider);
+    option.dataset.custom = "";
+    agentProvider.add(option);
+  }
+  agentProvider.value = provider;
+  byId("agent-name").value = agent?.name || "";
+  byId("agent-model").value = agent?.model || "";
+  byId("agent-base-url").value = settings.base_url || settings.baseUrl || "";
+  byId("agent-api-key").placeholder = settings.has_api_key ? "Ключ сохранён · введите новый для замены" : "";
+  byId("agent-command").value = settings.command || "";
+  byId("agent-title").textContent = agent ? "Настройки агента" : "Подключить ИИ";
+  byId("agent-submit").textContent = agent ? "Сохранить" : "Добавить агента";
+  renderAgentFields();
+  showModal("agent-modal");
+}
+
+function clearAgentErrors() {
+  agentForm.querySelectorAll("[aria-invalid]").forEach((field) => field.removeAttribute("aria-invalid"));
+  byId("agent-error").textContent = "";
+}
+
 function renderAgentFields() {
-  const isApi = byId("agent-provider").value === "api";
+  const isApi = !cliProviders.has(agentProvider.value.toLowerCase());
   byId("agent-api-fields").inert = !isApi;
   byId("agent-base-url").disabled = byId("agent-api-key").disabled = !isApi;
-  byId("agent-base-url").required = isApi;
+  byId("agent-cli-fields").classList.toggle("hidden", isApi);
+  byId("agent-command").disabled = isApi;
+  byId("agent-model").placeholder = isApi ? "" : agentProvider.value;
+  clearAgentErrors();
 }
-byId("agent-provider").onchange = renderAgentFields;
+agentProvider.onchange = renderAgentFields;
+agentForm.addEventListener("input", ({target}) => {
+  target.removeAttribute("aria-invalid");
+  if (!agentForm.querySelector("[aria-invalid]")) byId("agent-error").textContent = "";
+});
 all(".close-modal").forEach((button) => button.onclick = () => showModal());
 byId("modal-backdrop").onclick = (event) => { if (event.target === event.currentTarget) showModal(); };
-document.addEventListener("keydown", (event) => { if (event.key === "Escape") showModal(); });
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (!contextMenu.inert) closeContextMenu(true);
+  else showModal();
+});
 byId("mobile-menu").onclick = () => document.querySelector(".sidebar").classList.toggle("open");
 
 byId("project-form").onsubmit = async (event) => {
@@ -547,32 +692,65 @@ byId("project-form").onsubmit = async (event) => {
     button.disabled = false;
   }
 };
-byId("agent-form").onsubmit = async (event) => {
-  event.preventDefault();
-  if (!project) return;
-  const current = selection;
-  const projectId = project.id;
-  const button = event.submitter;
-  button.disabled = true;
+const agentFields = {
+  name: ["agent-name", "Имя должно содержать от 2 до 100 символов."],
+  model: ["agent-model", "Введите имя модели длиной до 255 символов."],
+  base_url: ["agent-base-url", "Введите корректный Base URL с http:// или https://."],
+  api_key: ["agent-api-key", "Введите API Key."],
+  command: ["agent-command", "Введите команду запуска."],
+};
+
+function showAgentErrors(fields, message) {
+  const inputs = fields.map((field) => byId(agentFields[field][0]));
+  inputs.forEach((input) => input.setAttribute("aria-invalid", "true"));
+  byId("agent-error").textContent = message || fields.map((field) => agentFields[field][1]).join(" ");
+  inputs[0]?.focus();
+}
+
+function validBaseUrl(value) {
+  if (!/^https?:\/\/[^/]/.test(value) || /[\s\\\u0000-\u001f]/.test(value)) return false;
   try {
-    const provider = byId("agent-provider").value;
-    const settings = {};
-    if (provider === "api") {
-      settings.base_url = byId("agent-base-url").value.trim();
-      settings.api_key = byId("agent-api-key").value.trim();
-    }
-    await api("projects/" + projectId + "/agents", {
-      name: byId("agent-name").value, provider, model: byId("agent-model").value, settings,
-    });
-    event.target.reset();
-    renderAgentFields();
-    showModal();
-    await loadAgents(projectId, current);
-  } catch (error) {
-    notify(error.message);
-  } finally {
-    button.disabled = false;
+    const url = new URL(value);
+    return Boolean(url.hostname) && url.port !== "0";
+  } catch {
+    return false;
   }
+}
+
+agentForm.onsubmit = (event) => {
+  event.preventDefault();
+  if (!agentTarget || agentTarget.current !== selection) return;
+  clearAgentErrors();
+  const name = byId("agent-name").value.trim();
+  const provider = agentProvider.value;
+  const isCli = cliProviders.has(provider.toLowerCase());
+  const model = byId("agent-model").value.trim() || (isCli ? provider : "");
+  const settings = {};
+  const errors = [];
+  if ([...name].length < 2 || [...name].length > 100) errors.push("name");
+  if (!model || [...model].length > 255) errors.push("model");
+  if (isCli) {
+    settings.command = byId("agent-command").value.trim();
+    if (!settings.command) errors.push("command");
+  } else {
+    const keyInput = byId("agent-api-key");
+    const entered = keyInput.value.trim();
+    const apiKey = entered.replace(/^(?:Bearer(?:\s+|$))+/i, "").trim();
+    settings.base_url = byId("agent-base-url").value.trim();
+    if (!validBaseUrl(settings.base_url)) errors.push("base_url");
+    if (apiKey) keyInput.value = settings.api_key = apiKey;
+    else if (entered || !agentTarget.item?.settings?.has_api_key) errors.push("api_key");
+  }
+  if (errors.length) {
+    showAgentErrors(errors);
+    return;
+  }
+  mutateFromModal(event.submitter, agentTarget, agentTarget.item ? "PATCH" : "POST", {name, provider, model, settings}, (error) => {
+    const fields = Array.isArray(error.detail)
+      ? [...new Set(error.detail.map((item) => item.loc?.at(-1)).filter((field) => Object.hasOwn(agentFields, field)))]
+      : [];
+    showAgentErrors(fields, error.message);
+  });
 };
 byId("logout-button").onclick = () => {
   token = null;
@@ -591,3 +769,42 @@ if (savedToken) {
     if (error.status !== 401) notify(error.message);
   });
 }
+
+const orbs = [...all("#ambient-bg .orb")];
+const orbDepths = [32, -24, 18];
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+let orbFrame = null;
+let orbX = 0;
+let orbY = 0;
+let targetX = 0;
+let targetY = 0;
+
+function animateOrbs() {
+  orbX += (targetX - orbX) * 0.09;
+  orbY += (targetY - orbY) * 0.09;
+  const moving = Math.abs(targetX - orbX) + Math.abs(targetY - orbY) > 0.001;
+  orbs.forEach((orb, index) => {
+    const depth = orbDepths[index];
+    orb.style.transform = `translate3d(${orbX * depth}px, ${orbY * depth}px, 0)`;
+  });
+  orbFrame = moving ? requestAnimationFrame(animateOrbs) : null;
+}
+
+function moveOrbs(x, y) {
+  if (reducedMotion.matches) return;
+  targetX = x;
+  targetY = y;
+  if (orbFrame === null) orbFrame = requestAnimationFrame(animateOrbs);
+}
+
+window.addEventListener("pointermove", (event) => {
+  moveOrbs(event.clientX / innerWidth - 0.5, event.clientY / innerHeight - 0.5);
+}, {passive: true});
+document.documentElement.addEventListener("pointerleave", () => moveOrbs(0, 0));
+reducedMotion.addEventListener("change", () => {
+  if (!reducedMotion.matches) return;
+  if (orbFrame !== null) cancelAnimationFrame(orbFrame);
+  orbFrame = null;
+  targetX = targetY = orbX = orbY = 0;
+  orbs.forEach((orb) => { orb.style.transform = ""; });
+});

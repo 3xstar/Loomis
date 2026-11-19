@@ -1,7 +1,9 @@
+import re
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,7 +24,8 @@ from worker.adapters import CLI_PROVIDERS
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 ProjectName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
-AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=100)]
+ProviderName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 
 
 class ProjectCreate(BaseModel):
@@ -57,7 +60,7 @@ class ProjectView(ProjectCreate):
 
 class AgentCreate(BaseModel):
     name: AgentName
-    provider: AgentName
+    provider: ProviderName
     model: ProjectName
     settings: dict = Field(default_factory=dict)
     enabled: bool = True
@@ -65,22 +68,29 @@ class AgentCreate(BaseModel):
 
 class AgentPatch(BaseModel):
     name: AgentName | None = None
-    provider: AgentName | None = None
+    provider: ProviderName | None = None
     model: ProjectName | None = None
     settings: dict | None = None
     enabled: bool | None = None
 
 
-class AgentView(AgentCreate):
+class AgentView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     project_id: int
     created_at: datetime
+    name: str
+    provider: str
+    model: str
+    settings: dict
+    enabled: bool
 
     @field_serializer("settings")
     def public_settings(self, settings: dict) -> dict:
-        return {name: value for name, value in settings.items() if name not in {"api_key", "apiKey"}}
+        public = {name: value for name, value in settings.items() if name not in {"api_key", "apiKey"}}
+        public["has_api_key"] = bool(clean_api_key(settings.get("api_key") or settings.get("apiKey")))
+        return public
 
 
 class SpecText(BaseModel):
@@ -250,12 +260,47 @@ async def save_agent(session: AsyncSession) -> None:
         raise HTTPException(409, "Не удалось сохранить агента. Проверьте имя и проект.") from None
 
 
-def normalize_api_settings(settings: dict, model: str) -> dict:
+def setting_text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def clean_api_key(value: object) -> str:
+    return re.sub(r"^(?:Bearer(?:\s+|$))+", "", setting_text(value), flags=re.IGNORECASE).strip()
+
+
+def invalid_agent_field(field: str, message: str) -> None:
+    raise HTTPException(422, [{"loc": ["body", field], "msg": message}])
+
+
+def validate_agent_settings(provider: str, settings: dict, model: str) -> dict:
     config = settings.copy()
-    base_url = config.pop("baseUrl", None)
-    api_key = config.pop("apiKey", None)
-    config["base_url"] = config.get("base_url") or base_url
-    config["api_key"] = config.get("api_key") or api_key
+    config.pop("has_api_key", None)
+    if provider.lower() in CLI_PROVIDERS:
+        command = setting_text(config.get("command"))
+        if not command:
+            invalid_agent_field("command", "Введите команду запуска.")
+        config["command"] = command
+        return config
+
+    base_url = setting_text(config.pop("base_url", config.pop("baseUrl", None)))
+    api_key = clean_api_key(config.pop("api_key", config.pop("apiKey", None)))
+    try:
+        parsed = urlsplit(base_url)
+        port = parsed.port
+        valid_url = (
+            base_url.startswith(("http://", "https://"))
+            and parsed.hostname
+            and (port is None or port > 0)
+            and not any(char.isspace() or ord(char) < 32 or char == "\\" for char in base_url)
+        )
+    except ValueError:
+        valid_url = False
+    if not valid_url:
+        invalid_agent_field("base_url", "Введите корректный Base URL с http:// или https://.")
+    if not api_key:
+        invalid_agent_field("api_key", "Введите API Key.")
+    config["base_url"] = base_url
+    config["api_key"] = api_key
     config["model"] = model
     return config
 
@@ -263,8 +308,7 @@ def normalize_api_settings(settings: dict, model: str) -> dict:
 @router.post("/{project_id}/agents", response_model=AgentView, status_code=201)
 async def add_agent(data: AgentCreate, project: OwnedProject, session: Session):
     agent = AgentConfig(project_id=project.id, **data.model_dump())
-    if agent.provider.lower() not in CLI_PROVIDERS:
-        agent.settings = normalize_api_settings(agent.settings, agent.model)
+    agent.settings = validate_agent_settings(agent.provider, agent.settings, agent.model)
     session.add(agent)
     await save_agent(session)
     return agent
@@ -281,14 +325,17 @@ async def edit_agent(data: AgentPatch, agent: OwnedAgent, session: Session):
     if any(value is None for value in updates.values()):
         raise HTTPException(422, "Поля агента не могут быть пустыми.")
     provider = updates.get("provider", agent.provider)
-    if provider.lower() not in CLI_PROVIDERS:
-        settings = updates.get("settings", agent.settings)
-        settings = normalize_api_settings(settings, updates.get("model", agent.model))
-        if "settings" in updates and not {"api_key", "apiKey"}.intersection(updates["settings"]):
-            settings["api_key"] = agent.settings.get("api_key") or agent.settings.get("apiKey")
-        updates["settings"] = settings
-    elif "settings" in updates and "api_key" in agent.settings:
-        updates["settings"].setdefault("api_key", agent.settings["api_key"])
+    if len(updates.get("name", agent.name).strip()) < 2:
+        invalid_agent_field("name", "Имя агента должно содержать не менее двух символов.")
+    model = updates.get("model", agent.model)
+    if not model.strip():
+        invalid_agent_field("model", "Введите имя модели.")
+    supplied_settings = updates.get("settings", {})
+    settings = {**agent.settings, **supplied_settings}
+    for alias, field in (("baseUrl", "base_url"), ("apiKey", "api_key")):
+        if alias in supplied_settings and field not in supplied_settings:
+            settings[field] = settings[alias]
+    updates["settings"] = validate_agent_settings(provider, settings, model)
     for field, value in updates.items():
         setattr(agent, field, value)
     await save_agent(session)

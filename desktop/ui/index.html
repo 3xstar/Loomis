@@ -72,7 +72,6 @@
     <aside class="sidebar glass-panel">
       <div class="sidebar-head">
         <div class="brand-row"><div class="logo-mark small">L</div><div><strong>Loomis</strong></div></div>
-        <button id="sidebar-create" class="icon-button" title="Новый проект">+</button>
       </div>
 
       <div class="user-card">
@@ -89,10 +88,6 @@
           <span id="telegram-dot" class="status-dot"></span>
           <div><strong>Telegram</strong><span id="telegram-label">Проверяем привязку…</span></div>
         </div>
-        <div class="theme-row">
-          <span>Тема</span>
-          <button id="theme-switch-side" class="theme-switch" type="button" aria-label="Светлая тема"></button>
-        </div>
       </div>
     </aside>
 
@@ -106,7 +101,6 @@
           <span id="project-status" class="status-pill">idle</span>
         </div>
         <div class="topbar-actions">
-          <div id="connection-chip" class="connection-chip"><span class="status-dot"></span><span>offline</span></div>
           <button id="theme-switch-top" class="theme-switch" type="button" aria-label="Светлая тема"></button>
         </div>
       </header>
@@ -164,6 +158,10 @@
     </main>
   </section>
 
+  <div id="context-menu" class="context-menu glass-panel" role="menu" aria-label="Действия" inert>
+    <button id="context-edit" type="button" role="menuitem"></button>
+    <button id="context-delete" class="danger" type="button" role="menuitem">🗑 Удалить</button>
+  </div>
   <div id="modal-backdrop" class="modal-backdrop hidden" inert>
     <div id="project-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true">
       <div class="modal-head"><div><p class="eyebrow">Новый проект</p><h3>Создать воркспейс</h3></div><button class="icon-button close-modal" type="button" aria-label="Закрыть">✕</button></div>
@@ -174,19 +172,35 @@
       </form>
     </div>
 
-    <div id="agent-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true">
-      <div class="modal-head"><div><p class="eyebrow">Новый агент</p><h3>Подключить ИИ</h3></div><button class="icon-button close-modal" type="button" aria-label="Закрыть">✕</button></div>
-      <form id="agent-form" class="stack">
+    <div id="rename-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+      <div class="modal-head"><h3 id="rename-title">Переименовать проект</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть">✕</button></div>
+      <form id="rename-form" class="stack">
+        <label class="field"><span>Новое название</span><input id="rename-name" type="text" maxlength="255" required></label>
+        <button class="button primary wide" type="submit">Сохранить</button>
+      </form>
+    </div>
+    <div id="delete-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+      <div class="modal-head"><h3 id="delete-title"></h3><button class="icon-button close-modal" type="button" aria-label="Закрыть">✕</button></div>
+      <div class="modal-actions">
+        <button class="button secondary close-modal" type="button">Отмена</button>
+        <button id="confirm-delete" class="button danger" type="button">Удалить</button>
+      </div>
+    </div>
+    <div id="agent-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="agent-title">
+      <div class="modal-head"><h3 id="agent-title">Подключить ИИ</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть">✕</button></div>
+      <form id="agent-form" class="stack" novalidate>
         <label class="field"><span>Имя</span><input id="agent-name" type="text" placeholder="Codex Core" required maxlength="100"></label>
         <div class="field-row">
-          <label class="field"><span>Тип</span><select id="agent-provider"><option value="codex">Codex CLI</option><option value="cli">Generic CLI</option><option value="api">OpenAI API</option></select></label>
-          <label class="field"><span>Модель</span><input id="agent-model" type="text" value="codex" required maxlength="255"></label>
+          <label class="field"><span>Тип</span><select id="agent-provider"><option value="codex">Codex CLI</option><option value="claude">Claude CLI</option><option value="opencode">OpenCode CLI</option><option value="qwen">Qwen CLI</option><option value="cli">Generic CLI</option><option value="api">OpenAI API</option></select></label>
+          <label class="field"><span>Модель</span><input id="agent-model" type="text" maxlength="255"></label>
         </div>
         <div id="agent-api-fields" class="stack api-fields" inert>
           <label class="field"><span>Base URL</span><input id="agent-base-url" type="url" placeholder="https://nvidia.com" disabled></label>
-          <label class="field"><span>API Key</span><input id="agent-api-key" type="password" placeholder="nvapi-..." autocomplete="off" disabled></label>
+          <label class="field"><span>API Key</span><input id="agent-api-key" type="password" autocomplete="new-password" disabled></label>
         </div>
-        <button class="button primary wide" type="submit">Добавить агента</button>
+        <label id="agent-cli-fields" class="field"><span>Команда запуска</span><input id="agent-command" type="text" placeholder="codex exec --json --sandbox workspace-write -" required></label>
+        <p id="agent-error" class="form-error" role="alert"></p>
+        <button id="agent-submit" class="button primary wide" type="submit">Добавить агента</button>
       </form>
     </div>
     <div id="rollback-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="rollback-title">

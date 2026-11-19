@@ -16,6 +16,7 @@
   --orb-a: #163884;
   --orb-b: #4130a5;
   --orb-c: #216f9c;
+  --menu-glass: rgba(23, 32, 56, 0.9);
 }
 :root[data-theme="light"] {
   color-scheme: light;
@@ -33,6 +34,7 @@
   --orb-a: #92aef9;
   --orb-b: #b0a2f6;
   --orb-c: #8ad2f4;
+  --menu-glass: rgba(248, 251, 255, 0.92);
 }
 * { box-sizing: border-box; }
 body {
@@ -55,24 +57,34 @@ body {
   position: absolute;
   width: clamp(260px, 52vw, 860px);
   aspect-ratio: 1;
+  will-change: transform;
+}
+.orb::before {
+  content: "";
+  position: absolute;
+  inset: 0;
   /* The gradient bakes in the soft edge without a per-orb blur filter. */
   background: radial-gradient(circle, var(--orb-color), transparent 70%);
-  will-change: transform;
-  animation: drift 25s ease-in-out infinite alternate;
+  animation: drift var(--drift, 25s) var(--delay, 0s) ease-in-out infinite alternate,
+    orb-hue 26s var(--delay, 0s) ease-in-out infinite alternate;
 }
 .orb-a { --orb-color: var(--orb-a); top: -29%; left: -12%; }
-.orb-b { --orb-color: var(--orb-b); top: 26%; right: -21%; animation-duration: 32s; animation-delay: -13s; }
-.orb-c { --orb-color: var(--orb-c); bottom: -53%; left: 22%; animation-duration: 29s; animation-delay: -8s; }
+.orb-b { --orb-color: var(--orb-b); --drift: 32s; --delay: -13s; top: 26%; right: -21%; }
+.orb-c { --orb-color: var(--orb-c); --drift: 29s; --delay: -8s; bottom: -53%; left: 22%; }
 @keyframes drift {
   from { transform: translate3d(-5%, -6%, 0) scale(0.9); }
   to { transform: translate3d(17%, 14%, 0) scale(1.14); }
+}
+@keyframes orb-hue {
+  from { filter: hue-rotate(-22deg); }
+  to { filter: hue-rotate(48deg); }
 }
 .hidden, .auth-pane:not(.active) { display: none; }
 h1, h2, h3, p { margin: 0; }
 h1 { font-size: 36px; letter-spacing: -.06em; }
 h2 { font-size: 24px; letter-spacing: -.035em; }
 h3 { font-size: 17px; }
-small, .hint, .eyebrow, .composer-hint, .terminal-actions, .auth-lead, .user-copy span, .brand-row span, .telegram-status span, .connection-chip { color: var(--muted); }
+small, .hint, .eyebrow, .composer-hint, .terminal-actions, .auth-lead, .user-copy span, .brand-row span, .telegram-status span { color: var(--muted); }
 .glass-panel, .glass-card {
   border: 1px solid var(--line);
   border-radius: 24px;
@@ -94,7 +106,7 @@ button:not(:disabled):active, select:not(:disabled):active { transform: scale(0.
 .auth-screen { display: grid; place-items: center; overflow: auto; padding: 20px; }
 .auth-brand .theme-switch { margin-left: auto; }
 .auth-card, .modal { width: min(100%, 460px); padding: 30px; }
-.auth-brand, .brand-row, .sidebar-head, .user-card, .section-label, .theme-row, .telegram-status,
+.auth-brand, .brand-row, .sidebar-head, .user-card, .section-label, .telegram-status,
 .topbar, .project-title, .topbar-actions, .section-head, .terminal-head, .terminal-title, .terminal-actions,
 .composer-top, .composer-row, .modal-head, .magic-meta { display: flex; align-items: center; gap: 12px; }
 .logo-mark { display: grid; place-items: center; width: 48px; aspect-ratio: 1; border-radius: 16px; background: var(--accent); color: var(--primary-ink); font-size: 23px; font-weight: 750; }
@@ -120,10 +132,17 @@ input, textarea, select { background: var(--surface); border: 1px solid var(--li
 option { background: var(--base); }
 .form-error:not(:empty), .magic-meta { margin-top: 12px; }
 .form-error, .danger { color: var(--danger); }
+#agent-error:empty { display: none; }
+#agent-error { margin: 0; font-size: 13px; }
+.field [aria-invalid="true"] {
+  border-color: var(--danger);
+  outline-color: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 24%, transparent);
+}
 .app-screen { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 16px; padding: 16px; }
 .sidebar, .main-area { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
 .sidebar { padding: 16px; }
-.sidebar-head, .user-card, .section-label, .theme-row, .topbar, .section-head, .terminal-head, .modal-head { justify-content: space-between; }
+.user-card, .section-label, .topbar, .section-head, .terminal-head, .modal-head { justify-content: space-between; }
 .user-card, .sidebar-foot { padding: 10px; background: var(--surface); border-radius: 14px; }
 .user-copy { flex: 1; overflow-wrap: anywhere; }
 .user-copy span, .brand-row span, .telegram-status div span { display: block; font-size: 12px; }
@@ -131,7 +150,6 @@ option { background: var(--base); }
 .project-list { display: grid; align-content: start; gap: 6px; overflow: auto; }
 .project-button { text-align: left; overflow-wrap: anywhere; }
 .sidebar-foot { margin-top: auto; }
-.theme-row { margin-top: 8px; }
 .theme-switch { font-size: 12px; padding: 4px 9px; }
 .status-dot { display: inline-block; width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: var(--muted); }
 .status-dot.online { background: #3cb581; }
@@ -168,6 +186,39 @@ option { background: var(--base); }
 .composer-row textarea { flex: 1; resize: vertical; }
 .composer-hint { margin-top: 5px; font-size: 12px; }
 .send-button { font-size: 20px; }
+.context-menu {
+  position: fixed;
+  z-index: 5;
+  display: grid;
+  gap: 3px;
+  min-width: min(170px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow: auto;
+  padding: 5px;
+  border-radius: 15px;
+  background: var(--menu-glass);
+  transform-origin: top left;
+  transition: opacity var(--motion) ease, transform var(--motion) var(--spring),
+    visibility var(--motion), background-color var(--motion) ease;
+}
+.context-menu[inert] {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translate3d(0, -5px, 0) scale(.95);
+}
+.context-menu button {
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  padding: 7px 10px;
+  text-align: left;
+}
+.context-menu button:hover, .context-menu button:focus-visible {
+  background: var(--surface);
+  outline-offset: -2px;
+}
 .modal-backdrop { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; background: #0007; z-index: 3; }
 .modal { max-height: calc(100dvh - 32px); overflow: auto; }
 .modal-head { margin-bottom: 18px; }
@@ -228,5 +279,6 @@ option { background: var(--base); }
 
 @media (prefers-reduced-motion: reduce) {
   :root { --motion: 0ms; }
-  .orb { animation: none; will-change: auto; }
+  .orb { will-change: auto; }
+  .orb::before { animation: none; }
 }
