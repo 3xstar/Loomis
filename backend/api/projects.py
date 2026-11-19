@@ -329,18 +329,25 @@ async def test_config(project_id, agent):
 
 
 class ExistingAgentTest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     agent_id: int
 
 
 class AgentCandidateTest(AgentCreate):
     name: AgentName = "Проверка"
+    agent_id: int | None = None
 
 
 @router.post("/{project_id}/agents/test")
 async def test_agent(data: AgentCandidateTest | ExistingAgentTest, project: OwnedProject, session: Session):
     if isinstance(data, AgentCandidateTest):
-        agent = AgentConfig(project_id=project.id, **data.model_dump())
-        agent.settings = validate_agent_settings(agent.provider, agent.settings, agent.model)
+        agent = AgentConfig(project_id=project.id, **data.model_dump(exclude={"agent_id"}))
+        existing_settings = {}
+        if data.agent_id is not None:
+            existing = await owned_agent(data.agent_id, project, session)
+            existing_settings = existing.settings
+        agent.settings = merged_agent_settings(agent.provider, agent.model, existing_settings, agent.settings)
         await test_config(project.id, agent)
         return {"status": "success"}
     async with orchestrator.runtime(project.id).boundary:
@@ -413,12 +420,7 @@ async def update_agent(data, project, agent, session):
     model = updates.get("model", agent.model)
     if not model.strip():
         invalid_agent_field("model", "Введите имя модели.")
-    supplied_settings = updates.get("settings", {})
-    settings = {**agent.settings, **supplied_settings}
-    for alias, field in (("baseUrl", "base_url"), ("apiKey", "api_key")):
-        if alias in supplied_settings and field not in supplied_settings:
-            settings[field] = settings[alias]
-    updates["settings"] = validate_agent_settings(provider, settings, model)
+    updates["settings"] = merged_agent_settings(provider, model, agent.settings, updates.get("settings", {}))
     candidate = AgentConfig(
         name=updates.get("name", agent.name), provider=provider, model=model, settings=updates["settings"],
     )
@@ -439,6 +441,14 @@ async def update_agent(data, project, agent, session):
         await orchestrator.plan_invalidated(project)
     await orchestrator.publish_traffic(agent)
     return agent
+
+
+def merged_agent_settings(provider, model, existing, supplied):
+    settings = {**existing, **supplied}
+    for alias, field in (("baseUrl", "base_url"), ("apiKey", "api_key")):
+        if alias in supplied and field not in supplied:
+            settings[field] = supplied[alias]
+    return validate_agent_settings(provider, settings, model)
 
 
 @router.delete("/{project_id}/agents/{agent_id}", status_code=204)

@@ -101,6 +101,16 @@
           <span id="project-status" class="status-pill">idle</span>
         </div>
         <div class="topbar-actions">
+          <select id="autonomy-mode" aria-label="Режим работы агентов" disabled>
+            <option value="autonomous">Автономный</option>
+            <option value="consultative">С вопросами</option>
+            <option value="step_by_step">Пошаговый</option>
+          </select>
+          <select id="failover-mode" aria-label="Передача задачи при поломке" disabled>
+            <option value="auto">Авто-передача</option>
+            <option value="manual">С подтверждением</option>
+          </select>
+          <button class="button secondary" type="button" data-action="regenerate_plan" disabled>Пересобрать план</button>
           <button id="theme-switch-top" class="theme-switch" type="button" aria-label="Светлая тема"></button>
         </div>
       </header>
@@ -138,31 +148,40 @@
 
         <div id="command-approvals" aria-live="polite"></div>
 
-        <section class="terminal-panel glass-panel">
-          <div class="terminal-head">
-            <div class="terminal-title"><span class="terminal-lights"><i></i><i></i><i></i></span><strong>Live terminal</strong><span id="terminal-channel">/ws</span></div>
-            <div class="terminal-actions"><span id="terminal-count">0 строк</span><button id="clear-terminal" class="text-action">Очистить</button></div>
+        <section id="work-center" class="work-center glass-panel">
+          <div class="work-switch" role="group" aria-label="Режим рабочего центра">
+            <button class="tab active" data-view="team" type="button" aria-pressed="true">Общий чат ИИ</button>
+            <button class="tab" data-view="direct" type="button" aria-pressed="false">Личный чат</button>
+            <button class="tab" data-view="terminal" type="button" aria-pressed="false">Терминал</button>
           </div>
-          <div id="terminal" class="terminal" role="log" aria-live="polite"></div>
-        </section>
-
-        <form id="message-form" class="composer glass-panel">
-          <div class="composer-top">
-            <label for="message-input">Сообщение агенту</label>
-            <div class="agent-picker">
-              <button id="agent-selector" class="agent-selector" type="button" aria-controls="agent-menu" aria-expanded="false" title="Сначала подключите хотя бы одного ИИ-агента" disabled>
-                <span id="agent-selector-label">Нет агентов</span>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-              </button>
-              <div id="agent-menu" class="agent-menu" role="group" aria-label="Выбор агента" hidden></div>
+          <div id="terminal-controls" class="terminal-head hidden">
+            <div id="terminal-tabs" class="terminal-tabs" role="group" aria-label="Терминалы агентов"></div>
+            <div class="terminal-actions"><span id="terminal-count">0 строк</span><button id="clear-terminal" class="text-action" type="button">Очистить</button></div>
+          </div>
+          <div id="work-output">
+            <div id="team" class="chat-stream" role="log" aria-label="Общий чат ИИ"></div>
+            <div id="direct" class="chat-stream hidden" role="log" aria-label="Личный чат"></div>
+            <div id="terminal" class="terminal hidden" role="log" aria-label="Вывод агента"></div>
+          </div>
+          <div id="work-resizer" role="separator" tabindex="0" aria-label="Высота вывода" aria-controls="work-output" aria-orientation="horizontal"></div>
+          <form id="message-form" class="composer">
+            <div id="direct-controls" class="composer-top">
+              <label for="message-input">Сообщение агенту</label>
+              <div class="agent-picker">
+                <button id="agent-selector" class="agent-selector" type="button" aria-controls="agent-menu" aria-expanded="false" title="Сначала подключите хотя бы одного ИИ-агента" disabled>
+                  <span id="agent-selector-label">Нет агентов</span>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+                <div id="agent-menu" class="agent-menu" role="group" aria-label="Выбор агента" hidden></div>
+              </div>
             </div>
-          </div>
-          <div class="composer-row">
-            <textarea id="message-input" rows="1" placeholder="Спросите агента о проекте…" required disabled></textarea>
-            <button id="send-button" class="send-button" type="submit" title="Отправить" aria-label="Отправить" disabled><svg viewBox="0 0 24 24"><path d="m5 12 14-7-3 14-4-6-7-1Z"/><path d="m12 13 4-5"/></svg></button>
-          </div>
-          <p class="composer-hint">Enter — отправить · Shift+Enter — новая строка</p>
-        </form>
+            <div class="composer-row">
+              <textarea id="message-input" rows="1" placeholder="Спросите агента о проекте…" required disabled></textarea>
+              <button id="send-button" class="send-button" type="submit" title="Отправить" aria-label="Отправить" disabled><svg viewBox="0 0 24 24"><path d="m5 12 14-7-3 14-4-6-7-1Z"/><path d="m12 13 4-5"/></svg></button>
+            </div>
+            <p class="composer-hint">Enter — отправить · Shift+Enter — новая строка</p>
+          </form>
+        </section>
       </div>
     </main>
   </section>
@@ -208,6 +227,10 @@
           <label class="field"><span>API Key</span><input id="agent-api-key" type="password" autocomplete="new-password" disabled></label>
         </div>
         <label id="agent-cli-fields" class="field"><span>Команда запуска</span><input id="agent-command" type="text" placeholder="codex exec --json --sandbox workspace-write -" required></label>
+        <p id="agent-test-status" class="agent-test-status hidden" role="status">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9"/></svg>
+          Проверка агента…
+        </p>
         <p id="agent-error" class="form-error" role="alert"></p>
         <button id="agent-submit" class="button primary wide" type="submit">Добавить агента</button>
       </form>

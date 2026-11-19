@@ -170,58 +170,222 @@ byId("magic-form").onsubmit = async (event) => {
   }
 };
 
-const log = byId("terminal");
-const terminalCount = byId("terminal-count");
-const logLimit = 500;
-const pendingLogs = new Array(logLimit);
-const logTime = new Intl.DateTimeFormat(undefined, {hour: "numeric", minute: "numeric", second: "numeric"});
-let logFrame = null;
-let logCursor = 0;
-let logCount = 0;
 
-function terminalLine(message) {
-  const text = String(message).replace(/[0-9#*]\uFE0F?\u20E3|(?:\p{Extended_Pictographic}|\p{Emoji_Presentation})\uFE0F?[\u{E0020}-\u{E007F}]*(?:\u200D(?=\p{Extended_Pictographic}))?/gu, "");
-  pendingLogs[logCursor] = {message: text, time: Date.now()};
-  logCursor = (logCursor + 1) % logLimit;
-  logCount = Math.min(logCount + 1, logLimit);
-  if (logFrame === null) logFrame = requestAnimationFrame(flushLogs);
+const streams = {team: new Map(), direct: new Map(), terminal: new Map()};
+const traffic = new Map(), lights = new Map();
+let agentsInProject = [], terminalAgent, view = "team", frame;
+const timeFormat = new Intl.DateTimeFormat("ru", {dateStyle: "short", timeStyle: "medium"});
+
+function element(tag, css, text) {
+  const node = document.createElement(tag);
+  if (css) node.className = css;
+  if (text != null) node.textContent = text;
+  return node;
 }
 
-function flushLogs() {
-  logFrame = null;
-  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 20;
-  const fragment = document.createDocumentFragment();
-  let index = (logCursor - logCount + logLimit) % logLimit;
-  for (let i = 0; i < logCount; i++) {
-    const {message, time} = pendingLogs[index];
-    const line = document.createElement("div");
-    line.textContent = logTime.format(time) + "  " + message;
-    fragment.append(line);
-    pendingLogs[index] = undefined;
-    index = (index + 1) % logLimit;
+function inlineMarkdown(node, text) {
+  let offset = 0;
+  for (const match of text.matchAll(/\x60([^\x60]+)\x60|\*\*([^*]+)\*\*|__([^_]+)__/g)) {
+    node.append(text.slice(offset, match.index), element(match[1] ? "code" : "strong", "", match[1] ?? match[2] ?? match[3]));
+    offset = match.index + match[0].length;
   }
-  const overflow = log.childElementCount + logCount - logLimit;
-  if (overflow === log.childElementCount) {
-    log.replaceChildren(fragment);
-  } else {
-    for (let i = 0; i < overflow; i++) log.firstElementChild.remove();
-    log.append(fragment);
-  }
-  logCount = 0;
-  terminalCount.textContent = log.childElementCount + " строк";
-  if (atBottom) log.scrollTop = log.scrollHeight;
+  node.append(text.slice(offset));
 }
 
-function clearTerminal() {
-  if (logFrame !== null) cancelAnimationFrame(logFrame);
-  logFrame = null;
-  logCount = 0;
-  logCursor = 0;
-  pendingLogs.fill(undefined);
-  log.replaceChildren();
-  terminalCount.textContent = "0 строк";
+function codeCard(language, source) {
+  const card = element("div", "code-card");
+  const head = element("div", "code-head");
+  const copy = element("button", "text-action", "Копировать");
+  copy.type = "button";
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(source);
+      copy.textContent = "Скопировано";
+      setTimeout(() => { copy.textContent = "Копировать"; }, 1600);
+    } catch (error) {
+      notify(error.message);
+    }
+  };
+  head.append(element("span", "", language || "Код"), copy);
+  const pre = element("pre"), code = element("code");
+  let offset = 0;
+  const tokens = /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\/\/[^\n]*|\b(?:const|let|return|function|class|import|from|def|async|await|if|else|for|true|false|null|None)\b|\b\d+(?:\.\d+)?\b)/g;
+  for (const match of source.matchAll(tokens)) {
+    code.append(source.slice(offset, match.index), element("span", "code-token", match[0]));
+    offset = match.index + match[0].length;
+  }
+  code.append(source.slice(offset));
+  pre.append(code);
+  card.append(head, pre);
+  return card;
 }
-byId("clear-terminal").onclick = clearTerminal;
+
+function renderMarkdown(body, text, terminal) {
+  const lines = text.split(/\r?\n/);
+  let list;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const item = !terminal && line.match(/^\s*(?:[-+*]|\d+[.)])\s+(.+)/);
+    if (item) {
+      const tag = /^\s*\d/.test(line) ? "ol" : "ul";
+      if (list?.localName !== tag) {
+        list = element(tag);
+        if (tag === "ol") list.start = parseInt(line, 10);
+        body.append(list);
+      }
+      const entry = element("li");
+      inlineMarkdown(entry, item[1]);
+      list.append(entry);
+      continue;
+    }
+    list = undefined;
+    const fence = line.match(/^\s*\x60{3,}\s*([\w+#.-]*)\s*$/);
+    if (fence) {
+      const code = [];
+      while (++i < lines.length && !/^\s*\x60{3,}\s*$/.test(lines[i])) code.push(lines[i]);
+      body.append(codeCard(fence[1], code.join("\n")));
+    } else if (terminal) {
+      body.append(line + (i + 1 < lines.length ? "\n" : ""));
+    } else if (line.trim()) {
+      const heading = line.match(/^(#{1,6})\s+(.+)/);
+      const block = element(heading ? "h" + heading[1].length : "p");
+      inlineMarkdown(block, heading ? heading[2] : line);
+      body.append(block);
+    }
+  }
+}
+
+function messageNode(event, channel) {
+  const own = event.sender_name === "User";
+  const entry = element("article", channel === "terminal" ? "terminal-entry" : own ? "chat-message own-message" : "chat-message");
+  const head = element("header", "message-header");
+  if (channel !== "terminal") head.append(element("strong", "", own ? "Вы" : event.sender_name));
+  if (channel === "team" && event.target_name) head.append(element("span", "recipient", event.target_name));
+  const stamp = new Date(event.created_at || Date.now());
+  const time = element("time", "", timeFormat.format(stamp));
+  time.dateTime = stamp.toISOString();
+  head.append(time);
+  const body = element("div", "message-body");
+  let content = String(event.content ?? event.message ?? "");
+  if (channel === "terminal") {
+    content = content.replace(/[0-9#*]\uFE0F?\u20E3|(?:\p{Extended_Pictographic}|\p{Emoji_Presentation})\uFE0F?[\u{E0020}-\u{E007F}]*(?:\u200D(?=\p{Extended_Pictographic}))?/gu, "");
+  }
+  renderMarkdown(body, content, channel === "terminal");
+  entry.append(head, body);
+  return entry;
+}
+
+function refreshStream(reset = false) {
+  const pane = byId(view);
+  const key = {team: 0, direct: selectedAgent?.id, terminal: terminalAgent}[view];
+  const entries = streams[view].get(key) || [];
+  const atBottom = reset || pane.scrollHeight - pane.scrollTop - pane.clientHeight < 20;
+  if (reset) pane.replaceChildren();
+  while (pane.firstChild && pane.firstChild !== entries[0]?.node) pane.firstChild.remove();
+  for (const item of entries) {
+    item.node ??= messageNode(item.event, view);
+    if (item.node.parentNode !== pane) pane.append(item.node);
+  }
+  if (view === "terminal") {
+    byId("terminal-count").textContent = entries.length + " записей";
+    byId("clear-terminal").disabled = !entries.length;
+  }
+  if (atBottom) pane.scrollTop = pane.scrollHeight;
+}
+
+function receiveMessage(event, channel) {
+  const key = channel === "team" ? 0 : event.agent_id;
+  if (key == null) return;
+  const bucket = streams[channel];
+  if (!bucket.has(key)) bucket.set(key, []);
+  const entries = bucket.get(key);
+  if (event.id != null && entries.some((item) => item.event.id === event.id)) return;
+  entries.push({event});
+  if (entries.length > 500) entries.shift();
+  if (view === channel) frame ??= requestAnimationFrame(() => {
+    frame = undefined;
+    refreshStream();
+  });
+}
+
+function renderTerminalTabs() {
+  if (!agentsInProject.some((agent) => agent.id === terminalAgent)) terminalAgent = agentsInProject[0]?.id;
+  byId("terminal-tabs").replaceChildren(...agentsInProject.map((agent) => {
+    const tab = element("button", "tab", agent.name);
+    tab.type = "button";
+    tab.setAttribute("aria-pressed", String(agent.id === terminalAgent));
+    tab.onclick = () => {
+      terminalAgent = agent.id;
+      for (const button of tab.parentElement.children) button.setAttribute("aria-pressed", String(button === tab));
+      refreshStream(true);
+    };
+    return tab;
+  }));
+  if (view === "terminal") refreshStream(true);
+}
+
+byId("clear-terminal").onclick = () => {
+  streams.terminal.delete(terminalAgent);
+  refreshStream(true);
+};
+
+function syncComposer() {
+  const team = view === "team";
+  const available = team ? project && !["draft", "council", "deleted"].includes(project.status) : selectedAgent;
+  const input = byId("message-input");
+  input.disabled = byId("send-button").disabled = !available || messageBusy;
+  input.placeholder = team ? "Предложите правки плана…" : "Напишите агенту…";
+  input.setAttribute("aria-label", team ? "Правки плана" : "Сообщение агенту");
+}
+
+function selectView(next) {
+  if (view !== next) byId("message-input").value = "";
+  view = next;
+  all("[data-view]").forEach((button) => {
+    const active = button.dataset.view === view;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  for (const channel of Object.keys(streams)) byId(channel).classList.toggle("hidden", channel !== view);
+  byId("terminal-controls").classList.toggle("hidden", view !== "terminal");
+  byId("message-form").classList.toggle("hidden", view === "terminal");
+  byId("direct-controls").classList.toggle("hidden", view !== "direct");
+  syncComposer();
+  refreshStream(true);
+}
+all("[data-view]").forEach((button) => button.onclick = () => selectView(button.dataset.view));
+selectView(view);
+
+const resizer = byId("work-resizer"), output = byId("work-output");
+const heightKey = "loomis-output-height";
+function resizeOutput(height, save = false) {
+  const size = Math.max(140, Math.min(2400, Math.round(height)));
+  output.style.height = size + "px";
+  resizer.setAttribute("aria-valuenow", String(size));
+  if (save) localStorage.setItem(heightKey, String(size));
+}
+resizeOutput(Number(localStorage.getItem(heightKey)) || 320);
+resizer.setAttribute("aria-valuemin", "140");
+resizer.setAttribute("aria-valuemax", "2400");
+let drag;
+resizer.onpointerdown = (event) => {
+  if (event.button !== 0 || drag) return;
+  drag = {id: event.pointerId, y: event.clientY, height: output.offsetHeight};
+  resizer.setPointerCapture(drag.id);
+};
+resizer.onpointermove = (event) => {
+  if (drag?.id === event.pointerId) resizeOutput(drag.height + event.clientY - drag.y);
+};
+resizer.onlostpointercapture = (event) => {
+  if (drag?.id !== event.pointerId) return;
+  drag = undefined;
+  resizeOutput(output.offsetHeight, true);
+};
+resizer.onkeydown = (event) => {
+  if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+  event.preventDefault();
+  resizeOutput(output.offsetHeight + (event.key === "ArrowDown" ? 24 : -24), true);
+};
 
 function setStatus(status) {
   const enteringDraft = status === "draft" && byId("spec-panel").classList.contains("hidden");
@@ -247,11 +411,16 @@ function renderProjectControls() {
   byId("project-controls").classList.toggle("hidden", !available.length || status === "draft");
   all("[data-action]").forEach((button) => {
     const action = button.dataset.action;
+    if (action === "regenerate_plan") return;
     const visible = available.includes(action);
     button.classList.toggle("hidden", !visible);
     button.disabled = !visible || actionBusy ||
       (action === "build_spec" && (specBusy || !byId("spec-items").childElementCount));
   });
+  const rebuild = document.querySelector('[data-action="regenerate_plan"]');
+  rebuild.disabled = !project || actionBusy || ["draft", "council", "deleted"].includes(status)
+    || !agentsInProject.some((agent) => agent.enabled);
+  syncComposer();
   byId("spec-add").disabled = byId("spec-attach").disabled = specBusy || actionBusy;
 }
 
@@ -365,8 +534,12 @@ function connect(projectId, current) {
       setStatus(event.status);
       if (event.status === "deleted") loadProjects().catch((error) => notify(error.message));
     }
-    if (event.type === "log" || event.type === "terminal") terminalLine(event.message);
-    if (event.type === "question") notify(event.message);
+    if (event.type === "team_chat") receiveMessage(event, "team");
+    if (event.type === "direct" || event.type === "terminal") receiveMessage(event, event.type);
+    if (event.type === "traffic_state") {
+      traffic.set(event.agent_id, event);
+      updateLight(event.agent_id);
+    }
     if (event.type === "approval") showCommandApproval(event, projectId);
   };
   socket.onclose = () => {
@@ -385,13 +558,20 @@ async function selectProject(item) {
   byId("spec-empty").classList.remove("hidden");
   byId("command-approvals").replaceChildren();
   socket?.close();
-  clearTerminal();
+  Object.values(streams).forEach((stream) => stream.clear());
+  Object.keys(streams).forEach((channel) => byId(channel).replaceChildren());
+  traffic.clear();
+  lights.clear();
+  agentsInProject = [];
+  terminalAgent = undefined;
+  renderTerminalTabs();
+  byId("message-input").value = "";
   byId("agent-grid").replaceChildren();
   selectedAgent = undefined;
   messageBusy = false;
   renderAgentSelector([]);
   byId("current-project-name").textContent = item?.name || "Выберите проект";
-  byId("terminal-channel").textContent = item ? "/ws/" + item.id : "/ws";
+  renderProjectModes();
   setStatus(item?.status || "—");
   all(".project-button").forEach((button) => button.setAttribute("aria-current", button.dataset.id === String(item?.id)));
   byId("add-agent-button").disabled = !item;
@@ -403,6 +583,8 @@ async function selectProject(item) {
 async function loadAgents(projectId, current) {
   const agents = await api("projects/" + projectId + "/agents");
   if (current !== selection) return;
+  agentsInProject = agents;
+  lights.clear();
   const cards = agents.map((agent) => {
     const card = document.createElement("article");
     const name = document.createElement("strong");
@@ -415,12 +597,71 @@ async function loadAgents(projectId, current) {
       });
     };
     name.textContent = agent.name;
-    details.textContent = [agent.provider, agent.model, agent.enabled ? "Включён" : "Выключен"].join(" · ");
-    card.append(name, details);
+    details.textContent = [agent.provider, agent.model].filter(Boolean).join(" · ");
+    const description = element("div");
+    const light = element("button", "traffic-light");
+    light.type = "button";
+    light.onclick = () => {
+      if (!agent.enabled) return;
+      selectView("direct");
+      selectAgent(agent);
+      renderAgentSelector(agentsInProject);
+      byId("message-input").focus();
+    };
+    description.append(name, details);
+    card.append(description, light);
+    lights.set(agent.id, {light, agent});
+    updateLight(agent.id);
     return card;
   });
   byId("agent-grid").replaceChildren(...(cards.length ? cards : ["В проекте пока нет агентов."]));
   renderAgentSelector(agents);
+  renderTerminalTabs();
+  renderProjectControls();
+}
+
+function updateLight(id) {
+  const card = lights.get(id);
+  if (!card) return;
+  const {light, agent} = card;
+  const state = traffic.get(id) || agent;
+  const status = agent.enabled ? state.traffic_state : "error";
+  const labels = {working: "Работает", asking: "Ждёт ответа в личном чате", waiting: "Ждёт своей очереди",
+    error: state.last_error || "Агент недоступен"};
+  light.dataset.state = status;
+  light.title = labels[status] || "Состояние неизвестно";
+  light.setAttribute("aria-label", agent.name + " · " + light.title);
+  light.innerHTML = status === "asking"
+    ? icon('<path d="M9 9a3 3 0 1 1 4 2.83c-.67.24-1 .86-1 1.67M12 17h.01"/>')
+    : "";
+}
+
+const projectModes = [["autonomy-mode", "autonomy_mode", "autonomous"], ["failover-mode", "failover_mode", "auto"]];
+function renderProjectModes() {
+  for (const [id, field, fallback] of projectModes) {
+    byId(id).value = project?.[field] || fallback;
+    byId(id).disabled = !project;
+  }
+}
+
+for (const [id, field] of projectModes) {
+  const control = byId(id);
+  control.onchange = async () => {
+    if (!project) return;
+    const current = selection;
+    control.disabled = true;
+    try {
+      const result = await api("projects/" + project.id, {[field]: control.value}, token, "PATCH");
+      if (current === selection) project[field] = result[field];
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      if (current === selection) {
+        control.value = project[field];
+        control.disabled = false;
+      }
+    }
+  };
 }
 
 function setAgentMenu(open, restoreFocus = false) {
@@ -431,10 +672,11 @@ function setAgentMenu(open, restoreFocus = false) {
 }
 
 function selectAgent(agent) {
+  if (selectedAgent?.id !== agent?.id && view === "direct") byId("message-input").value = "";
   selectedAgent = agent;
   if (agent) byId("agent-selector-label").textContent = agent.name;
-  byId("message-input").disabled = !agent;
-  byId("send-button").disabled = !agent || messageBusy;
+  syncComposer();
+  if (view === "direct") refreshStream(true);
 }
 
 function renderAgentSelector(agents) {
@@ -547,23 +789,29 @@ byId("message-form").onsubmit = async (event) => {
   event.preventDefault();
   const input = byId("message-input");
   const agentId = selectedAgent?.id;
-  const question = input.value.trim();
-  if (!project || !agentId || !question || messageBusy) return;
+  const mode = view;
+  const message = input.value.trim();
+  if (!project || !message || input.disabled || mode === "terminal") return;
   const current = selection;
+  const path = "projects/" + project.id;
+  const revision = statusRevision;
   messageBusy = true;
-  byId("send-button").disabled = true;
+  syncComposer();
   try {
-    const result = await api("projects/" + project.id + "/agents/" + agentId + "/question", {question});
-    if (current === selection) {
-      if (input.value.trim() === question) input.value = "";
-      terminalLine([result.message, result.summary, result.answer].find(Boolean) || "Агент обработал запрос.");
+    if (mode === "team") {
+      const result = await api(path + "/council/feedback", {feedback: message});
+      if (current === selection && revision === statusRevision) setStatus(result.status);
+    } else {
+      await api(path + "/agents/" + agentId + "/question", {question: message});
     }
+    if (current === selection && mode === view && (mode === "team" || selectedAgent?.id === agentId)
+        && input.value.trim() === message) input.value = "";
   } catch (error) {
     notify(error.message);
   } finally {
     if (current === selection) {
       messageBusy = false;
-      byId("send-button").disabled = !selectedAgent;
+      syncComposer();
     }
   }
 };
@@ -662,7 +910,7 @@ async function mutateFromModal(button, target, method, body, onError = (error) =
 
 function showModal(id) {
   const backdrop = byId("modal-backdrop");
-  if (!id && backdrop.inert) return;
+  if (!id && (backdrop.inert || !byId("agent-test-status").classList.contains("hidden"))) return;
   modalRevision++;
   if (id && backdrop.inert) modalTrigger = document.activeElement;
   backdrop.inert = !id;
@@ -780,9 +1028,9 @@ function validBaseUrl(value) {
   }
 }
 
-agentForm.onsubmit = (event) => {
+agentForm.onsubmit = async (event) => {
   event.preventDefault();
-  if (!agentTarget || agentTarget.current !== selection) return;
+  if (!agentTarget || agentTarget.current !== selection || byId("agent-submit").disabled) return;
   clearAgentErrors();
   const name = byId("agent-name").value.trim();
   const provider = agentProvider.value;
@@ -808,12 +1056,36 @@ agentForm.onsubmit = (event) => {
     showAgentErrors(errors);
     return;
   }
-  mutateFromModal(event.submitter, agentTarget, agentTarget.item ? "PATCH" : "POST", {name, provider, model, settings}, (error) => {
+  const target = agentTarget;
+  const revision = modalRevision;
+  const button = byId("agent-submit");
+  const status = byId("agent-test-status");
+  const candidate = {name, provider, model, settings};
+  const showError = (error) => {
     const fields = Array.isArray(error.detail)
       ? [...new Set(error.detail.map((item) => item.loc?.at(-1)).filter((field) => Object.hasOwn(agentFields, field)))]
       : [];
     showAgentErrors(fields, error.message);
-  });
+  };
+  const fields = [...agentForm.querySelectorAll("input:enabled")];
+  fields.forEach((field) => { field.readOnly = true; });
+  agentProvider.disabled = button.disabled = true;
+  status.classList.remove("hidden");
+  let failure;
+  try {
+    await api("projects/" + target.projectId + "/agents/test", {
+      ...candidate, ...(target.item && {agent_id: target.item.id}),
+    });
+  } catch (error) {
+    failure = error;
+  } finally {
+    status.classList.add("hidden");
+    fields.forEach((field) => { field.readOnly = false; });
+    agentProvider.disabled = button.disabled = false;
+  }
+  if (revision !== modalRevision || target.current !== selection) return;
+  if (failure) showError(failure);
+  else await mutateFromModal(button, target, target.item ? "PATCH" : "POST", candidate, showError);
 };
 byId("logout-button").onclick = () => {
   token = null;
