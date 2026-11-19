@@ -6,7 +6,7 @@ from typing import Literal
 
 @dataclass
 class AgentResult:
-    status: Literal["success", "timeout", "rate_limit", "error"]
+    status: Literal["success", "timeout", "rate_limit", "error", "unsupported_media"]
     message: str
     tokens: int = 0
     terminal: str | None = None

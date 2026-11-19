@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, LargeBinary, String, Text, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -22,7 +22,22 @@ class User(Base):
     password_hash: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
+    tg_logs_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+
     projects: Mapped[list["Project"]] = relationship(back_populates="owner")
+
+
+class UserModelPreset(Base):
+    __tablename__ = "user_model_presets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    adapter_type: Mapped[str] = mapped_column(String(100))
+    config_json: Mapped[dict] = mapped_column(JSON)
+    supports_vision: Mapped[bool] = mapped_column(Boolean, default=False)
+    supports_audio: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class LinkToken(Base):
@@ -66,6 +81,7 @@ class Project(Base):
     deadline_minutes: Mapped[int] = mapped_column(Integer, default=10, server_default="10")
     autonomy_mode: Mapped[str] = mapped_column(String(20), default="autonomous", server_default="autonomous")
     failover_mode: Mapped[str] = mapped_column(String(10), default="auto", server_default="auto")
+    verbosity_level: Mapped[str] = mapped_column(String(10), default="concise", server_default="concise")
     plan_digest: Mapped[str | None] = mapped_column(String(64))
     approved_plan_digest: Mapped[str | None] = mapped_column(String(64))
     turn_state: Mapped[dict | None] = mapped_column(JSON)
@@ -87,6 +103,17 @@ class SpecItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     project: Mapped["Project"] = relationship(back_populates="spec_items")
+
+
+class ProjectMedia(Base):
+    __tablename__ = "project_media"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    spec_item_id: Mapped[int | None] = mapped_column(ForeignKey("spec_items.id", ondelete="CASCADE"), index=True)
+    filename: Mapped[str] = mapped_column(String(500))
+    mime_type: Mapped[str] = mapped_column(String(50))
+    data: Mapped[bytes] = mapped_column(LargeBinary)
 
 
 class AgentConfig(Base):
@@ -115,8 +142,10 @@ class AgentMessage(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    agent_id: Mapped[int | None] = mapped_column(ForeignKey("agent_configs.id", ondelete="CASCADE"), index=True)
+    media_id: Mapped[int | None] = mapped_column(ForeignKey("project_media.id", ondelete="SET NULL"))
     sender_name: Mapped[str] = mapped_column(String(100))
-    target_name: Mapped[str] = mapped_column(String(101))
+    target_name: Mapped[str] = mapped_column(Text)
     channel: Mapped[str] = mapped_column(String(10))
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -127,7 +156,8 @@ class TaskLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
-    agent_id: Mapped[int | None] = mapped_column(ForeignKey("agent_configs.id", ondelete="SET NULL"), index=True)
+    agent_id: Mapped[int | None] = mapped_column(ForeignKey("agent_configs.id", ondelete="CASCADE"), index=True)
+    sender_name: Mapped[str | None] = mapped_column(String(100))
     operation: Mapped[str] = mapped_column(String(30))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     duration_seconds: Mapped[float] = mapped_column(Float)

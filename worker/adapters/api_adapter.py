@@ -1,4 +1,5 @@
 import asyncio
+from base64 import b64encode
 import json
 import os
 from pathlib import Path
@@ -40,20 +41,31 @@ def run_file_tool(workspace, name, path, content=None):
 
 class ApiAgent(BaseAgent):
     @classmethod
-    def from_config(cls, model: str, config: dict):
+    def from_config(cls, model: str, config: dict, **options):
         base_url = config.get("base_url") or config.get("baseUrl") or os.getenv("OPENAI_BASE_URL") or "https://openai.com"
         api_key = config.get("api_key") or config.get("apiKey") or os.getenv("OPENAI_API_KEY")
-        return cls(model, base_url, config.get("api_key_env"), api_key=api_key)
+        return cls(model, base_url, config.get("api_key_env"), api_key=api_key, **options)
 
-    def __init__(self, model: str, base_url: str, api_key_env: str | None = None, *, api_key: str | None = None):
+    def __init__(self, model: str, base_url: str, api_key_env: str | None = None, *, api_key: str | None = None,
+                 instruction: str = "", images=()):
         self.model = model
         self.base_url = base_url
         self.api_key_env = api_key_env
         self.api_key = api_key
+        self.instruction = instruction
+        self.images = images
 
     async def _run(self, prompt, timeout, workspace=None):
         tokens = 0
-        messages = [{"role": "user", "content": prompt}]
+        content = prompt
+        if self.images:
+            content = [{"type": "text", "text": prompt}]
+            for mime_type, data in self.images:
+                url = f"data:{mime_type};base64,{b64encode(data).decode('ascii')}"
+                content.append({"type": "image_url", "image_url": {"url": url}})
+        messages = [{"role": "user", "content": content}]
+        if self.instruction:
+            messages.insert(0, {"role": "system", "content": self.instruction})
         try:
             key = self.api_key or (os.environ[self.api_key_env] if self.api_key_env else "ollama")
             async with asyncio.timeout(timeout), AsyncOpenAI(

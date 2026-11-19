@@ -41,6 +41,7 @@ class UserView(BaseModel):
     id: int
     username: str | None
     telegram_id: int | None
+    tg_logs_enabled: bool
 
 
 def _derive(password: str, salt: str) -> str:
@@ -182,6 +183,17 @@ async def magic_login_status(request_id: str, session: Session):
 
 @router.get("/me", response_model=UserView)
 async def me(user: CurrentUser):
+    return user
+
+
+class UserPreferences(BaseModel):
+    tg_logs_enabled: bool
+
+
+@router.patch("/me", response_model=UserView)
+async def update_preferences(data: UserPreferences, session: Session, user: CurrentUser):
+    user.tg_logs_enabled = data.tg_logs_enabled
+    await session.commit()
     return user
 
 

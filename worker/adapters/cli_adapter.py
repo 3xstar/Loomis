@@ -11,6 +11,9 @@ from worker.sandbox import Approval, authorize_command
 from .base import AgentResult, BaseAgent
 
 
+IMAGE_SUFFIXES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+
+
 async def run_shell(command: str, directory: Path, timeout: float, prompt: str = ""):
     options = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
                else {"start_new_session": True})
@@ -43,15 +46,30 @@ async def run_shell(command: str, directory: Path, timeout: float, prompt: str =
 
 
 class CliAgent(BaseAgent):
-    def __init__(self, command: str, question_command: str | None = None, approval: Approval | None = None):
+    def __init__(self, command: str, question_command: str | None = None, approval: Approval | None = None,
+                 *, instruction="", images=()):
         self.command = command
         self.question_command = question_command
         self.approval = approval
+        self.instruction = instruction
+        self.images = images
 
     async def _run(self, command, prompt, directory, timeout):
         try:
             await authorize_command(command, directory, self.approval)
-            code, out, err = await run_shell(command, directory, timeout, prompt)
+            if self.instruction:
+                prompt = f"{self.instruction}\n\n{prompt}"
+            if self.images:
+                with TemporaryDirectory() as attachments:
+                    paths = []
+                    for index, (mime_type, data) in enumerate(self.images):
+                        path = Path(attachments) / f"{index}{IMAGE_SUFFIXES[mime_type]}"
+                        path.write_bytes(data)
+                        paths.append(path.as_posix())
+                    arguments = f' --image "{",".join(paths)}"'
+                    code, out, err = await run_shell(command.rstrip() + arguments, directory, timeout, prompt)
+            else:
+                code, out, err = await run_shell(command, directory, timeout, prompt)
         except TimeoutError:
             return AgentResult("timeout", "Agent deadline expired")
         except (OSError, ValueError) as exc:

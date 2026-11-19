@@ -8,6 +8,7 @@ from backend.database.db import async_session_factory
 from backend.database.models import Project
 
 router = APIRouter()
+MAX_WORKER_IMAGE_BYTES = 20 * 1024 * 1024
 
 
 class ConnectionManager:
@@ -86,11 +87,14 @@ class WorkerPool:
     def __init__(self):
         self.nodes = {}
 
-    async def dispatch(self, node, agent, project_id, operation, prompt, context, timeout):
+    async def dispatch(self, node, agent, project_id, operation, prompt, context, timeout, *, instruction="", images=()):
+        from base64 import b64encode
         from uuid import uuid4
 
         from worker.adapters.base import AgentResult
 
+        if sum(len(data) for _, data in images) > MAX_WORKER_IMAGE_BYTES:
+            return AgentResult("error", "Общий размер изображений для воркера превышает 20 МБ.")
         peer = self.nodes.get(node)
         if peer is None or agent not in peer["agents"]:
             return AgentResult("error", "Воркер или агент недоступен.")
@@ -104,6 +108,8 @@ class WorkerPool:
                 await peer["socket"].send_json({
                     "id": key, "project_id": project_id, "agent": agent,
                     "operation": operation, "prompt": prompt, "context": context, "timeout": timeout,
+                    "instruction": instruction,
+                    "images": [(mime, b64encode(data).decode("ascii")) for mime, data in images],
                 })
                 return await future
             except asyncio.CancelledError:

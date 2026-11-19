@@ -10,9 +10,10 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from backend.api.ws import manager, workers
+from backend.bot.formatting import telegram_html
 from backend.database.db import async_session_factory
-from backend.database.models import AgentConfig, AgentMessage, Project, TaskLog, User
-from worker.adapters import build_agent
+from backend.database.models import AgentConfig, AgentMessage, Project, ProjectMedia, TaskLog, User
+from worker.adapters import CLI_PROVIDERS, build_agent
 from worker.adapters.base import AgentResult, BaseAgent
 from worker.git_bridge import GitBridge
 from worker.quality_gate import check_quality
@@ -76,14 +77,34 @@ async def probe_agent(project_id, config):
         raise ValueError("Провайдер вернул пустой ответ.")
 
 
+VERBOSITY = {
+    "concise": "Отвечай максимально сжато, только факты, код и итог, без воды, до 5–7 строк.",
+    "balanced": "Отвечай по существу, объясняй решения и проверки, до 15 строк.",
+    "detailed": "Дай подробный ответ с обоснованием решений, проверками и результатами, до 40 строк.",
+}
+
+
+def media_error(config, mime_type):
+    provider = config.provider.lower()
+    if mime_type.startswith("audio/"):
+        if provider not in CLI_PROVIDERS or not config.settings.get("supports_audio"):
+            return f"{config.name}: модель не поддерживает аудио. Нужен CLI-агент с Whisper."
+    elif not config.settings.get("supports_vision") or (provider in CLI_PROVIDERS and provider != "codex"):
+        return f"{config.name}: модель не поддерживает изображения."
+    return None
+
+
 class ProjectAgent(BaseAgent):
     def __init__(self, engine, project, config):
         self.engine = engine
         self.project = project
         self.config = config
 
-    async def run(self, operation, prompt, context="", workspace=None, timeout=None):
+    async def run(self, operation, prompt, context="", workspace=None, timeout=None, images=()):
         project, config = self.project, self.config
+        instruction = VERBOSITY[project.verbosity_level or "concise"]
+        if operation == "plan":
+            instruction += " Для PLAN.md верни полный документ со всеми задачами."
         manage_traffic = operation in {"question", "meeting"}
         timeout = timeout if timeout is not None else project.deadline_minutes * 60
         started = datetime.now(timezone.utc)
@@ -95,12 +116,14 @@ class ProjectAgent(BaseAgent):
             async with asyncio.timeout(timeout):
                 node = config.settings.get("worker")
                 if node:
-                    worker_operation = "question" if operation == "handoff" else operation
+                    worker_operation = "question" if operation in {"handoff", "plan"} else operation
                     result = await workers.dispatch(node, config.settings.get("worker_agent", config.name),
-                                                    project.id, worker_operation, prompt, context, timeout)
+                                                    project.id, worker_operation, prompt, context, timeout,
+                                                    instruction=instruction, images=images)
                 else:
                     agent = build_agent(config.provider, config.model, config.settings,
-                                        lambda command: self.engine.request_approval(project.id, command))
+                                        lambda command: self.engine.request_approval(project.id, command),
+                                        instruction=instruction, images=images)
                     if operation == "execute":
                         result = await agent.execute_task(prompt, workspace, timeout)
                     elif operation == "meeting":
@@ -113,8 +136,9 @@ class ProjectAgent(BaseAgent):
             result = AgentResult("error", str(exc) or type(exc).__name__)
         finally:
             async with async_session_factory() as session:
-                session.add(TaskLog(project_id=project.id, agent_id=config.id, operation=operation,
-                                    started_at=started, duration_seconds=monotonic() - clock,
+                session.add(TaskLog(project_id=project.id, agent_id=config.id,
+                                    operation="execute_attempt" if operation == "execute" else operation,
+                                    sender_name=config.name, started_at=started, duration_seconds=monotonic() - clock,
                                     status=result.status, tokens=result.tokens))
                 if result.status == "rate_limit":
                     row = await session.get(AgentConfig, config.id)
@@ -137,7 +161,8 @@ class ProjectAgent(BaseAgent):
         return await self.run("execute", prompt, workspace=work_dir, timeout=timeout)
 
     async def ask_question(self, question, context):
-        return await self.run("question", question, context)
+        images = await self.engine.spec_images(self.project.id, self.config)
+        return await self.run("question", question, context, images=images)
 
     async def participate_in_meeting(self, history):
         return await self.run("meeting", "", history)
@@ -178,18 +203,28 @@ class Orchestrator:
             project.turn_state = runtime.snapshot()
             await session.commit()
 
-    async def message(self, project_id, sender, target, channel, content, config=None):
+    async def message(self, project_id, sender, target, channel, content, config=None, *,
+                      media=None, mirror=None):
+        agent_id = config.id if config else None
+        deliveries = ((channel, target), (mirror, "@User")) if mirror else ((channel, target),)
+        rows = [AgentMessage(project_id=project_id, sender_name=sender, target_name=recipient,
+                             channel=destination, content=content, agent_id=agent_id)
+                for destination, recipient in deliveries]
         async with async_session_factory() as session:
-            row = AgentMessage(project_id=project_id, sender_name=sender, target_name=target,
-                               channel=channel, content=content)
-            session.add(row)
+            if media is not None:
+                session.add(media)
+                await session.flush()
+                rows[0].media_id = media.id
+            session.add_all(rows)
             await session.commit()
-        await manager.broadcast(project_id, {
-            "type": channel, "channel": channel, "project_id": project_id, "id": row.id,
-            "sender_name": sender, "target_name": target, "content": content, "message": content,
-            "created_at": row.created_at.isoformat(), "agent_id": config.id if config else None,
-            "agent_name": config.name if config else None,
-        })
+        for row in rows:
+            await manager.broadcast(project_id, {
+                "type": row.channel, "channel": row.channel, "project_id": project_id, "id": row.id,
+                "sender_name": sender, "target_name": row.target_name, "content": content, "message": content,
+                "created_at": row.created_at.isoformat(), "agent_id": agent_id,
+                "agent_name": config.name if config else None,
+                "media_id": row.media_id,
+            })
 
     async def publish_traffic(self, config):
         await manager.broadcast(config.project_id, {
@@ -256,21 +291,22 @@ class Orchestrator:
             raise ValueError("Рабочая папка не задана.")
         return Path(project.workspace_path).resolve(strict=True)
 
-    async def notify(self, project_id, message, markup=None, event_type="log", config=None):
+    async def notify(self, project_id, message, markup=None, event_type="log", config=None, *, critical=False):
         event = {"type": event_type, "project_id": project_id, "message": message}
         if config is not None:
             event.update(agent_id=config.id, agent_name=config.name)
-        await manager.broadcast(project_id, event)
+        if event_type != "step_log":
+            await manager.broadcast(project_id, event)
         if self.bot:
             async with async_session_factory() as session:
-                chat_id = await session.scalar(select(User.telegram_id).join(
+                owner = await session.scalar(select(User).join(
                     Project, Project.owner_id == User.id
                 ).where(Project.id == project_id))
-            if chat_id:
+            if owner and owner.telegram_id and (owner.tg_logs_enabled or markup or critical):
                 try:
-                    for offset in range(0, len(message), 3900):
-                        await self.bot.send_message(chat_id, message[offset:offset + 3900],
-                                                    reply_markup=markup if offset == 0 else None)
+                    for index, part in enumerate(telegram_html(message)):
+                        await self.bot.send_message(owner.telegram_id, part, parse_mode="HTML",
+                                                    reply_markup=markup if index == 0 else None)
                 except Exception:
                     logger.exception("Meeting or approval delivery failed for project %s", project_id)
 
@@ -302,7 +338,7 @@ class Orchestrator:
             raise ValueError("Запрос подтверждения уже закрыт.")
         item[1].set_result(approved)
 
-    async def action(self, project_id, action, *, feedback=None):
+    async def action(self, project_id, action, *, feedback=None, target_agent_ids=None):
         runtime = self.runtime(project_id)
         async with runtime.boundary:
             project, configs = await self.load(project_id)
@@ -310,14 +346,16 @@ class Orchestrator:
             if action in {"council", "regenerate_plan"} and project.status not in {"draft", "council"}:
                 if not configs:
                     raise ValueError("Добавьте хотя бы одного агента.")
+                selected = self.select_agents(configs, target_agent_ids)
                 workspace = self.workspace(project)
                 if feedback is not None:
                     if not workspace_file(workspace, "PLAN.md").is_file():
                         raise ValueError("Сначала создайте PLAN.md.")
-                    await self.message(project_id, "User", "@All", "team_chat", feedback)
+                    target = " ".join(f"@{item.name}" for item in selected) if target_agent_ids is not None else "@All"
+                    await self.message(project_id, "User", target, "team_chat", feedback)
                 await self.plan_invalidated(project, publish=False)
                 await self.status(project_id, "council", plan_digest=None, approved_plan_digest=None, turn_state=None)
-                runtime.council = asyncio.create_task(self.plan(project_id, project, configs, feedback))
+                runtime.council = asyncio.create_task(self.plan(project_id, project, configs, selected, feedback, target_agent_ids is not None))
                 return "council"
             if action == "approve" and project.status == "awaiting_approval":
                 digest = self.require_plan(project, configs, approved=False)
@@ -405,15 +443,38 @@ class Orchestrator:
                 if any(item.tested_at is None for item in configs):
                     raise ValueError("Проверьте всех активных агентов.")
             except (ValueError, OSError) as exc:
-                await self.notify(project_id, str(exc))
+                await self.notify(project_id, str(exc), critical=True)
                 return
             runtime.pending_failover = None
             await self.start_running(project_id, runtime, digest)
 
-    async def plan(self, project_id, project, configs, feedback):
+    @staticmethod
+    def select_agents(configs, target_agent_ids):
+        if target_agent_ids is None:
+            if not configs:
+                raise ValueError("Добавьте хотя бы одного агента.")
+            return configs
+        ids = set(target_agent_ids)
+        selected = [item for item in configs if item.id in ids]
+        if not ids or len(selected) != len(ids):
+            raise ValueError("Выберите доступных агентов этого проекта.")
+        return selected
+
+    async def plan(self, project_id, project, configs, selected, feedback, targeted):
+        async def publish(agent, content):
+            config = agent.config
+            await self.message(project_id, config.name, "@All", "team_chat", content, config,
+                               mirror="direct" if targeted else None)
+
+        async def synthesize(agent, prompt, context):
+            images = await self.spec_images(project_id, agent.config)
+            return await agent.run("plan", prompt, context, images=images)
+
         try:
+            agents = [(item.name, ProjectAgent(self, project, item)) for item in selected]
             plan = await starting_council(
-                self.workspace(project), [(item.name, ProjectAgent(self, project, item)) for item in configs], feedback
+                self.workspace(project), agents, feedback, publish=publish,
+                roster=[item.name for item in configs], synthesize=synthesize,
             )
             await self.status(project_id, "awaiting_approval", plan_digest=self.plan_digest(project))
             from backend.bot.keyboards import project_keyboard
@@ -422,9 +483,73 @@ class Orchestrator:
             await self.notify(project_id, plan, project_keyboard(project))
         except Exception as exc:
             await self.status(project_id, "planning")
-            await self.notify(project_id, f"Ошибка консилиума. {exc}")
+            await self.notify(project_id, f"Ошибка консилиума. {exc}", critical=True)
 
-    async def question(self, project_id, agent_id, question):
+    async def chat(self, project_id, question, target_agent_ids=None, *, media=None):
+        runtime = self.runtime(project_id)
+        async with runtime.boundary:
+            project, configs = await self.load(project_id)
+            if project.status in {"draft", "council"}:
+                raise ValueError("Чат недоступен в текущем статусе.")
+            selected = self.select_agents(configs, target_agent_ids)
+            target = " ".join(f"@{item.name}" for item in selected) if target_agent_ids is not None else "@All"
+            await self.message(project_id, "User", target, "team_chat", question, media=media)
+            context = self.context(self.workspace(project), ("SPEC.md", "PLAN.md", "Project_context.md"))
+            audio = None
+            if (media and media.mime_type.startswith("audio/") and
+                    any(not media_error(config, media.mime_type) for config in selected)):
+                audio = asyncio.create_task(self.transcribe_question(media))
+
+            async def respond(config):
+                response = await self.ask(project, config, question, context, media, audio=audio)
+                await self.message(project_id, config.name, "@User", "team_chat", response.message, config,
+                                   mirror="direct" if target_agent_ids is not None else None)
+                return {"agent_id": config.id, "status": response.status,
+                        "message": response.message, "tokens": response.tokens}
+
+            try:
+                return await asyncio.gather(*(respond(config) for config in selected))
+            finally:
+                if audio is not None and not audio.done():
+                    audio.cancel()
+                    await asyncio.gather(audio, return_exceptions=True)
+
+
+    @staticmethod
+    async def transcribe_question(media):
+        from .media import transcribe_media
+
+        try:
+            return await transcribe_media(media)
+        except Exception:
+            logger.exception("Audio transcription failed for project %s", media.project_id)
+            return None
+
+    async def ask(self, project, config, question, context, media=None, *, audio=None):
+        if media and (error := media_error(config, media.mime_type)):
+            return AgentResult("unsupported_media", error)
+        images = await self.spec_images(project.id, config)
+        if media:
+            if media.mime_type.startswith("audio/"):
+                transcript = await audio if audio is not None else await self.transcribe_question(media)
+                if transcript is None:
+                    return AgentResult("error", "Не удалось распознать аудиофайл.")
+                question += f"\n\nРасшифровка аудио:\n{transcript}"
+            else:
+                images.append((media.mime_type, media.data))
+        return await ProjectAgent(self, project, config).run("question", question, context, images=images)
+
+    async def spec_images(self, project_id, config):
+        if media_error(config, "image/png"):
+            return []
+        async with async_session_factory() as session:
+            rows = (await session.execute(select(ProjectMedia.mime_type, ProjectMedia.data).where(
+                ProjectMedia.project_id == project_id, ProjectMedia.spec_item_id.is_not(None),
+                ProjectMedia.mime_type.like("image/%"),
+            ).order_by(ProjectMedia.id))).all()
+        return [tuple(row) for row in rows]
+
+    async def question(self, project_id, agent_id, question, *, media=None, mirror=False):
         runtime = self.runtime(project_id)
         async with runtime.boundary:
             project, configs = await self.load(project_id)
@@ -435,7 +560,7 @@ class Orchestrator:
             if config is None:
                 raise ValueError("Агент недоступен.")
             target = f"@{config.name}"
-            if runtime.pending_question == agent_id:
+            if runtime.pending_question == agent_id and media is None:
                 digest = self.require_plan(project, configs, approved=True)
                 await self.message(project_id, "User", target, "direct", question, config)
                 runtime.answer += f"\nОтвет пользователя: {question}"
@@ -446,13 +571,14 @@ class Orchestrator:
                 else:
                     await self.start_running(project_id, runtime, digest)
                 return {"status": "success", "message": "Ответ передан агенту.", "tokens": 0}
-            await self.message(project_id, "User", target, "direct", question, config)
+            await self.message(project_id, "User", target, "direct", question, config, media=media)
             context = self.context(self.workspace(project), ("SPEC.md", "PLAN.md", "Project_context.md"))
             was_running = runtime.ready.is_set()
             runtime.ready.clear()
             try:
-                result = await ProjectAgent(self, project, config).ask_question(question, context)
-                await self.message(project_id, config.name, "@User", "direct", result.message, config)
+                result = await self.ask(project, config, question, context, media)
+                await self.message(project_id, config.name, "@User", "direct", result.message, config,
+                                   mirror="team_chat" if mirror else None)
                 return {"status": result.status, "message": result.message, "tokens": result.tokens}
             finally:
                 if was_running:
@@ -483,7 +609,7 @@ class Orchestrator:
         except Exception as exc:
             runtime.ready.clear()
             await self.status(project_id, "paused")
-            await self.notify(project_id, f"Разработка приостановлена. {exc}")
+            await self.notify(project_id, f"Разработка приостановлена. {exc}", critical=True)
 
     async def turn(self, project, configs, runtime):
         now = datetime.now(timezone.utc)
@@ -500,7 +626,7 @@ class Orchestrator:
         if config is None:
             runtime.ready.clear()
             await self.status(project.id, "paused", turn_state=runtime.snapshot())
-            await self.notify(project.id, "Нет доступного исполнителя. Проверьте агентов перед возобновлением.")
+            await self.notify(project.id, "Нет доступного исполнителя. Проверьте агентов перед возобновлением.", critical=True)
             return
         workspace = self.workspace(project)
         bridge = GitBridge(workspace, project.id)
@@ -530,6 +656,7 @@ class Orchestrator:
         await self.traffic(config, "working")
         agent = ProjectAgent(self, project, config)
         clarification = ""
+        images = await self.spec_images(project.id, config)
         try:
             async with asyncio.timeout_at(deadline):
                 if handoff:
@@ -545,8 +672,8 @@ class Orchestrator:
                     if remote:
                         await bridge.push()
                     correction = f"Исправь ошибки проверки перед передачей хода:\n{feedback[:15000]}" if feedback else ""
-                    result = await agent.execute_task(
-                        f"{context}\n\nТы {config.name}. {task}\n"
+                    result = await agent.run(
+                        "execute", f"{context}\n\nТы {config.name}. {task}\n"
                         f"{handoff}\n{runtime.answer}\n{correction}\n"
                         "В итоговом отчёте опиши результат и инструкции следующему исполнителю. "
                         "Сохраняй утверждённый PLAN.md. "
@@ -554,7 +681,7 @@ class Orchestrator:
                            if project.autonomy_mode == "consultative" else "")
                         + "Если данных не хватает для продолжения, верни только LOOMIS_QUESTION: <вопрос>. "
                         "Если все задачи плана завершены, верни отдельную строку LOOMIS_COMPLETE.",
-                        workspace, max(0.01, deadline - clock.time()),
+                        workspace=workspace, timeout=max(0.01, deadline - clock.time()), images=images,
                     )
                     if result.status != "success":
                         raise RuntimeError(result.message or result.status)
@@ -597,8 +724,12 @@ class Orchestrator:
             await self.traffic(config, "asking")
             await self.message(project.id, config.name, "@User", "direct", clarification, config)
             await self.notify(project.id, f"{config.name} спрашивает: {clarification}",
-                              event_type="question", config=config)
+                              event_type="question", config=config, critical=True)
             return
+        async with async_session_factory() as session:
+            session.add(TaskLog(project_id=project.id, agent_id=config.id, sender_name=config.name,
+                                operation="completed_step", duration_seconds=0, status="success"))
+            await session.commit()
         changes = await bridge.git("diff", "--name-only", checkpoint, "HEAD")
         runtime.answer = ""
         runtime.handoff = None
@@ -616,6 +747,7 @@ class Orchestrator:
             f"Результат и инструкции:\n{result.message}"
         )
         await self.message(project.id, config.name, target, "team_chat", report, config)
+        await self.notify(project.id, report, event_type="step_log", config=config)
         if complete:
             runtime.ready.clear()
             await self.status(project.id, "completed", turn_state=runtime.snapshot())
@@ -637,7 +769,7 @@ class Orchestrator:
         if successor is None:
             runtime.ready.clear()
             await self.status(project.id, "paused", turn_state=runtime.snapshot())
-            await self.notify(project.id, f"{broken.name}: {error}\nНет доступного агента для передачи задачи.")
+            await self.notify(project.id, f"{broken.name}: {error}\nНет доступного агента для передачи задачи.", critical=True)
             return
         instruction = (
             f"Агент {broken.name} сломался на задаче: {task} "

@@ -9,6 +9,8 @@ from pathlib import Path
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
+from base64 import b64decode
+
 from worker.adapters import build_agent
 from worker.adapters.base import AgentResult
 from worker.git_bridge import GitBridge
@@ -17,7 +19,7 @@ from worker.git_bridge import GitBridge
 async def serve(url, name, config):
     async with connect(url, additional_headers={
         "Authorization": f"Bearer {os.environ['LOOMIS_WORKER_TOKEN']}"
-    }, max_size=4_000_000) as socket:
+    }, max_size=32 * 1024 * 1024) as socket:
         agents = config["agents"]
         await socket.send(json.dumps({"node": name, "agents": list(agents)}))
         active = None
@@ -38,7 +40,11 @@ async def serve(url, name, config):
 
             try:
                 operation = request["operation"]
-                agent = build_agent(**agents[request["agent"]], approval=None if operation == "test" else approve)
+                agent = build_agent(
+                    **agents[request["agent"]], approval=None if operation == "test" else approve,
+                    instruction=request.get("instruction", ""),
+                    images=[(mime, b64decode(data)) for mime, data in request.get("images", [])],
+                )
                 async with asyncio.timeout(request["timeout"]):
                     if operation == "execute":
                         project_id = request["project_id"]

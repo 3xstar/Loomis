@@ -6,9 +6,9 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_serializer
-from sqlalchemy import func, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile
@@ -17,17 +17,20 @@ from backend.api.auth import CurrentUser, Session
 from backend.api.ws import manager
 from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
+from backend.core.media import MAX_MEDIA_BYTES, make_media, media_spec_content
 from backend.core.orchestrator import orchestrator, probe_agent
-from backend.database.models import AgentConfig, Project, SpecItem, utc_now
+from backend.database.models import AgentConfig, AgentMessage, Project, ProjectMedia, SpecItem, TaskLog, UserModelPreset, utc_now
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
+hub_router = APIRouter(prefix="/api/hub", tags=["hub"])
 ProjectName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
 AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=100, pattern=r"^[^\r\n]+$")]
 ProviderName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 AutonomyMode = Literal["autonomous", "consultative", "step_by_step"]
 FailoverMode = Literal["auto", "manual"]
+VerbosityLevel = Literal["concise", "balanced", "detailed"]
 
 
 class ProjectCreate(BaseModel):
@@ -40,6 +43,7 @@ class ProjectCreate(BaseModel):
     deadline_minutes: int = Field(default=10, ge=1, le=1440)
     autonomy_mode: AutonomyMode = "autonomous"
     failover_mode: FailoverMode = "auto"
+    verbosity_level: VerbosityLevel = "concise"
 
 
 class ProjectPatch(BaseModel):
@@ -52,6 +56,7 @@ class ProjectPatch(BaseModel):
     deadline_minutes: int | None = Field(default=None, ge=1, le=1440)
     autonomy_mode: AutonomyMode | None = None
     failover_mode: FailoverMode | None = None
+    verbosity_level: VerbosityLevel | None = None
 
 
 class ProjectView(ProjectCreate):
@@ -218,7 +223,7 @@ async def add_spec_item(request: Request, project: OwnedProject, session: Sessio
 @router.patch("/{project_id}", response_model=ProjectView)
 async def edit_project(data: ProjectPatch, project: OwnedProject, session: Session):
     updates = data.model_dump(exclude_unset=True)
-    required = {"name", "deadline_minutes", "meeting_interval_minutes", "autonomy_mode", "failover_mode"}
+    required = {"name", "deadline_minutes", "meeting_interval_minutes", "autonomy_mode", "failover_mode", "verbosity_level"}
     if any(field in required and value is None for field, value in updates.items()):
         raise HTTPException(422, "Обязательные настройки проекта не могут быть пустыми.")
     async with orchestrator.runtime(project.id).boundary:
@@ -459,6 +464,13 @@ async def delete_agent(project: OwnedProject, agent: OwnedAgent, session: Sessio
         await session.refresh(agent)
         if agent.enabled:
             orchestrator.invalidate_plan(project)
+        for model in (AgentMessage, TaskLog):
+            legacy = model.sender_name == agent.name
+            if model is AgentMessage:
+                legacy = legacy | (model.agent_id.is_(None) & (model.target_name == f"@{agent.name}"))
+            await session.execute(delete(model).where(
+                model.project_id == project.id, or_(model.agent_id == agent.id, legacy)
+            ))
         await session.delete(agent)
         await session.commit()
         if agent.enabled:
@@ -474,7 +486,12 @@ class AgentQuestion(BaseModel):
     question: str = Field(min_length=1, max_length=32000)
 
 
+class ChatMessage(AgentQuestion):
+    target_agent_ids: list[int] | None = Field(default=None, min_length=1, max_length=100)
+
+
 class CouncilFeedback(BaseModel):
+    target_agent_ids: list[int] | None = Field(default=None, min_length=1, max_length=100)
     feedback: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32000)]
 
 
@@ -504,8 +521,10 @@ async def project_action(project: OwnedProject, data: ProjectAction, session: Se
 
 
 @router.post("/{project_id}/agents/{agent_id}/question")
-async def agent_question(project: OwnedProject, agent: OwnedAgent, data: AgentQuestion):
+async def agent_question(project: OwnedProject, agent: OwnedAgent, data: ChatMessage):
     try:
+        if data.target_agent_ids is not None:
+            return {"responses": await orchestrator.chat(project.id, data.question, data.target_agent_ids)}
         return await orchestrator.question(project.id, agent.id, data.question)
     except (ValueError, OSError) as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -514,7 +533,9 @@ async def agent_question(project: OwnedProject, agent: OwnedAgent, data: AgentQu
 @router.post("/{project_id}/council/feedback")
 async def council_feedback(project: OwnedProject, data: CouncilFeedback):
     try:
-        return {"status": await orchestrator.action(project.id, "regenerate_plan", feedback=data.feedback)}
+        return {"status": await orchestrator.action(
+            project.id, "regenerate_plan", feedback=data.feedback, target_agent_ids=data.target_agent_ids
+        )}
     except (ValueError, OSError, RuntimeError) as exc:
         raise HTTPException(409, str(exc)) from exc
 
@@ -526,3 +547,201 @@ async def command_approval(project: OwnedProject, key: str, data: ApprovalDecisi
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"approved": data.approved}
+
+
+class PresetConfig(BaseModel):
+    model: ProjectName
+    base_url: str | None = None
+    api_key: str | None = None
+    command_template: str | None = None
+    question_command: str | None = None
+
+
+class PresetCreate(BaseModel):
+    name: AgentName
+    adapter_type: ProviderName
+    config_json: PresetConfig
+    supports_vision: bool = False
+    supports_audio: bool = False
+
+    def agent_settings(self):
+        config = self.config_json.model_dump(exclude_none=True)
+        if self.adapter_type.lower() in CLI_PROVIDERS:
+            if command := config.pop("command_template", None):
+                config["command"] = command
+            elif self.adapter_type.lower() == "codex":
+                config["command"] = "codex exec --json --sandbox workspace-write -"
+        config.update(supports_vision=self.supports_vision, supports_audio=self.supports_audio)
+        return validate_agent_settings(self.adapter_type, config, self.config_json.model)
+
+
+class PresetView(PresetCreate):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_id: int
+    created_at: datetime
+
+    @field_serializer("config_json")
+    def public_config(self, config: PresetConfig):
+        return config.model_dump(exclude={"api_key"}, exclude_none=True)
+
+
+@hub_router.get("/models", response_model=list[PresetView])
+async def list_presets(session: Session, user: CurrentUser):
+    return list(await session.scalars(select(UserModelPreset).where(
+        UserModelPreset.owner_id == user.id
+    ).order_by(UserModelPreset.id)))
+
+
+@hub_router.post("/models", response_model=PresetView, status_code=201)
+async def create_preset(data: PresetCreate, session: Session, user: CurrentUser):
+    data.agent_settings()
+    preset = UserModelPreset(owner_id=user.id, **data.model_dump())
+    session.add(preset)
+    await session.commit()
+    return preset
+
+
+@hub_router.delete("/models/{preset_id}", status_code=204)
+async def delete_preset(preset_id: int, session: Session, user: CurrentUser):
+    preset = await session.scalar(select(UserModelPreset).where(
+        UserModelPreset.owner_id == user.id, UserModelPreset.id == preset_id
+    ))
+    if preset is None:
+        raise HTTPException(404, "Пресет не найден.")
+    await session.delete(preset)
+    await session.commit()
+
+
+class HubImport(BaseModel):
+    preset_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+@router.post("/{project_id}/agents/from-hub", response_model=list[AgentView], status_code=201)
+async def import_presets(data: HubImport, project: OwnedProject, session: Session):
+    async with orchestrator.runtime(project.id).boundary:
+        await require_agent_changes(project, session)
+        ids = list(dict.fromkeys(data.preset_ids))
+        presets = {row.id: row for row in await session.scalars(select(UserModelPreset).where(
+            UserModelPreset.owner_id == project.owner_id, UserModelPreset.id.in_(ids)
+        ))}
+        if len(presets) != len(ids):
+            raise HTTPException(404, "Один или несколько пресетов не найдены.")
+        agents = []
+        names = set(await session.scalars(select(AgentConfig.name).where(AgentConfig.project_id == project.id)))
+        for preset_id in ids:
+            preset = PresetView.model_validate(presets[preset_id])
+            if preset.name in names:
+                raise HTTPException(409, f"Агент {preset.name} уже существует.")
+            names.add(preset.name)
+            agents.append(AgentConfig(
+                project_id=project.id, name=preset.name, provider=preset.adapter_type,
+                model=preset.config_json.model, settings=preset.agent_settings(),
+            ))
+        for agent in agents:
+            await test_config(project.id, agent)
+            agent.tested_at = utc_now()
+        session.add_all(agents)
+        orchestrator.invalidate_plan(project)
+        await save_agent(session)
+        await orchestrator.plan_invalidated(project)
+        for agent in agents:
+            await orchestrator.publish_traffic(agent)
+    return agents
+
+
+@router.get("/{project_id}/stats")
+async def project_stats(project: OwnedProject, session: Session):
+    logs = (select(
+        TaskLog.agent_id, func.sum(TaskLog.tokens).label("tokens"),
+        func.sum(case((or_(
+            TaskLog.operation == "completed_step",
+            (TaskLog.operation == "execute") & (TaskLog.status == "success"),
+        ), 1), else_=0)).label("completed"),
+    ).where(TaskLog.project_id == project.id).group_by(TaskLog.agent_id).subquery())
+    rows = (await session.execute(select(
+        AgentConfig.id, AgentConfig.name, func.coalesce(logs.c.tokens, 0),
+        func.coalesce(logs.c.completed, 0),
+    ).outerjoin(logs, logs.c.agent_id == AgentConfig.id).where(
+        AgentConfig.project_id == project.id
+    ).order_by(AgentConfig.id))).all()
+    total = await session.scalar(select(func.coalesce(func.sum(logs.c.tokens), 0)))
+    completed = sum(row[3] for row in rows)
+    return {
+        "total_tokens": total,
+        "agents": [
+            {"agent_id": agent_id, "name": name, "tokens": tokens, "completed_tasks": tasks,
+             "contribution_percent": round(100 * tasks / completed, 2) if completed else 0}
+            for agent_id, name, tokens, tasks in rows
+        ],
+    }
+
+
+@router.post("/{project_id}/chat")
+async def project_chat(project: OwnedProject, data: ChatMessage):
+    try:
+        return {"responses": await orchestrator.chat(project.id, data.question, data.target_agent_ids)}
+    except (ValueError, OSError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+async def store_spec_media(session, project, media):
+    await require_draft(session, project)
+    content = await media_spec_content(media)
+    async with orchestrator.runtime(project.id).boundary:
+        await require_draft(session, project)
+        position = await session.scalar(select(func.max(SpecItem.position)).where(SpecItem.project_id == project.id))
+        item = SpecItem(project_id=project.id, title=media.filename, content=content, position=(position or 0) + 1)
+        session.add(item)
+        await session.flush()
+        media.spec_item_id = item.id
+        session.add(media)
+        await session.commit()
+    await manager.publish_log(project.id, "Добавлен медиафайл в буфер ТЗ.")
+    return item
+
+
+@router.post("/{project_id}/media", status_code=201)
+async def upload_media(request: Request, project: OwnedProject, session: Session):
+    async with request.form(max_files=1, max_fields=104) as form:
+        upload = form.get("file")
+        if not isinstance(upload, UploadFile) or not upload.filename:
+            raise HTTPException(422, "Прикрепите медиафайл в поле file.")
+        channel = form.get("channel", "spec" if project.status == "draft" else "team_chat")
+        caption = form.get("caption", "")
+        raw_ids = form.getlist("target_agent_ids")
+        if not isinstance(caption, str) or len(caption) > 32000:
+            raise HTTPException(422, "Подпись должна содержать до 32000 символов.")
+        try:
+            targets = [int(value) for value in raw_ids] if raw_ids else None
+            media = make_media(project.id, upload.filename, await upload.read(MAX_MEDIA_BYTES + 1))
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+    if channel == "spec":
+        try:
+            item = await store_spec_media(session, project, media)
+        except (ValueError, RuntimeError, OSError) as exc:
+            raise HTTPException(422, "Не удалось обработать медиафайл.") from exc
+        return {"id": media.id, "spec_item_id": item.id}
+    if channel not in {"team_chat", "direct"} or (channel == "direct" and (not targets or len(targets) != 1)):
+        raise HTTPException(422, "Укажите channel=spec, team_chat или direct с одним target_agent_ids.")
+    prompt = f"{caption.strip() or 'Проанализируй вложение.'}\n\nФайл: {media.filename}"
+    try:
+        if channel == "direct" and targets and len(targets) == 1:
+            result = await orchestrator.question(project.id, targets[0], prompt, media=media, mirror=True)
+        else:
+            result = {"responses": await orchestrator.chat(project.id, prompt, targets, media=media)}
+    except (ValueError, OSError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"id": media.id, **result}
+
+
+@router.get("/{project_id}/media/{media_id}")
+async def get_media(media_id: int, project: OwnedProject, session: Session):
+    media = await session.scalar(select(ProjectMedia).where(
+        ProjectMedia.id == media_id, ProjectMedia.project_id == project.id
+    ))
+    if media is None:
+        raise HTTPException(404, "Медиафайл не найден.")
+    return Response(media.data, media_type=media.mime_type, headers={"X-Content-Type-Options": "nosniff"})

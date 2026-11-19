@@ -17,15 +17,18 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.auth import Credentials, create_account, link_telegram, set_password
-from backend.api.projects import AgentCreate, ProjectCreate, create_project, default_workspace, persist_new_agent
+from backend.api.projects import (AgentCreate, ProjectCreate, create_project, default_workspace,
+                                  persist_new_agent, store_spec_media)
 from backend.api.ws import manager
 from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
+from backend.core.media import MAX_MEDIA_BYTES, MEDIA_TYPES, make_media
 from backend.core.orchestrator import orchestrator
 from backend.core.voice import VoiceTranscriber
 from backend.database.models import AgentConfig, MagicLoginRequest, Project, SpecItem, User, utc_now
 from backend.settings import ROOT
 
+from .formatting import telegram_html
 from .keyboards import (agent_chat_keyboard, cancel_keyboard, first_project_keyboard, main_menu,
                         profile_keyboard, project_keyboard, projects_keyboard, spec_keyboard)
 from .middlewares import AccountMiddleware
@@ -59,7 +62,7 @@ async def prompt_code(message: Message, state: FSMContext):
 async def start(message: Message, account: User | None, state: FSMContext):
     if await state.get_state() == ProjectSetup.spec_buffer.state:
         project_id = (await state.get_data()).get("project_id")
-        await message.answer("Буфер ТЗ открыт. Отправьте текст, аудио или документ.", reply_markup=spec_keyboard(project_id))
+        await message.answer("Буфер ТЗ открыт. Отправьте текст, изображение, аудио или документ.", reply_markup=spec_keyboard(project_id))
     else:
         text = (f"Здравствуйте, {account.username}! Выберите действие." if account else
                 "Добро пожаловать в Loomis. Создайте аккаунт или привяжите существующий.")
@@ -293,7 +296,7 @@ async def open_buffer(callback: CallbackQuery, state: FSMContext, session: Async
         await state.set_data({"project_id": project.id})
         await state.set_state(ProjectSetup.spec_buffer)
         count = await session.scalar(select(func.count(SpecItem.id)).where(SpecItem.project_id == project.id))
-        await callback.message.answer(f"Буфер ТЗ — {count} записей. Отправьте текст, аудио или документ.", reply_markup=spec_keyboard(project.id))
+        await callback.message.answer(f"Буфер ТЗ — {count} записей. Отправьте текст, изображение, аудио или документ.", reply_markup=spec_keyboard(project.id))
 
 
 @router.callback_query(F.data.startswith("view_spec:"))
@@ -309,7 +312,8 @@ async def view_spec(callback: CallbackQuery, session: AsyncSession, account: Use
         await callback.message.answer("SPEC.md пока не собран.")
     else:
         content = path.read_text(encoding="utf-8")
-        await callback.message.answer(content[:4000] or "SPEC.md пуст.")
+        for part in telegram_html(content.strip() or "SPEC.md пуст."):
+            await callback.message.answer(part, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("delete_project:"))
@@ -341,7 +345,7 @@ async def project_name(message: Message, state: FSMContext, session: AsyncSessio
     project = await create_project(session, account.id, data)
     await state.set_data({"project_id": project.id})
     await state.set_state(ProjectSetup.spec_buffer)
-    await message.answer("Буфер ТЗ — 0 записей. Отправьте текст, аудио или документ.", reply_markup=spec_keyboard(project.id))
+    await message.answer("Буфер ТЗ — 0 записей. Отправьте текст, изображение, аудио или документ.", reply_markup=spec_keyboard(project.id))
 
 
 async def buffer_project(session: AsyncSession, account: User | None, project_id: int | None) -> Project | None:
@@ -374,7 +378,25 @@ async def read_attachment(message: Message, bot: Bot) -> tuple[str, str]:
         return title, await parse_document(path)
 
 
-@router.message(ProjectSetup.spec_buffer, F.text | F.voice | F.audio | F.document)
+async def read_media(message, bot, project_id):
+    if message.photo:
+        attachment, name = message.photo[-1], "photo.jpg"
+    elif message.voice:
+        attachment, name = message.voice, "voice.ogg"
+    else:
+        attachment = message.audio or message.document
+        if attachment is None:
+            return None
+        name = attachment.file_name or "audio.mp3"
+        if Path(name).suffix.lower() not in MEDIA_TYPES and message.document:
+            return None
+    if attachment.file_size and attachment.file_size > MAX_MEDIA_BYTES:
+        raise ValueError("Размер медиафайла должен быть до 5 МБ.")
+    stream = await bot.download(attachment)
+    return make_media(project_id, name, stream.read(MAX_MEDIA_BYTES + 1))
+
+
+@router.message(ProjectSetup.spec_buffer, F.text | F.voice | F.audio | F.document | F.photo)
 async def spec_item(message: Message, bot: Bot, state: FSMContext, session: AsyncSession, account: User | None):
     project = await buffer_project(session, account, (await state.get_data()).get("project_id"))
     if project is None:
@@ -385,6 +407,11 @@ async def spec_item(message: Message, bot: Bot, state: FSMContext, session: Asyn
         title, content = "Текст", message.text.strip()
     else:
         try:
+            media = await read_media(message, bot, project.id)
+            if media is not None:
+                await store_spec_media(session, project, media)
+                await message.answer("Медиафайл добавлен в буфер ТЗ.", reply_markup=spec_keyboard(project.id))
+                return
             title, content = await read_attachment(message, bot)
         except ValueError as error:
             await message.answer(str(error))
@@ -542,11 +569,11 @@ async def open_agent_chat(callback: CallbackQuery, state: FSMContext, session: A
         return
     await state.set_data({"project_id": project.id, "agent_id": int(agent_id)})
     await state.set_state(AgentInteraction.question)
-    await callback.message.answer("Отправьте вопрос текстом или голосовым сообщением.",
+    await callback.message.answer("Отправьте вопрос, изображение или аудио.",
                                   reply_markup=cancel_keyboard())
 
 
-@router.message(AgentInteraction.question, F.text | F.voice)
+@router.message(AgentInteraction.question, F.text | F.voice | F.audio | F.photo | F.document)
 async def agent_chat_question(message: Message, bot: Bot, state: FSMContext,
                               session: AsyncSession, account: User | None):
     data = await state.get_data()
@@ -555,30 +582,33 @@ async def agent_chat_question(message: Message, bot: Bot, state: FSMContext,
         await state.clear()
         return
     try:
-        question = message.text
-        if question is None:
-            try:
-                _, question = await read_attachment(message, bot)
-            except Exception:
-                logger.exception("Voice question transcription failed")
-                await message.answer("Не удалось распознать голосовое сообщение.")
-                return
-        if not question.strip():
+        media = await read_media(message, bot, project.id)
+        if message.document and media is None:
+            await message.answer("Для чата прикрепите изображение или аудиофайл.")
+            return
+        question = (message.text or message.caption or "").strip()
+        if media is not None:
+            question = f"{question or 'Проанализируй вложение.'}\n\nФайл: {media.filename}"
+        if not question:
             await message.answer("В сообщении нет вопроса.")
             return
     except (OSError, ValueError) as exc:
         await message.answer(str(exc))
         return
+    except Exception:
+        logger.exception("Could not download Telegram media for project %s", project.id)
+        await message.answer("Не удалось загрузить медиафайл.")
+        return
 
     async def reply():
         try:
-            response = await orchestrator.question(project.id, data["agent_id"], question)
+            response = await orchestrator.question(project.id, data["agent_id"], question, media=media)
         except (OSError, ValueError) as exc:
             await message.answer(str(exc))
             return
         text = response["message"] or response["status"]
-        for offset in range(0, len(text), 3900):
-            await message.answer(text[offset:offset + 3900])
+        for part in telegram_html(text):
+            await message.answer(part, parse_mode="HTML")
 
     orchestrator.background_reply(reply())
 
