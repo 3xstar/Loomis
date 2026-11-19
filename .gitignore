@@ -4,3 +4,4 @@ __pycache__/
 .env
 workspaces/*
 temp_uploads/*
+loomis.db*
