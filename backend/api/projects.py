@@ -23,6 +23,7 @@ from backend.core.orchestrator import count_tokens, orchestrator, probe_agent
 from backend.database.models import AgentConfig, AgentMessage, Project, ProjectMedia, SpecItem, TaskLog, UserModelPreset, utc_now
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
+from worker.sandbox import workspace_file
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 hub_router = APIRouter(prefix="/api/hub", tags=["hub"])
@@ -68,6 +69,10 @@ class ProjectView(ProjectCreate):
     status: str
     created_at: datetime
     updated_at: datetime
+
+
+class ProjectDetail(ProjectView):
+    has_plan: bool
 
 
 class AgentCreate(BaseModel):
@@ -159,9 +164,13 @@ async def add_project(data: ProjectCreate, session: Session, user: CurrentUser):
     return await create_project(session, user.id, data)
 
 
-@router.get("/{project_id}", response_model=ProjectView)
+@router.get("/{project_id}", response_model=ProjectDetail)
 async def get_project(project: OwnedProject):
-    return project
+    try:
+        has_plan = workspace_file(orchestrator.workspace(project), "PLAN.md").is_file()
+    except (OSError, ValueError, RuntimeError):
+        has_plan = False
+    return ProjectDetail(**ProjectView.model_validate(project).model_dump(), has_plan=has_plan)
 
 
 @router.get("/{project_id}/spec-items", response_model=list[SpecItemView])

@@ -41,9 +41,22 @@ class GitBridge:
             else:
                 await self.git("switch", "-c", self.branch)
 
+    async def clear_stale_index_lock(self):
+        git_dir = self.workspace / ".git"
+        lock = git_dir / "index.lock"
+        if git_dir.is_file():
+            lock = self.workspace / await self.git("rev-parse", "--git-path", "index.lock")
+        try:
+            if time_ns() - lock.stat().st_mtime_ns > 10_000_000_000:
+                lock.unlink()
+        except FileNotFoundError:
+            pass
+
     async def commit(self, message="wip: handoff"):
+        await self.clear_stale_index_lock()
         await self.git("add", "-A")
         if await self.git("status", "--porcelain") or not await self.git("rev-parse", "--verify", "HEAD", allowed=(0, 128)):
+            await self.clear_stale_index_lock()
             await self.git("-c", "user.name=Loomis", "-c", "user.email=loomis@localhost",
                            "commit", "--allow-empty", "-m", message)
 
@@ -54,11 +67,13 @@ class GitBridge:
         return tag
 
     async def restore(self, source):
+        await self.clear_stale_index_lock()
         await self.git("add", "-A")
         if await self.git("status", "--porcelain") or source != "HEAD":
             await self.git("restore", f"--source={source}", "--staged", "--worktree", "--", ".")
 
     async def rollback_last_step(self):
+        await self.clear_stale_index_lock()
         tags = (await self.git("tag", "--list", f"{self.tags}*", "--sort=-refname")).splitlines()
         if not tags:
             raise ValueError("Нет точки отката.")

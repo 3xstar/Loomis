@@ -10,6 +10,7 @@ let statusRevision = 0;
 let specBusy = false;
 let actionBusy = false;
 let messageBusy = false;
+let planMode = false;
 let selectedAgent;
 let attachment, recording, microphonePending;
 let telegramLogsEnabled = false;
@@ -397,11 +398,22 @@ function syncComposer() {
   const available = project && !["draft", "council", "deleted"].includes(project.status)
     && (team ? agentsInProject.some((agent) => agent.enabled) : selectedAgent);
   const input = byId("message-input");
-  input.disabled = byId("chat-attach").disabled = !available || messageBusy;
+  const modeChip = byId("plan-mode");
+  const hasPlan = Boolean(project?.has_plan);
+  const editingPlan = team && planMode && hasPlan;
+  modeChip.textContent = editingPlan ? "Режим: Правка PLAN.md" : "Режим: Обсуждение";
+  modeChip.setAttribute("aria-pressed", editingPlan);
+  modeChip.disabled = !available || !hasPlan || messageBusy || Boolean(recording) || microphonePending;
+  modeChip.title = hasPlan ? "Переключить режим отправки" : "Правка доступна после создания плана";
+  input.disabled = !available || messageBusy;
+  byId("chat-attach").disabled = input.disabled || editingPlan;
   byId("send-button").disabled = input.disabled || Boolean(recording);
-  byId("chat-record").disabled = !recording && (input.disabled || microphonePending);
-  byId("plan-feedback").disabled = input.disabled || Boolean(recording);
-  input.placeholder = team ? "Напишите выбранным агентам…" : "Напишите агенту…";
+  byId("send-button").classList.toggle("plan-send", editingPlan);
+  byId("send-button").title = editingPlan ? "Отправить замечания к PLAN.md" : "Отправить";
+  byId("send-button").setAttribute("aria-label", byId("send-button").title);
+  byId("chat-record").disabled = !recording && (input.disabled || editingPlan || microphonePending);
+  input.placeholder = editingPlan ? "Напишите замечания к PLAN.md…"
+    : team ? "Напишите выбранным агентам…" : "Напишите агенту…";
   input.setAttribute("aria-label", team ? "Сообщение команде" : "Сообщение агенту");
 }
 
@@ -528,7 +540,21 @@ resizer.onkeydown = (event) => {
 
 function setStatus(status) {
   const enteringDraft = status === "draft" && byId("spec-panel").classList.contains("hidden");
-  if (project) project.status = status;
+  if (project) {
+    project.status = status;
+    if (!["draft", "deleted", "council"].includes(status)) {
+      const current = selection;
+      const revision = statusRevision;
+      api("projects/" + project.id).then(({has_plan}) => {
+        if (current !== selection || revision !== statusRevision || project.status !== status) return;
+        project.has_plan = has_plan;
+        if (!has_plan) planMode = false;
+        syncComposer();
+      }).catch((error) => {
+        if (current === selection && revision === statusRevision) notify(error.message);
+      });
+    }
+  }
   byId("project-status").textContent = ({
     draft: "Черновик", planning: "Планирование", council: "Консилиум",
     awaiting_approval: "План на утверждении",
@@ -724,6 +750,7 @@ async function selectProject(item) {
   discardRecording();
   setAttachment();
   teamTargets.clear();
+  planMode = false;
   deletedAgents.clear();
   project = item;
   specBusy = actionBusy = false;
@@ -1048,10 +1075,11 @@ byId("chat-record").onclick = async () => {
   }
 };
 
-async function sendMessage(feedback = false) {
+async function sendMessage() {
   const input = byId("message-input");
   const agentId = selectedAgent?.id;
   const mode = view;
+  const feedback = mode === "team" && planMode && project?.has_plan;
   const message = input.value.trim();
   const file = attachment;
   if (!project || input.disabled || recording || mode === "terminal") return;
@@ -1096,7 +1124,10 @@ byId("message-form").onsubmit = (event) => {
   event.preventDefault();
   sendMessage();
 };
-byId("plan-feedback").onclick = () => sendMessage(true);
+byId("plan-mode").onclick = () => {
+  planMode = !planMode;
+  syncComposer();
+};
 
 const contextMenu = byId("context-menu");
 let contextTarget, contextTrigger, modalTrigger;
@@ -1297,7 +1328,7 @@ document.addEventListener("keydown", (event) => {
   else if (!agentMenu.hidden) setAgentMenu(false, true);
   else showModal();
 });
-byId("mobile-menu").onclick = () => document.querySelector(".sidebar").classList.toggle("open");
+byId("hub-mobile-menu").onclick = byId("mobile-menu").onclick = () => document.querySelector(".sidebar").classList.toggle("open");
 
 const agentFields = {
   name: ["agent-name", "Имя должно содержать от 2 до 100 символов."],
@@ -1678,20 +1709,20 @@ async function loadHubModels() {
 function showHubPage(open) {
   byId("project-page").classList.toggle("hidden", open);
   byId("hub-page").classList.toggle("hidden", !open);
-  if (open) byId("hub-button").setAttribute("aria-current", "page");
-  else byId("hub-button").removeAttribute("aria-current");
+  const button = byId("hub-button");
+  button.classList.toggle("shows-projects", open);
+  button.setAttribute("aria-label", open ? "Проекты" : "Хаб нейросетей");
 }
 
 hubSearch.oninput = hubSort.onchange = renderHubModels;
 byId("hub-button").onclick = () => {
-  document.querySelector(".sidebar").classList.remove("open");
-  showHubPage(true);
-  loadHubModels();
-  hubSearch.focus();
-};
-byId("hub-back").onclick = () => {
-  showHubPage(false);
-  byId("hub-button").focus();
+  const open = byId("hub-page").classList.contains("hidden");
+  const sidebar = document.querySelector(".sidebar");
+  const mobile = sidebar.classList.contains("open");
+  sidebar.classList.remove("open");
+  showHubPage(open);
+  if (open) loadHubModels();
+  if (mobile) byId(open ? "hub-mobile-menu" : "mobile-menu").focus();
 };
 byId("hub-add").onclick = () => openHubForm();
 hubForm.onsubmit = async (event) => {

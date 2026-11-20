@@ -81,7 +81,10 @@
         <button id="logout-button" class="icon-button subtle" title="Выйти" aria-label="Выйти"><svg viewBox="0 0 24 24"><path d="M10 5H5v14h5"/><path d="m13 8 4 4-4 4"/><path d="M17 12H9"/></svg></button>
       </div>
 
-      <button id="hub-button" class="button secondary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 3v3m6-3v3M9 18v3m6-3v3M3 9h3m-3 6h3m12-6h3m-3 6h3m-12-5h4v4h-4z"/></svg> Хаб нейросетей</button>
+      <button id="hub-button" class="button secondary" type="button" aria-label="Хаб нейросетей" aria-controls="hub-page project-page">
+        <span class="hub-nav-label hub-nav-models" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m7.3 11 8.4-4m-8.4 6 8.4 4"/></svg>Хаб нейросетей</span>
+        <span class="hub-nav-label hub-nav-projects" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>Проекты</span>
+      </button>
       <div class="section-label"><span>Проекты</span><button id="new-project-button" class="text-action">Создать</button></div>
       <nav id="project-list" class="project-list" aria-label="Проекты"></nav>
 
@@ -177,7 +180,7 @@
             </div>
             <div id="team-controls" class="composer-top">
               <div id="team-targets" class="choice-list" role="group" aria-label="Адресаты"></div>
-              <button id="plan-feedback" class="text-action" type="button">На доработку плана</button>
+              <button id="plan-mode" class="choice-chip" type="button" aria-pressed="false">Режим: Обсуждение</button>
             </div>
             <div id="chat-attachment" class="composer-top hidden">
               <span id="attachment-name"></span>
@@ -200,8 +203,8 @@
     </main>
     <section id="hub-page" class="main-area hidden" aria-labelledby="hub-heading">
       <header class="hub-toolbar glass-panel">
+        <button id="hub-mobile-menu" class="icon-button mobile-only" aria-label="Меню"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
         <h2 id="hub-heading">Хаб нейросетей</h2>
-        <button id="hub-back" class="button secondary" type="button">К проектам</button>
         <input id="hub-search" type="search" aria-label="Поиск по названию или модели" placeholder="Название или модель">
         <select id="hub-sort" aria-label="Сортировка моделей">
           <option value="tokens">По потраченным токенам ↓</option>
@@ -283,35 +286,61 @@
     <div id="settings-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
       <div class="modal-head"><h3 id="settings-modal-title">Настройки</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <div class="stack">
-        <label class="field">
-          <span>Режим работы нейросетей</span>
+        <div class="field">
+          <div class="setting-heading">
+            <label for="autonomy-mode">Режим работы нейросетей</label>
+            <button class="setting-help" type="button" aria-label="Справка: Режим работы нейросетей" aria-describedby="autonomy-mode-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
+            <div id="autonomy-mode-help" class="setting-tooltip" role="tooltip"><span><strong>Автономный</strong> — агенты работают сами.</span><span><strong>С вопросами</strong> — уточняют неясности в чате.</span><span><strong>Пошаговый</strong> — ждут подтверждения каждого шага.</span></div>
+          </div>
           <select id="autonomy-mode" disabled>
             <option value="autonomous">Автономный</option>
             <option value="consultative">С вопросами</option>
             <option value="step_by_step">Пошаговый</option>
           </select>
-        </label>
-        <label class="field">
-          <span>Режим передачи при поломке</span>
+        </div>
+        <div class="field">
+          <div class="setting-heading">
+            <label for="failover-mode">Режим передачи при поломке</label>
+            <button class="setting-help" type="button" aria-label="Справка: Режим передачи при поломке" aria-describedby="failover-mode-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
+            <div id="failover-mode-help" class="setting-tooltip" role="tooltip"><span><strong>Авто-передача</strong> — следующий агент сразу подхватывает задачу.</span><span><strong>С подтверждением</strong> — Loomis ждёт вашего согласия на передачу.</span></div>
+          </div>
           <select id="failover-mode" disabled>
             <option value="auto">Авто-передача</option>
             <option value="manual">С подтверждением</option>
           </select>
-        </label>
-        <label class="field">
-          <span>Краткость отчётов нейросетей</span>
+        </div>
+        <div class="field">
+          <div class="setting-heading">
+            <label for="verbosity-mode">Краткость отчётов нейросетей</label>
+            <button class="setting-help" type="button" aria-label="Справка: Краткость отчётов нейросетей" aria-describedby="verbosity-mode-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
+            <div id="verbosity-mode-help" class="setting-tooltip" role="tooltip"><span><strong>Кратко по сути</strong> — только результат и важные детали.</span><span><strong>Сбалансированно</strong> — результат и основные решения.</span><span><strong>Подробно</strong> — ход работы, решения и детали.</span></div>
+          </div>
           <select id="verbosity-mode" disabled>
             <option value="concise">Кратко по сути</option>
             <option value="balanced">Сбалансированно</option>
             <option value="detailed">Подробно</option>
           </select>
-        </label>
+        </div>
         <form id="deadline-form" class="stack">
-          <label class="field"><span>Дедлайн одного запроса агента (в минутах)</span><input id="request-deadline" type="number" list="deadline-options" min="1" max="1440" step="1" required disabled></label>
+          <div class="field">
+            <div class="setting-heading">
+            <label for="request-deadline">Дедлайн одного запроса агента (в минутах)</label>
+            <button class="setting-help" type="button" aria-label="Справка: Дедлайн одного запроса агента (в минутах)" aria-describedby="request-deadline-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
+            <div id="request-deadline-help" class="setting-tooltip" role="tooltip"><span><strong>2, 5, 10, 15 или 30 минут</strong> — готовые значения, можно ввести своё от 1 до 1440.</span><span><strong>По истечении срока</strong> — Loomis сохраняет частичную работу и запускает передачу задачи.</span></div>
+          </div>
+            <input id="request-deadline" type="number" list="deadline-options" min="1" max="1440" step="1" required disabled>
+          </div>
           <datalist id="deadline-options"><option value="2"><option value="5"><option value="10"><option value="15"><option value="30"></datalist>
           <button id="save-deadline" class="button secondary" type="submit" disabled>Сохранить дедлайн</button>
         </form>
-        <label class="switch-row"><span>Рабочие логи в Telegram</span><input id="telegram-logs" type="checkbox" role="switch"><span id="telegram-logs-state" aria-hidden="true"></span></label>
+        <div class="switch-row">
+          <div class="setting-heading">
+            <label for="telegram-logs">Рабочие логи в Telegram</label>
+            <button class="setting-help" type="button" aria-label="Справка: Рабочие логи в Telegram" aria-describedby="telegram-logs-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
+            <div id="telegram-logs-help" class="setting-tooltip" role="tooltip"><span><strong>Включены</strong> — бот присылает рабочие журналы.</span><span><strong>Выключены</strong> — рабочие журналы остаются в Loomis.</span></div>
+          </div>
+          <input id="telegram-logs" type="checkbox" role="switch"><span id="telegram-logs-state" aria-hidden="true"></span>
+        </div>
       </div>
     </div>
     <div id="hub-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="hub-modal-title">
