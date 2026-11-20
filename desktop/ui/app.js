@@ -269,7 +269,11 @@ function messageNode(event, channel) {
   const entry = element("article", channel === "terminal" ? "terminal-entry" : own ? "chat-message own-message" : "chat-message");
   const head = element("header", "message-header");
   const name = event.sender_name || event.agent_name || agentsInProject.find((agent) => agent.id === event.agent_id)?.name;
-  head.append(element(channel === "terminal" ? "h4" : "strong", "", own ? "Вы" : name || "Агент"));
+  if (channel === "terminal") {
+    head.append(element("h4", "", event.step_title || "Вывод шага агента"));
+  } else {
+    head.append(element("strong", "", own ? "Вы" : name || "Агент"));
+  }
   if (channel === "team" && event.target_name) head.append(element("span", "recipient", event.target_name));
   const created = event.created_at;
   const stamp = created ? new Date(/(?:Z|[+-]\d{2}:\d{2})$/i.test(created) ? created : created + "Z") : new Date();
@@ -1686,14 +1690,14 @@ function renderHubModels() {
     const provider = [...hubProvider.options].find((option) => option.value === preset.adapter_type)?.text || preset.adapter_type;
     const usage = element("div", "hub-usage");
     const rating = hubRatings.get(preset.model_key) ?? 100;
-    const badge = element("span", "hub-rating", "★ " + Math.round(rating) + "%");
+    const badge = element("span", "hub-rating", Math.round(rating) + "%");
     badge.title = hubRatings.has(preset.model_key) ? "Надёжность модели" : "Начальный рейтинг модели";
     usage.append(element("strong", "", statsNumber.format(preset.total_tokens_used)),
-      element("small", "", "Токенов за всё время · все проекты"));
+      element("small", "", "Токенов за всё время"));
     const heading = element("h3", "", preset.name);
     heading.append(badge);
     card.append(heading,
-      element("small", "", provider + " / " + preset.config_json.model), usage, actions);
+      element("small", "hub-model-detail", provider + " / " + preset.config_json.model), usage, actions);
     return card;
   }));
 }

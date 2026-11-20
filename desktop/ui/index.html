@@ -204,14 +204,18 @@
     <section id="hub-page" class="main-area hidden" aria-labelledby="hub-heading">
       <header class="hub-toolbar glass-panel">
         <button id="hub-mobile-menu" class="icon-button mobile-only" aria-label="Меню"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-        <h2 id="hub-heading">Хаб нейросетей</h2>
-        <input id="hub-search" type="search" aria-label="Поиск по названию или модели" placeholder="Название или модель">
-        <select id="hub-sort" aria-label="Сортировка моделей">
-          <option value="tokens">По потраченным токенам ↓</option>
-          <option value="name">По имени А–Я</option>
-          <option value="date">По дате добавления</option>
-        </select>
-        <button id="hub-add" class="button primary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Добавить модель в Хаб</button>
+        <div class="hub-toolbar-title">
+          <h2 id="hub-heading">Хаб нейросетей</h2>
+          <button id="hub-add" class="button primary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Добавить модель в Хаб</button>
+        </div>
+        <div class="hub-toolbar-filters">
+          <input id="hub-search" type="search" aria-label="Поиск по названию или модели" placeholder="Название или модель">
+          <select id="hub-sort" aria-label="Сортировка моделей">
+            <option value="tokens">По потраченным токенам ↓</option>
+            <option value="name">По имени А–Я</option>
+            <option value="date">По дате добавления</option>
+          </select>
+        </div>
       </header>
       <div class="hub-content">
         <p id="hub-status" role="status"></p>
@@ -328,7 +332,10 @@
             <button class="setting-help" type="button" aria-label="Справка: Дедлайн одного запроса агента (в минутах)" aria-describedby="request-deadline-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
             <div id="request-deadline-help" class="setting-tooltip" role="tooltip"><span><strong>2, 5, 10, 15 или 30 минут</strong> — готовые значения, можно ввести своё от 1 до 1440.</span><span><strong>По истечении срока</strong> — Loomis сохраняет частичную работу и запускает передачу задачи.</span></div>
           </div>
-            <input id="request-deadline" type="number" list="deadline-options" min="1" max="1440" step="1" required disabled>
+            <div class="deadline-input">
+              <input id="request-deadline" type="number" list="deadline-options" min="1" max="1440" step="1" required disabled>
+              <span aria-hidden="true">мин</span>
+            </div>
           </div>
           <datalist id="deadline-options"><option value="2"><option value="5"><option value="10"><option value="15"><option value="30"></datalist>
           <button id="save-deadline" class="button secondary" type="submit" disabled>Сохранить дедлайн</button>

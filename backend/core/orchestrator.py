@@ -29,6 +29,14 @@ from .model_performance import cache_response, cached_response, model_key, promp
 
 logger = logging.getLogger(__name__)
 
+STEP_TITLES = {
+    "question": "Ответ на вопрос пользователя",
+    "plan": "Формирование файла PLAN.md",
+    "meeting": "Промежуточное собрание команды",
+    "execute": "Выполнение шага разработки",
+    "handoff": "Приём задачи от агента",
+}
+
 
 @dataclass
 class Runtime:
@@ -151,7 +159,7 @@ class ProjectAgent(BaseAgent):
         self.project = project
         self.config = config
 
-    async def run(self, operation, prompt, context="", workspace=None, timeout=None, images=()):
+    async def run(self, operation, prompt, context="", workspace=None, timeout=None, images=(), *, step_title=None):
         project, config = self.project, self.config
         instruction = VERBOSITY[project.verbosity_level or "concise"]
         if operation == "plan":
@@ -245,7 +253,8 @@ class ProjectAgent(BaseAgent):
                         )
                 await session.commit()
         await self.engine.message(
-            project.id, config.name, "@All", "terminal", result.terminal or result.message, config
+            project.id, config.name, "@All", "terminal", result.terminal or result.message, config,
+            step_title=step_title or STEP_TITLES[operation],
         )
         if manage_traffic:
             await self.engine.traffic(
@@ -257,9 +266,9 @@ class ProjectAgent(BaseAgent):
     async def execute_task(self, prompt, work_dir, timeout):
         return await self.run("execute", prompt, workspace=work_dir, timeout=timeout)
 
-    async def ask_question(self, question, context):
+    async def ask_question(self, question, context, *, step_title=None):
         images = await self.engine.spec_images(self.project.id)
-        return await self.run_with_spec_images("question", question, context, images=images)
+        return await self.run_with_spec_images("question", question, context, images=images, step_title=step_title)
 
     async def run_with_spec_images(self, operation, prompt, context="", *, images, **options):
         result = await self.run(operation, prompt, context, images=images, **options)
@@ -310,7 +319,7 @@ class Orchestrator:
             await session.commit()
 
     async def message(self, project_id, sender, target, channel, content, config=None, *,
-                      media=None, mirror=None):
+                      media=None, mirror=None, step_title=None):
         agent_id = config.id if config else None
         deliveries = ((channel, target), (mirror, "@User")) if mirror else ((channel, target),)
         rows = [AgentMessage(project_id=project_id, sender_name=sender, target_name=recipient,
@@ -330,6 +339,7 @@ class Orchestrator:
                 "created_at": row.created_at.isoformat(), "agent_id": agent_id,
                 "agent_name": config.name if config else None,
                 "media_id": row.media_id,
+                "step_title": step_title,
             })
         if self.bot and any(row.channel == "team_chat" for row in rows) and self.telegram_projects:
             async with async_session_factory() as session:
@@ -590,16 +600,19 @@ class Orchestrator:
         return selected
 
     async def plan(self, project_id, project, configs, selected, feedback, targeted):
-        async def publish(agent, content):
+        async def publish(agent, content, step_title):
             config = agent.config
             await self.message(project_id, config.name, "@All", "team_chat", content, config,
-                               mirror="direct" if targeted else None)
+                               mirror="direct" if targeted else None, step_title=step_title)
             await self.notify(project_id, f"{config.name}\n\n{content}", event_type="step_log", config=config,
                               in_team_chat=True)
 
-        async def synthesize(agent, prompt, context):
+        async def ask(agent, prompt, context, step_title):
+            return await agent.ask_question(prompt, context, step_title=step_title)
+
+        async def synthesize(agent, prompt, context, step_title):
             images = await self.spec_images(project_id)
-            return await agent.run_with_spec_images("plan", prompt, context, images=images)
+            return await agent.run_with_spec_images("plan", prompt, context, images=images, step_title=step_title)
 
         async def rank_members(members):
             _, current = await self.load(project_id)
@@ -614,7 +627,7 @@ class Orchestrator:
             agents = [(item.name, ProjectAgent(self, project, item)) for item in selected]
             plan = await starting_council(
                 self.workspace(project), agents, feedback, publish=publish,
-                roster=[item.name for item in configs], synthesize=synthesize, rank=rank_members,
+                roster=[item.name for item in configs], synthesize=synthesize, rank=rank_members, ask=ask,
             )
             await self.status(project_id, "awaiting_approval", plan_digest=self.plan_digest(project))
             from backend.bot.keyboards import project_keyboard
@@ -638,7 +651,8 @@ class Orchestrator:
             async def respond(config):
                 response = await self.ask(project, config, question, context, media)
                 await self.message(project_id, config.name, "@User", "team_chat", response.message, config,
-                                   mirror="direct" if target_agent_ids is not None else None)
+                                   mirror="direct" if target_agent_ids is not None else None,
+                                   step_title=STEP_TITLES["question"])
                 return {"agent_id": config.id, "status": response.status,
                         "message": response.message, "tokens": response.tokens}
 
@@ -712,7 +726,7 @@ class Orchestrator:
             try:
                 result = await self.ask(project, config, question, context, media)
                 await self.message(project_id, config.name, "@User", "direct", result.message, config,
-                                   mirror="team_chat" if mirror else None)
+                                   mirror="team_chat" if mirror else None, step_title=STEP_TITLES["question"])
                 return {"status": result.status, "message": result.message, "tokens": result.tokens}
             finally:
                 if was_running:
@@ -826,7 +840,8 @@ class Orchestrator:
                     if receipt.status != "success" or not receipt.message.strip():
                         raise RuntimeError(receipt.message.strip() or "Агент не подтвердил передачу задачи.")
                     await self.message(project.id, config.name, "@All", "team_chat",
-                                       f"Принял передачу.\n{receipt.message}", config)
+                                       f"Принял передачу.\n{receipt.message}", config,
+                                       step_title=STEP_TITLES["handoff"])
                 while True:
                     stage = "исполнение задачи"
                     if remote:
@@ -842,6 +857,7 @@ class Orchestrator:
                         + "Если данных не хватает для продолжения, верни только LOOMIS_QUESTION: <вопрос>. "
                         "Если все задачи плана завершены, верни отдельную строку LOOMIS_COMPLETE.",
                         workspace=workspace, timeout=max(0.01, deadline - clock.time()), images=images,
+                        step_title="Исправление ошибок проверки" if feedback else None,
                     )
                     recent = result.message
                     if result.status == "timeout":
@@ -865,7 +881,8 @@ class Orchestrator:
                         stage = "сохранение результата"
                         await bridge.commit()
                         break
-                    await self.message(project.id, config.name, "@All", "terminal", feedback, config)
+                    await self.message(project.id, config.name, "@All", "terminal", feedback, config,
+                                       step_title="Результат проверки проекта")
         except (TimeoutError, OSError, ValueError, RuntimeError) as exc:
             error = str(exc) or f"Истёк дедлайн задачи ({project.deadline_minutes} мин.)."
             await self.traffic(config, "error", error)
@@ -912,7 +929,8 @@ class Orchestrator:
             f"Изменённые файлы:\n{changes or 'Нет изменений'}\n"
             f"Результат и инструкции:\n{result.message}"
         )
-        await self.message(project.id, config.name, target, "team_chat", report, config)
+        await self.message(project.id, config.name, target, "team_chat", report, config,
+                           step_title=STEP_TITLES["execute"])
         await self.notify(project.id, report, event_type="step_log", config=config, in_team_chat=True)
         if complete:
             runtime.ready.clear()
