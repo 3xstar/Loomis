@@ -3,6 +3,8 @@ from aiogram.fsm.state import State, StatesGroup
 
 class ProjectSetup(StatesGroup):
     name = State()
+    workspace = State()
+    git = State()
     spec_buffer = State()
 
 
@@ -18,6 +20,8 @@ class AgentInteraction(StatesGroup):
 
 class ProjectSettings(StatesGroup):
     deadline = State()
+    workspace = State()
+    git = State()
 
 
 class HubSetup(StatesGroup):

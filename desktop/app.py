@@ -17,6 +17,14 @@ if __package__ in (None, ""):
 from backend.settings import settings
 
 
+class DesktopAPI:
+    def select_folder(self) -> str | None:
+        folders = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        if isinstance(folders, str):
+            return folders or None
+        return folders[0] if folders else None
+
+
 def set_dark_title_bar(window) -> None:
     from ctypes import byref, c_int, windll
     from ctypes.wintypes import HWND
@@ -77,9 +85,11 @@ def main() -> None:
                     raise RuntimeError(f"Сервер Loomis недоступен по адресу {url}")
                 sleep(0.2)
         # Load the FastAPI-mounted UI on the same origin as the API and WebSocket.
+        api = DesktopAPI()
         window = webview.create_window(
-            "Loomis", f"{url}/index.html", width=1280, height=820, background_color="#0b1020",
+            "Loomis", f"{url}/index.html", width=1280, height=820, background_color="#0b1020", js_api=api,
         )
+        api._window = window
         if sys.platform == "win32":
             window.events.shown += lambda: set_dark_title_bar(window)
             window.events.loaded += lambda: enable_workspace_popup(window, url)

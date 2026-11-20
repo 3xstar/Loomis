@@ -102,7 +102,7 @@ async function signIn(accessToken, isCurrent = () => true) {
   sessionStorage.setItem("loomis-token", token);
   byId("user-name").textContent = user.username || "Loomis";
   byId("user-avatar").textContent = byId("user-name").textContent[0].toUpperCase();
-  byId("telegram-dot").classList.toggle("online", Boolean(user.telegram_id));
+  byId("telegram-plane").classList.toggle("online", Boolean(user.telegram_id));
   byId("telegram-label").textContent = user.telegram_id ? "Привязан" : "Не привязан";
   showWorkspace(true);
   try {
@@ -777,7 +777,7 @@ async function selectProject(item) {
   messageBusy = false;
   renderAgentSelector([]);
   renderTeamTargets();
-  byId("current-project-name").textContent = item?.name || "Выберите проект";
+  renderProjectTitle();
   renderProjectModes();
   setStatus(item?.status || "—");
   all(".project-button").forEach((button) => button.setAttribute("aria-current", button.dataset.id === String(item?.id)));
@@ -953,7 +953,9 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
   const active = preserveSelection && projects.find((item) => item.id === project?.id);
   if (active) {
     project.name = active.name;
-    byId("current-project-name").textContent = active.name;
+    project.workspace_path = active.workspace_path;
+    project.git_repo_url = active.git_repo_url;
+    renderProjectTitle();
     buttons[projects.indexOf(active)].setAttribute("aria-current", "true");
     return;
   }
@@ -1426,10 +1428,72 @@ function renderTelegramLogs() {
   byId("telegram-logs").checked = telegramLogsEnabled;
   byId("telegram-logs-state").textContent = telegramLogsEnabled ? "Вкл" : "Выкл";
 }
+
+function renderProjectTitle() {
+  byId("current-project-name").textContent = project?.name || "Выберите проект";
+  byId("current-project-workspace").textContent = project ? "Папка проекта на ПК: " + project.workspace_path : "";
+  byId("current-project-git").textContent = project?.git_repo_url ? "Git-репозиторий: " + project.git_repo_url : "";
+}
+
+for (const button of all("[data-folder-input]")) {
+  button.onclick = async () => {
+    const field = byId(button.dataset.folderInput);
+    const revision = modalRevision;
+    button.disabled = true;
+    try {
+      const path = await window.pywebview?.api?.select_folder?.();
+      if (revision === modalRevision && path) field.value = path;
+    } catch {
+      if (revision === modalRevision) notify("Введите путь к папке вручную.");
+    } finally {
+      button.disabled = false;
+      if (revision === modalRevision) field.focus();
+    }
+  };
+}
+
+const locationForm = byId("project-location-form");
 byId("settings-button").onclick = () => {
   renderTelegramLogs();
   renderDeadline();
+  locationForm.classList.toggle("hidden", !project);
+  byId("settings-workspace").value = project?.workspace_path ?? "";
+  byId("settings-git").value = project?.git_repo_url ?? "";
   showModal("settings-modal");
+};
+
+function projectLocation(workspaceId, gitId) {
+  const path = byId(workspaceId).value;
+  return {workspace_path: path.trim() ? path : null, git_repo_url: byId(gitId).value.trim() || null};
+}
+
+locationForm.onsubmit = async (event) => {
+  event.preventDefault();
+  if (!project) return;
+  const target = project;
+  const revision = modalRevision;
+  const button = event.submitter;
+  const updates = projectLocation("settings-workspace", "settings-git");
+  for (const key of Object.keys(updates)) {
+    if (updates[key] === target[key]) delete updates[key];
+  }
+  if (!Object.keys(updates).length) return;
+  button.disabled = true;
+  try {
+    const saved = await api("projects/" + target.id, updates, token, "PATCH");
+    if (project !== target) return;
+    target.workspace_path = saved.workspace_path;
+    target.git_repo_url = saved.git_repo_url;
+    renderProjectTitle();
+    if (revision === modalRevision) {
+      byId("settings-workspace").value = saved.workspace_path;
+      byId("settings-git").value = saved.git_repo_url ?? "";
+    }
+  } catch (error) {
+    if (project === target) notify(error.message);
+  } finally {
+    button.disabled = false;
+  }
 };
 byId("telegram-logs").onchange = async ({target}) => {
   const session = token;
@@ -1447,17 +1511,29 @@ byId("telegram-logs").onchange = async ({target}) => {
 };
 
 function renderDeadline() {
-  byId("request-deadline").value = project?.deadline_minutes ?? "";
-  byId("request-deadline").disabled = byId("save-deadline").disabled = !project;
+  const field = byId("request-deadline");
+  field.value = project?.deadline_minutes ?? "";
+  field.setCustomValidity("");
+  field.disabled = byId("save-deadline").disabled = !project;
 }
+byId("request-deadline").oninput = ({target}) => {
+  target.value = target.value.replace(/[^0-9]/g, "");
+  target.setCustomValidity("");
+};
 byId("deadline-form").onsubmit = async (event) => {
   event.preventDefault();
   if (!project) return;
   const target = project;
   const field = byId("request-deadline");
+  const deadline = Number(field.value);
+  if (deadline < 1 || deadline > 1440) {
+    field.setCustomValidity("Введите целое число от 1 до 1440.");
+    field.reportValidity();
+    return;
+  }
   field.disabled = byId("save-deadline").disabled = true;
   try {
-    const result = await api("projects/" + target.id, {deadline_minutes: Number(field.value)}, token, "PATCH");
+    const result = await api("projects/" + target.id, {deadline_minutes: deadline}, token, "PATCH");
     target.deadline_minutes = result.deadline_minutes;
   } catch (error) {
     notify(error.message);
@@ -1547,7 +1623,11 @@ byId("project-form").onsubmit = async (event) => {
   const form = event.currentTarget;
   button.disabled = true;
   try {
-    const created = await api("projects", {name: byId("project-name").value, description: byId("project-description").value}, session);
+    const created = await api("projects", {
+      name: byId("project-name").value,
+      description: byId("project-description").value,
+      ...projectLocation("project-workspace", "project-git"),
+    }, session);
     let importError;
     if (presetIds.length) {
       try {

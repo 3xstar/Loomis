@@ -29,11 +29,20 @@ class GitBridge:
             raise RuntimeError(err.decode(errors="replace").strip() or "Git operation failed")
         return out.decode(errors="replace").strip()
 
-    async def prepare(self):
+    async def initialize(self):
         if not (self.workspace / ".git").exists():
             await self.git("init")
         if await self.git("rev-parse", "--show-prefix"):
             raise RuntimeError("The workspace must be the repository root")
+
+    async def link_origin(self, url: str):
+        await self.initialize()
+        remotes = (await self.git("remote")).splitlines()
+        action = "set-url" if "origin" in remotes else "add"
+        await self.git("remote", action, "--", "origin", url)
+
+    async def prepare(self):
+        await self.initialize()
         if await self.git("branch", "--show-current") != self.branch:
             existing = await self.git("branch", "--list", self.branch)
             if existing:

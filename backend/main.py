@@ -40,6 +40,7 @@ def initialize_schema(connection) -> None:
         "task_logs": {"sender_name": "VARCHAR(100)"},
         "user_model_presets": {"total_tokens_used": "BIGINT NOT NULL DEFAULT 0"},
         "projects": {
+            "git_repo_url": "VARCHAR(500)",
             "status": "VARCHAR(50) NOT NULL DEFAULT 'draft'",
             "test_command": "TEXT",
             "meeting_interval_minutes": "INTEGER NOT NULL DEFAULT 15",

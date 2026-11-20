@@ -350,7 +350,15 @@ async def project_card(callback: CallbackQuery, state: FSMContext, session: Asyn
     count = await session.scalar(select(func.count(SpecItem.id)).where(SpecItem.project_id == project.id))
     created = project.created_at.strftime("%Y-%m-%d %H:%M") if project.created_at else "—"
     updated = project.updated_at.strftime("%Y-%m-%d %H:%M") if getattr(project, "updated_at", None) else "—"
-    await callback.message.answer(f"{project.name}\nСтатус: {project.status}\nСоздан: {created}\nОбновлён: {updated}\nЗаписей ТЗ: {count}", reply_markup=project_keyboard(project))
+    await callback.message.answer(
+        f"{project.name}\nСтатус: {project.status}\nСоздан: {created}\nОбновлён: {updated}\n"
+        f"Записей ТЗ: {count}\n{workspace_details(project)}", reply_markup=project_keyboard(project),
+    )
+
+
+def workspace_details(project: Project) -> str:
+    path = str(Path(project.workspace_path).absolute()) if project.workspace_path else default_workspace(project)
+    return f"Папка проекта на ПК: {path}" + (f"\nGit-репозиторий: {project.git_repo_url}" if project.git_repo_url else "")
 
 
 async def owned_project(session, account: User | None, project_id: int):
@@ -409,7 +417,7 @@ async def delete_project_callback(callback: CallbackQuery, state: FSMContext, se
 
 
 @router.message(ProjectSetup.name)
-async def project_name(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
+async def project_name(message: Message, state: FSMContext, account: User | None):
     if account is None:
         await message.answer(LINK_HELP, reply_markup=main_menu(False))
         return
@@ -418,10 +426,82 @@ async def project_name(message: Message, state: FSMContext, session: AsyncSessio
     except ValidationError:
         await message.answer("Введите название проекта текстом, до 255 символов.")
         return
-    project = await create_project(session, account.id, data)
+    await state.update_data(project_name=data.name)
+    await prompt_workspace(message, state)
+
+
+async def prompt_workspace(message, state):
+    await state.set_state(ProjectSetup.workspace)
+    await message.answer("Где сохранить проект на ПК?", reply_markup=inline_menu([
+        [("По умолчанию (workspaces)", "new_workspace:default")],
+        [("✏️ Ввести свой путь на ПК", "new_workspace:custom")],
+    ]))
+
+
+async def prompt_project_git(message, state, path):
+    await state.update_data(workspace_path=path)
+    await state.set_state(ProjectSetup.git)
+    await message.answer("Введите адрес Git-репозитория, например https://github.com/user/repo.git.",
+                         reply_markup=inline_menu([[("⏭ Пропустить Git", "new_git:skip")]]))
+
+
+WORKSPACE_PROMPT = r"Введите полный путь к папке на ПК, например D:\Projects\NewApp."
+
+
+@router.callback_query(ProjectSetup.workspace, F.data.in_({"new_workspace:default", "new_workspace:custom"}))
+async def choose_workspace(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    if callback.data == "new_workspace:default":
+        await prompt_project_git(callback.message, state, None)
+    else:
+        await callback.message.answer(WORKSPACE_PROMPT, reply_markup=cancel_keyboard())
+
+
+@router.message(ProjectSetup.workspace)
+async def enter_workspace(message: Message, state: FSMContext):
+    path = message.text
+    if not path or len(path) > 1024 or not Path(path).is_absolute():
+        await message.answer(WORKSPACE_PROMPT)
+        return
+    await prompt_project_git(message, state, path)
+
+
+async def finish_new_project(message, state, session, account, repo_url):
+    if account is None:
+        await message.answer(LINK_HELP, reply_markup=main_menu(False))
+        return
+    fields = await state.get_data()
+    try:
+        data = ProjectCreate(name=fields["project_name"], workspace_path=fields["workspace_path"],
+                             git_repo_url=repo_url)
+        project = await create_project(session, account.id, data)
+    except ValidationError:
+        await message.answer("Введите адрес Git-репозитория длиной до 500 символов.")
+        return
+    except HTTPException as exc:
+        await message.answer(exc.detail, reply_markup=inline_menu([
+            [("Изменить папку", "new_git:workspace"), ("⏭ Пропустить Git", "new_git:skip")],
+        ]))
+        return
     await select_project(message, state, account, project.id)
     await state.set_state(ProjectSetup.spec_buffer)
-    await message.answer("Буфер ТЗ — 0 записей. Отправьте текст, изображение, аудио или документ.", reply_markup=spec_keyboard(project.id))
+    await message.answer(f"{workspace_details(project)}\n\n"
+                         "Буфер ТЗ — 0 записей. Отправьте текст, изображение, аудио или документ.",
+                         reply_markup=spec_keyboard(project.id))
+
+
+@router.callback_query(ProjectSetup.git, F.data.in_({"new_git:skip", "new_git:workspace"}))
+async def choose_project_git(callback: CallbackQuery, state: FSMContext, session: AsyncSession, account: User | None):
+    await callback.answer()
+    if callback.data == "new_git:workspace":
+        await prompt_workspace(callback.message, state)
+    else:
+        await finish_new_project(callback.message, state, session, account, None)
+
+
+@router.message(ProjectSetup.git)
+async def enter_project_git(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
+    await finish_new_project(message, state, session, account, message.text or "")
 
 
 async def buffer_project(session: AsyncSession, account: User | None, project_id: int | None) -> Project | None:
@@ -823,12 +903,14 @@ SETTING_OPTIONS = {
 async def show_settings(message, project, account):
     prefix = f"settings:{project.id}:"
     rows = [[(f"Дедлайн · {project.deadline_minutes} мин.", prefix + "deadline")]]
+    rows.extend([[("Изменить папку на ПК", prefix + "workspace")],
+                 [("Привязать или сменить Git-репозиторий", prefix + "git")]])
     for field, options in SETTING_OPTIONS.items():
         rows.append([(f"✓ {label}" if getattr(project, field) == key else label, f"{prefix}{field}:{key}")
                      for key, label in options.items()])
     logs = "включены" if account.tg_logs_enabled else "выключены"
     rows.append([(f"Рабочие логи в Telegram · {logs}", prefix + "logs")])
-    await message.answer("Настройки проекта", reply_markup=inline_menu(rows))
+    await message.answer(f"Настройки проекта\n{workspace_details(project)}", reply_markup=inline_menu(rows))
 
 
 @router.callback_query(F.data.startswith("settings:"))
@@ -839,6 +921,11 @@ async def change_setting(callback: CallbackQuery, state: FSMContext, session: As
     if project is None:
         return
     await select_project(callback.message, state, account, project.id)
+    if field in {"workspace", "git"}:
+        await state.set_state(getattr(ProjectSettings, field))
+        prompt = WORKSPACE_PROMPT if field == "workspace" else "Введите адрес Git-репозитория."
+        await callback.message.answer(prompt, reply_markup=cancel_keyboard())
+        return
     if field == "deadline":
         await state.set_state(ProjectSettings.deadline)
         await callback.message.answer("Введите дедлайн запроса в минутах (от 1 до 1440).",
@@ -851,6 +938,31 @@ async def change_setting(callback: CallbackQuery, state: FSMContext, session: As
     elif len(values) == 1 and values[0] in SETTING_OPTIONS.get(field, {}):
         await edit_project(ProjectPatch.model_validate({field: values[0]}), project, session)
     await show_settings(callback.message, project, account)
+
+
+@router.message(StateFilter(ProjectSettings.workspace, ProjectSettings.git))
+async def save_workspace_setting(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
+    project = await owned_project(session, account, (await state.get_data()).get("project_id"))
+    if project is None:
+        await leave_project(message, state, account)
+        return
+    workspace = await state.get_state() == ProjectSettings.workspace.state
+    value = message.text or ""
+    if workspace and not Path(value).is_absolute():
+        await message.answer(WORKSPACE_PROMPT)
+        return
+    field = "workspace_path" if workspace else "git_repo_url"
+    try:
+        await edit_project(ProjectPatch.model_validate({field: value}), project, session)
+    except ValidationError:
+        await message.answer(WORKSPACE_PROMPT if workspace else "Введите адрес Git-репозитория длиной до 500 символов.")
+        return
+    except HTTPException as exc:
+        await message.answer(exc.detail)
+        return
+    await state.set_state(None)
+    await message.answer("Настройки сохранены.", reply_markup=project_reply_keyboard())
+    await show_settings(message, project, account)
 
 
 @router.message(ProjectSettings.deadline)

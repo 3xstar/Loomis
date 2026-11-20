@@ -1,3 +1,5 @@
+import asyncio
+import os
 import re
 from contextlib import nullcontext
 from datetime import datetime
@@ -5,7 +7,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, computed_field, field_serializer
@@ -24,11 +25,14 @@ from backend.core.orchestrator import count_tokens, orchestrator, probe_agent
 from backend.database.models import AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia, SpecItem, TaskLog, UserModelPreset, utc_now
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
+from worker.git_bridge import GitBridge
 from worker.sandbox import workspace_file
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 hub_router = APIRouter(prefix="/api/hub", tags=["hub"])
 ProjectName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
+GitRepoURL = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500,
+                                               pattern=r"^[^\x00-\x1f\x7f]+$")]
 AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=100, pattern=r"^[^\r\n]+$")]
 ProviderName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 AutonomyMode = Literal["autonomous", "consultative", "step_by_step"]
@@ -40,6 +44,7 @@ class ProjectCreate(BaseModel):
     name: ProjectName
     description: str | None = None
     workspace_path: str | None = Field(default=None, min_length=1, max_length=1024)
+    git_repo_url: GitRepoURL | None = None
 
     test_command: str | None = None
     meeting_interval_minutes: int = Field(default=15, ge=1, le=1440)
@@ -53,6 +58,7 @@ class ProjectPatch(BaseModel):
     name: ProjectName | None = None
     description: str | None = None
     workspace_path: str | None = Field(default=None, min_length=1, max_length=1024)
+    git_repo_url: GitRepoURL | None = None
 
     test_command: str | None = None
     meeting_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
@@ -70,6 +76,10 @@ class ProjectView(ProjectCreate):
     status: str
     created_at: datetime
     updated_at: datetime
+
+    @field_serializer("workspace_path")
+    def absolute_workspace(self, value: str | None) -> str:
+        return os.path.abspath(value) if value else default_workspace(self)
 
 
 class ProjectDetail(ProjectView):
@@ -127,16 +137,36 @@ class SpecItemView(BaseModel):
     content: str
 
 
-def default_workspace(project: Project) -> str:
-    return str(ROOT / "workspaces" / f"{project.id}-{uuid4().hex}")
+def default_workspace(project: Project | ProjectView) -> str:
+    slug = re.sub(r"[^\w-]+", "-", project.name.lower()).strip("-_")[:40] or "project"
+    return str(ROOT / "workspaces" / f"{project.id}-{slug}")
+
+
+async def prepare_workspace(path: str, project_id: int, repo_url: str | None) -> str:
+    try:
+        absolute_path = path if os.path.isabs(path) else os.path.abspath(path)
+        await asyncio.to_thread(os.makedirs, absolute_path, exist_ok=True)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(422, "Не удалось создать папку проекта. Проверьте путь и права доступа.") from exc
+    if repo_url:
+        try:
+            await GitBridge(Path(absolute_path), project_id).link_origin(repo_url)
+        except (OSError, RuntimeError, TimeoutError) as exc:
+            raise HTTPException(422, "Не удалось настроить Git. Проверьте репозиторий и права доступа к папке.") from exc
+    return absolute_path
 
 
 async def create_project(session: AsyncSession, owner_id: int, data: ProjectCreate) -> Project:
     project = Project(owner_id=owner_id, **data.model_dump())
     session.add(project)
     await session.flush()
-    if project.workspace_path is None:
-        project.workspace_path = default_workspace(project)
+    try:
+        project.workspace_path = await prepare_workspace(
+            project.workspace_path or default_workspace(project), project.id, project.git_repo_url,
+        )
+    except HTTPException:
+        await session.rollback()
+        raise
     await session.commit()
     return project
 
@@ -239,14 +269,17 @@ async def edit_project(data: ProjectPatch, project: OwnedProject, session: Sessi
     required = {"name", "deadline_minutes", "meeting_interval_minutes", "autonomy_mode", "failover_mode", "verbosity_level"}
     if any(field in required and value is None for field, value in updates.items()):
         raise HTTPException(422, "Обязательные настройки проекта не могут быть пустыми.")
-    boundary = orchestrator.runtime(project.id).boundary if "workspace_path" in updates else nullcontext()
+    configure_workspace = bool(updates.keys() & {"workspace_path", "git_repo_url"})
+    boundary = orchestrator.runtime(project.id).boundary if configure_workspace else nullcontext()
     async with boundary:
         await session.refresh(project)
         if project.status in {"running", "council"} and "workspace_path" in updates:
             raise HTTPException(409, "Сначала приостановите проект.")
-        if "workspace_path" in updates and updates["workspace_path"] is None:
-            updates["workspace_path"] = default_workspace(project)
-        workspace_changed = "workspace_path" in updates and project.workspace_path != updates["workspace_path"]
+        if configure_workspace:
+            path = updates.get("workspace_path", project.workspace_path) or default_workspace(project)
+            repo_url = updates.get("git_repo_url", project.git_repo_url)
+            updates["workspace_path"] = await prepare_workspace(path, project.id, repo_url)
+        workspace_changed = updates.get("workspace_path", project.workspace_path) != project.workspace_path
         for field, value in updates.items():
             setattr(project, field, value)
         if workspace_changed:
