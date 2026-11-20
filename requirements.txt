@@ -14,3 +14,4 @@ GitPython
 passlib[bcrypt]
 python-multipart
 pywebview
+ddgs

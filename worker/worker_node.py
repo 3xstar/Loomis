@@ -11,7 +11,8 @@ from websockets.exceptions import ConnectionClosed
 
 from base64 import b64decode
 
-from worker.adapters import build_agent
+from worker.adapters import CLI_PROVIDERS, build_agent
+from worker.adapters.api_adapter import ApiAgent, api_model_key
 from worker.adapters.base import AgentResult
 from worker.git_bridge import GitBridge
 
@@ -35,7 +36,11 @@ async def serve(url, name, config):
         "Authorization": f"Bearer {os.environ['LOOMIS_WORKER_TOKEN']}"
     }, max_size=32 * 1024 * 1024) as socket:
         agents = config["agents"]
-        await socket.send(json.dumps({"node": name, "agents": list(agents)}))
+        api_models = {
+            alias: [api_model_key(agent["model"], agent["settings"]), agent["settings"].get("temperature", 0.2)]
+            for alias, agent in agents.items() if agent["provider"].lower() not in CLI_PROVIDERS
+        }
+        await socket.send(json.dumps({"node": name, "agents": list(agents), "api_models": api_models}))
         active = None
         active_id = None
         pending_approval = None
@@ -90,6 +95,8 @@ async def serve(url, name, config):
                 raise
             except (KeyError, ValueError, OSError, RuntimeError) as exc:
                 result = AgentResult("error", str(exc), getattr(agent, "tokens_used", 0))
+            if isinstance(agent, ApiAgent):
+                result.cacheable = agent.used_requested_temperature
             await socket.send(json.dumps({"id": request["id"], **asdict(result)}))
 
         try:

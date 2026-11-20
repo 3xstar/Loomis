@@ -12,6 +12,31 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class ModelLeaderboard(Base):
+    __tablename__ = "model_leaderboard"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    model_key: Mapped[str] = mapped_column(Text, unique=True)
+    model_name: Mapped[str] = mapped_column(String(255))
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, default=0)
+    avg_latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    reliability_score: Mapped[float] = mapped_column(Float, default=100.0, server_default="100.0")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ResponseCache(Base):
+    __tablename__ = "response_cache"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    prompt_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    model_key: Mapped[str] = mapped_column(Text)
+    response_text: Mapped[str] = mapped_column(Text)
+    tokens_saved: Mapped[int] = mapped_column(BigInteger, default=0)
+    response_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
 class User(Base):
     __tablename__ = "users"
 

@@ -1615,6 +1615,7 @@ hubProvider.onchange = renderHubFields;
 
 let editingPreset;
 let hubPresets = [];
+let hubRatings = new Map();
 let hubRequest = 0;
 const hubSearch = byId("hub-search");
 const hubSort = byId("hub-sort");
@@ -1684,9 +1685,14 @@ function renderHubModels() {
     actions.append(edit, remove);
     const provider = [...hubProvider.options].find((option) => option.value === preset.adapter_type)?.text || preset.adapter_type;
     const usage = element("div", "hub-usage");
+    const rating = hubRatings.get(preset.model_key) ?? 100;
+    const badge = element("span", "hub-rating", "★ " + Math.round(rating) + "%");
+    badge.title = hubRatings.has(preset.model_key) ? "Надёжность модели" : "Начальный рейтинг модели";
     usage.append(element("strong", "", statsNumber.format(preset.total_tokens_used)),
       element("small", "", "Токенов за всё время · все проекты"));
-    card.append(element("h3", "", preset.name),
+    const heading = element("h3", "", preset.name);
+    heading.append(badge);
+    card.append(heading,
       element("small", "", provider + " / " + preset.config_json.model), usage, actions);
     return card;
   }));
@@ -1697,9 +1703,12 @@ async function loadHubModels() {
   const session = token;
   hubStatus.textContent = "Загрузка моделей…";
   try {
-    const presets = await api("hub/models");
+    const [presets, leaderboard] = await Promise.all([
+      api("hub/models"), api("hub/leaderboard"),
+    ]);
     if (revision !== hubRequest || session !== token) return;
     hubPresets = presets;
+    hubRatings = new Map(leaderboard.map((entry) => [entry.model_key, entry.reliability_score]));
     renderHubModels();
   } catch (error) {
     if (revision === hubRequest && session === token) hubStatus.textContent = error.message;
@@ -1803,6 +1812,7 @@ byId("stats-button").onclick = async () => {
 byId("logout-button").onclick = () => {
   token = null;
   hubPresets = [];
+  hubRatings.clear();
   hubSearch.value = "";
   renderHubModels();
   showHubPage(false);

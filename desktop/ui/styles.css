@@ -527,6 +527,13 @@ option { background: var(--base); }
 }
 .hub-model { display: flex; flex-direction: column; gap: 7px; padding: 18px; overflow-wrap: anywhere; }
 .hub-model h3 { margin: 0; }
+.hub-rating {
+  display: inline-block;
+  margin-inline-start: 8px;
+  color: var(--accent);
+  font-size: .75rem;
+  white-space: nowrap;
+}
 .hub-model small { display: block; color: var(--muted); }
 .hub-usage { margin-top: auto; padding-top: 12px; }
 .hub-usage strong { color: var(--accent); font-size: 1.6rem; font-variant-numeric: tabular-nums; }

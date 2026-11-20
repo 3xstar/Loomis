@@ -10,6 +10,7 @@ class AgentResult:
     message: str
     tokens: int = 0
     terminal: str | None = None
+    cacheable: bool = False
 
 
 class BaseAgent(ABC):

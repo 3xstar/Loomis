@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, computed_field, field_serializer
 from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,8 +19,9 @@ from backend.api.ws import manager
 from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
 from backend.core.media import MAX_MEDIA_BYTES, make_media, media_spec_content
+from backend.core.model_performance import model_key
 from backend.core.orchestrator import count_tokens, orchestrator, probe_agent
-from backend.database.models import AgentConfig, AgentMessage, Project, ProjectMedia, SpecItem, TaskLog, UserModelPreset, utc_now
+from backend.database.models import AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia, SpecItem, TaskLog, UserModelPreset, utc_now
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
 from worker.sandbox import workspace_file
@@ -623,6 +624,31 @@ class PresetView(PresetCreate):
             "has_api_key": bool(clean_api_key(config.api_key)),
         }
 
+    @computed_field
+    @property
+    def model_key(self) -> str:
+        return model_key(self.adapter_type, self.config_json.model, self.config_json.model_dump())
+
+
+class LeaderboardEntry(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    model_key: str
+    model_name: str
+    success_count: int
+    error_count: int
+    avg_latency_ms: float
+    reliability_score: float
+    updated_at: datetime
+
+
+@hub_router.get("/leaderboard", response_model=list[LeaderboardEntry])
+async def get_leaderboard(session: Session, user: CurrentUser):
+    row = ModelLeaderboard
+    return list(await session.scalars(select(row).order_by(
+        row.reliability_score.desc(), (row.success_count == 0), row.avg_latency_ms, row.model_key,
+    )))
+
 
 @hub_router.get("/models", response_model=list[PresetView])
 async def list_presets(session: Session, user: CurrentUser):
@@ -700,10 +726,10 @@ async def import_presets(data: HubImport, project: OwnedProject, session: Sessio
                 model=preset.config_json.model, settings=preset.agent_settings(), preset_id=preset_id,
             ))
         for agent in agents:
-            tokens = await test_config(project.id, agent)
-            agent.total_tokens_used = tokens
-            await count_tokens(session, project.owner_id, agent, tokens)
+            agent.total_tokens_used = await test_config(project.id, agent)
             agent.tested_at = utc_now()
+        for agent in agents:
+            await count_tokens(session, project.owner_id, agent, agent.total_tokens_used)
         session.add_all(agents)
         orchestrator.invalidate_plan(project)
         await save_agent(session)

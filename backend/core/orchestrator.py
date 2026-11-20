@@ -17,6 +17,7 @@ from backend.bot.formatting import telegram_html
 from backend.database.db import async_session_factory
 from backend.database.models import AgentConfig, AgentMessage, Project, ProjectMedia, TaskLog, User, UserModelPreset
 from worker.adapters import CLI_PROVIDERS, build_agent
+from worker.adapters.api_adapter import ApiAgent, api_system_prompt
 from worker.adapters.base import AgentResult, BaseAgent
 from worker.adapters.media import refuses_media
 from worker.git_bridge import GitBridge
@@ -24,6 +25,7 @@ from worker.quality_gate import check_quality
 from worker.sandbox import workspace_file
 
 from .council import periodic_meeting, starting_council
+from .model_performance import cache_response, cached_response, model_key, prompt_digest, rank_configs, record_model_result
 
 logger = logging.getLogger(__name__)
 
@@ -68,14 +70,27 @@ class Runtime:
 
 async def probe_agent(project_id, config):
     prompt = "Ответь одним словом: OK"
-    async with asyncio.timeout(15):
-        node = config.settings.get("worker")
-        if node:
-            result = await workers.dispatch(node, config.settings.get("worker_agent", config.name),
-                                            project_id, "test", prompt, "", 15)
-        else:
-            agent = build_agent(config.provider, config.model, config.settings)
-            result = await agent.ask_question(prompt, "")
+    started = monotonic()
+    success = False
+    cancelled = False
+    try:
+        async with asyncio.timeout(15):
+            node = config.settings.get("worker")
+            if node:
+                result = await workers.dispatch(node, config.settings.get("worker_agent", config.name),
+                                                project_id, "test", prompt, "", 15)
+            else:
+                agent = build_agent(config.provider, config.model, config.settings)
+                result = await agent.ask_question(prompt, "")
+        success = result.status == "success" and bool(result.message.strip())
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
+    finally:
+        if not cancelled:
+            async with async_session_factory() as session:
+                await record_model_result(session, config, success, (monotonic() - started) * 1000)
+                await session.commit()
     if result.status != "success":
         raise ValueError(result.message or result.status)
     if not result.message.strip():
@@ -97,6 +112,10 @@ VISION_MODELS = re.compile(
 )
 AUDIO_MODELS = re.compile(r"gemini|gpt-4o.*(?:audio|realtime)|gpt-(?:audio|realtime)|"
                           r"step-.*(?:audio|omni)|qwen.*(?:audio|omni)|voxtral", re.I)
+
+
+def outside_cooldown(config, now):
+    return config.cooldown_until is None or config.cooldown_until.replace(tzinfo=timezone.utc) <= now
 
 
 def media_candidate(provider, model, audio):
@@ -143,6 +162,11 @@ class ProjectAgent(BaseAgent):
         clock = monotonic()
         result = AgentResult("error", "Операция прервана.")
         agent = None
+        called = False
+        cancelled = False
+        digest = None
+        key = None
+        call_clock = None
 
         def record_interruption(interrupted):
             nonlocal result
@@ -153,17 +177,37 @@ class ProjectAgent(BaseAgent):
                 await self.engine.traffic(config, "working")
             async with asyncio.timeout(timeout):
                 node = config.settings.get("worker")
-                if node:
-                    worker_operation = "question" if operation in {"handoff", "plan"} else operation
-                    result = await workers.dispatch(node, config.settings.get("worker_agent", config.name),
-                                                    project.id, worker_operation, prompt, context, timeout,
-                                                    instruction=instruction, images=images,
-                                                    on_interrupted=record_interruption)
-                else:
+                worker_agent = config.settings.get("worker_agent", config.name)
+                if not node:
                     agent = build_agent(config.provider, config.model, config.settings,
                                         lambda command: self.engine.request_approval(project.id, command),
                                         instruction=instruction, images=images)
-                    if operation == "execute":
+                answer = None
+                if not images and operation in {"question", "plan"}:
+                    key = model_key(config.provider, config.model, config.settings)
+                    temperature = None
+                    if isinstance(agent, ApiAgent):
+                        temperature = agent.temperature
+                    elif node and config.provider.lower() not in CLI_PROVIDERS:
+                        models = workers.nodes.get(node, {}).get("api_models", {})
+                        advertised = models.get(worker_agent)
+                        if isinstance(advertised, list) and len(advertised) == 2 and advertised[0] == key:
+                            temperature = advertised[1]
+                    if type(temperature) in {int, float} and 0 <= temperature <= 0.2:
+                        digest = prompt_digest(key, api_system_prompt(instruction), f"{context}\n\n{prompt}")
+                        answer = await cached_response(digest)
+                if answer is not None:
+                    result = AgentResult("success", answer)
+                else:
+                    called = True
+                    call_clock = monotonic()
+                    if node:
+                        worker_operation = "question" if operation in {"handoff", "plan"} else operation
+                        result = await workers.dispatch(node, worker_agent,
+                                                        project.id, worker_operation, prompt, context, timeout,
+                                                        instruction=instruction, images=images,
+                                                        on_interrupted=record_interruption)
+                    elif operation == "execute":
                         result = await agent.execute_task(prompt, workspace, timeout)
                     elif operation == "meeting":
                         result = await agent.participate_in_meeting(context)
@@ -172,18 +216,27 @@ class ProjectAgent(BaseAgent):
         except TimeoutError:
             result = AgentResult("timeout", "Дедлайн истёк.")
         except asyncio.CancelledError:
+            cancelled = True
             if agent is not None:
                 result.tokens = getattr(agent, "tokens_used", 0)
             raise
         except Exception as exc:
             result = AgentResult("error", str(exc) or type(exc).__name__)
         finally:
+            duration = monotonic() - (call_clock if call_clock is not None else clock)
             async with async_session_factory() as session:
                 session.add(TaskLog(project_id=project.id, agent_id=config.id,
                                     operation="execute_attempt" if operation == "execute" else operation,
-                                    sender_name=config.name, started_at=started, duration_seconds=monotonic() - clock,
+                                    sender_name=config.name, started_at=started, duration_seconds=duration,
                                     status=result.status, tokens=result.tokens))
                 await count_tokens(session, project.owner_id, config, result.tokens)
+                if called and not cancelled:
+                    success = result.status == "success" and bool(result.message.strip())
+                    await record_model_result(session, config, success, duration * 1000)
+                    if digest and success and (result.cacheable or (
+                        isinstance(agent, ApiAgent) and agent.used_requested_temperature
+                    )):
+                        await cache_response(session, digest, key, result)
                 if result.status == "rate_limit":
                     row = await session.get(AgentConfig, config.id)
                     if row is not None:
@@ -548,11 +601,20 @@ class Orchestrator:
             images = await self.spec_images(project_id)
             return await agent.run_with_spec_images("plan", prompt, context, images=images)
 
+        async def rank_members(members):
+            _, current = await self.load(project_id)
+            by_id = {agent.config.id: (name, agent) for name, agent in members}
+            now = datetime.now(timezone.utc)
+            ranked = await rank_configs([
+                item for item in current if item.id in by_id and outside_cooldown(item, now)
+            ])
+            return [by_id[item.id] for item in ranked]
+
         try:
             agents = [(item.name, ProjectAgent(self, project, item)) for item in selected]
             plan = await starting_council(
                 self.workspace(project), agents, feedback, publish=publish,
-                roster=[item.name for item in configs], synthesize=synthesize,
+                roster=[item.name for item in configs], synthesize=synthesize, rank=rank_members,
             )
             await self.status(project_id, "awaiting_approval", plan_digest=self.plan_digest(project))
             from backend.bot.keyboards import project_keyboard
@@ -685,11 +747,9 @@ class Orchestrator:
 
     async def turn(self, project, configs, runtime):
         now = datetime.now(timezone.utc)
-        available = [
-            item for item in configs if item.traffic_state != "error" and (
-                item.cooldown_until is None or item.cooldown_until.replace(tzinfo=timezone.utc) <= now
-            )
-        ]
+        available = await rank_configs([
+            item for item in configs if item.traffic_state != "error" and outside_cooldown(item, now)
+        ])
         if runtime.handoff:
             intended = next((item for item in configs if item.id == runtime.handoff[0]), None)
             config = next((item for item in available if item.id == runtime.handoff[0]), None)
@@ -699,8 +759,7 @@ class Orchestrator:
                                     intended.last_error or "Агент недоступен.")
                 return
         else:
-            config = next((item for item in available if item.id > runtime.last_agent),
-                          available[0] if available else None)
+            config = available[0] if available else None
         if config is None:
             runtime.ready.clear()
             await self.status(project.id, "paused", turn_state=runtime.snapshot())
@@ -721,7 +780,8 @@ class Orchestrator:
             runtime.next_meeting = monotonic() + interval
             runtime.meeting_base = None
             _, current = await self.load(project.id)
-            working_ids = {item.id for item in current if item.traffic_state != "error"}
+            working_ids = {item.id for item in current if item.traffic_state != "error" and
+                           outside_cooldown(item, datetime.now(timezone.utc))}
             available = [item for item in available if item.id in working_ids]
             if config.id not in working_ids:
                 failed = next(item for item in current if item.id == config.id)
@@ -843,7 +903,9 @@ class Orchestrator:
         runtime.successful_agents.append(config.id)
         await self.traffic(config, "waiting")
         complete = "LOOMIS_COMPLETE" in result.message.splitlines()
-        next_config = next((item for item in available if item.id > config.id), available[0])
+        ranked = await self.rank_successors(project.id, available, config.id)
+        next_config = next((item for item in ranked if item.id not in runtime.successful_agents),
+                           ranked[0] if ranked else config)
         target = "@All" if complete else f"@{next_config.name}"
         report = (
             f"От: {config.name}\nКому: {target}\n"
@@ -892,12 +954,18 @@ class Orchestrator:
             notes.append(f"Последний вывод: {last_output.strip()[-600:]}")
         return "\n".join(notes), diff[:20000]
 
+    async def rank_successors(self, project_id, available, excluded_id):
+        _, current = await self.load(project_id)
+        now = datetime.now(timezone.utc)
+        eligible = {
+            item.id: item for item in current if item.id != excluded_id
+            and item.traffic_state != "error" and outside_cooldown(item, now)
+        }
+        return await rank_configs([eligible[item.id] for item in available if item.id in eligible])
+
     async def failover(self, project, available, runtime, broken, task, handoff, error, *,
                        diagnostic="", partial_diff=""):
         candidates = [item for item in available if item.id != broken.id]
-        following = [item for item in candidates if item.id > broken.id]
-        # Prefer the remaining cycle, then fall back to earlier agents if it is exhausted.
-        candidates = following or list(reversed(candidates))
         if candidates:
             plan = self.context(self.workspace(project), ("PLAN.md",))
             terms = set(re.findall(r"[\w.-]{4,}", f"{error}\n{diagnostic}".lower()))
@@ -911,7 +979,10 @@ class Orchestrator:
                 words = set(re.findall(r"[\w.-]{4,}", role))
                 return len(terms & words), item.id in runtime.successful_agents
 
-            successor = max(candidates, key=relevance)
+            ranked = await self.rank_successors(
+                project.id, sorted(candidates, key=relevance, reverse=True), broken.id,
+            )
+            successor = ranked[0] if ranked else None
         else:
             successor = None
         runtime.last_agent = broken.id

@@ -158,7 +158,12 @@ async def worker_events(socket: WebSocket):
                 or not isinstance(agents, list) or not all(isinstance(name, str) for name in agents)):
             await socket.close(code=1008)
             return
-        peer = {"socket": socket, "agents": set(agents), "lock": asyncio.Lock(), "job": None, "approval": None}
+        api_models = registration.get("api_models", {})
+        if not isinstance(api_models, dict):
+            await socket.close(code=1008)
+            return
+        peer = {"socket": socket, "agents": set(agents), "api_models": api_models,
+                "lock": asyncio.Lock(), "job": None, "approval": None}
         workers.nodes[node] = peer
 
         async def approve(command, job):
@@ -180,7 +185,8 @@ async def worker_events(socket: WebSocket):
             status = packet["status"]
             if status not in {"success", "rate_limit", "timeout", "error", "unsupported_media"}:
                 raise ValueError("Unknown worker status")
-            job[2].set_result(AgentResult(status, str(packet["message"]), int(packet["tokens"]), packet.get("terminal")))
+            job[2].set_result(AgentResult(status, str(packet["message"]), int(packet["tokens"]),
+                                         packet.get("terminal"), packet.get("cacheable") is True))
     except (WebSocketDisconnect, TimeoutError, KeyError, TypeError, ValueError, AttributeError):
         pass
     finally:

@@ -6,7 +6,7 @@ from worker.sandbox import workspace_file
 
 
 async def starting_council(workspace: Path, agents, feedback: str | None = None, *,
-                           publish=None, roster=None, synthesize=None):
+                           publish=None, roster=None, synthesize=None, rank=None):
     spec = workspace_file(workspace, "SPEC.md").read_text(encoding="utf-8")
     file = workspace_file(workspace, "PLAN.md")
     previous = file.read_text(encoding="utf-8") if file.is_file() else ""
@@ -40,6 +40,10 @@ async def starting_council(workspace: Path, agents, feedback: str | None = None,
     active = list(agents)
     failed = set()
     for number in (1, 2):
+        if rank:
+            ranked = await rank(active)
+            failed.update({name for name, _ in active} - {name for name, _ in ranked})
+            active = ranked
         outcomes = await asyncio.gather(
             *(discuss(name, agent, number, history) for name, agent in active), return_exceptions=True
         )
@@ -63,7 +67,7 @@ async def starting_council(workspace: Path, agents, feedback: str | None = None,
         "устрани пересечения, придерживайся заданной очереди и укажи критерии проверки. "
         f"Учти правки пользователя. {scope} Верни только Markdown."
     )
-    for name, lead in active:
+    for name, lead in (await rank(active) if rank else active):
         order = "\n".join(f"{index}. {name}" for index, name in enumerate(
             (member for member in roster if member not in failed), 1,
         ))
