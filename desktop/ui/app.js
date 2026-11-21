@@ -17,9 +17,12 @@ let telegramLogsEnabled = false;
 let githubUsername = null;
 let defaultProjectsDir = "";
 let customProjectPath = false;
-let githubSettingsReturn;
-let githubUpdatePending = false;
-let githubRevision = 0;
+let telegramId = null;
+let telegramCodeTimer;
+let integrationsTimer;
+let integrationUpdatePending = false;
+let integrationsRevision = 0;
+let unlinkProvider;
 const teamTargets = new Set();
 const deletedAgents = new Set();
 const agentSelector = byId("agent-selector");
@@ -52,6 +55,34 @@ function notify(message) {
   toast.textContent = message;
   (workspaceWindow?.document.getElementById("toasts") || byId("toasts")).append(toast);
   setTimeout(() => toast.remove(), 4500);
+}
+
+function showCursorToast(message, event) {
+  const target = event?.submitter || event?.currentTarget || event?.target;
+  const doc = target?.ownerDocument || document;
+  const viewport = doc.defaultView;
+  const container = doc.getElementById("toasts");
+  container.querySelector(".cursor-toast")?.dismiss();
+  const toast = doc.createElement("div");
+  toast.className = "toast cursor-toast glass-panel";
+  toast.textContent = message;
+  container.append(toast);
+
+  const anchor = target?.getBoundingClientRect?.();
+  const hasCoordinates = Number.isFinite(event?.clientX) && Number.isFinite(event?.clientY)
+    && (event.detail || event.clientX || event.clientY);
+  const x = hasCoordinates ? event.clientX : anchor?.left ?? 8;
+  const y = hasCoordinates ? event.clientY : anchor?.bottom ?? 8;
+  toast.style.left = Math.max(8, Math.min(x, viewport.innerWidth - toast.offsetWidth - 8)) + "px";
+  toast.style.top = Math.max(8, Math.min(y, viewport.innerHeight - toast.offsetHeight - 8)) + "px";
+
+  toast.dismiss = () => {
+    clearTimeout(timeout);
+    doc.removeEventListener("click", toast.dismiss, true);
+    toast.remove();
+  };
+  const timeout = setTimeout(toast.dismiss, 2500);
+  doc.addEventListener("click", toast.dismiss, {capture: true, once: true});
 }
 
 function setTheme(theme) {
@@ -104,14 +135,12 @@ async function signIn(accessToken, isCurrent = () => true) {
   if (!isCurrent()) return;
   token = accessToken;
   telegramLogsEnabled = user.tg_logs_enabled;
-  githubUsername = user.github_username;
+  renderIntegrations(user);
   defaultProjectsDir = user.default_projects_dir;
   renderTelegramLogs();
   sessionStorage.setItem("loomis-token", token);
   byId("user-name").textContent = user.username || "Loomis";
   byId("user-avatar").textContent = byId("user-name").textContent[0].toUpperCase();
-  byId("telegram-plane").classList.toggle("online", Boolean(user.telegram_id));
-  byId("telegram-label").textContent = user.telegram_id ? "Привязан" : "Не привязан";
   showWorkspace(true);
   try {
     await loadProjects();
@@ -1089,7 +1118,7 @@ byId("chat-record").onclick = async () => {
   }
 };
 
-async function sendMessage() {
+async function sendMessage(event) {
   const input = byId("message-input");
   const agentId = selectedAgent?.id;
   const mode = view;
@@ -1098,7 +1127,7 @@ async function sendMessage() {
   const file = attachment;
   if (!project || input.disabled || recording || mode === "terminal") return;
   if (feedback && (!message || file)) {
-    notify("Для доработки плана введите текст без вложения.");
+    showCursorToast("Для доработки плана введите текст без вложения.", event);
     return;
   }
   if (!message && !file) return;
@@ -1136,7 +1165,7 @@ async function sendMessage() {
 
 byId("message-form").onsubmit = (event) => {
   event.preventDefault();
-  sendMessage();
+  sendMessage(event);
 };
 byId("plan-mode").onclick = () => {
   planMode = !planMode;
@@ -1196,7 +1225,7 @@ byId("context-edit").onclick = () => {
       event.preventDefault();
       const name = byId("rename-name").value.trim();
       if (!name) {
-        notify("Введите название проекта.");
+        showCursorToast("Введите название проекта.", event);
         return;
       }
       mutateFromModal(event.submitter, target, "PATCH", {name});
@@ -1260,14 +1289,9 @@ async function mutateFromModal(button, target, method, body, onError = (error) =
 function showModal(id) {
   const backdrop = byId("modal-backdrop");
   if (!id && (backdrop.inert || !byId("agent-test-status").classList.contains("hidden"))) return;
-  if (!id && githubSettingsReturn) {
-    id = githubSettingsReturn;
-    githubSettingsReturn = undefined;
-    fillDefaultProjectPath();
-  }
   modalRevision++;
-  for (const prefix of ["project", "settings"]) byId(prefix + "-github-hint").inert = true;
-  if (id !== "settings-modal") byId("github-token").value = "";
+  clearInterval(integrationsTimer);
+  if (id !== "settings-modal") setGitHubForm(false);
   if (id && backdrop.inert) modalTrigger = document.activeElement;
   backdrop.inert = !id;
   backdrop.classList.toggle("hidden", !id);
@@ -1344,7 +1368,7 @@ agentForm.addEventListener("input", ({target}) => {
 all(".close-modal").forEach((button) => button.onclick = () => showModal());
 byId("modal-backdrop").onclick = (event) => { if (event.target === event.currentTarget) showModal(); };
 document.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape") return;
+  if (event.key !== "Escape" || byId("unlink-dialog").open) return;
   if (!contextMenu.inert) closeContextMenu(true);
   else if (!agentMenu.hidden) setAgentMenu(false, true);
   else showModal();
@@ -1452,7 +1476,7 @@ function renderProjectTitle() {
 }
 
 for (const button of all("[data-folder-input]")) {
-  button.onclick = async () => {
+  button.onclick = async (event) => {
     const field = byId(button.dataset.folderInput);
     const revision = modalRevision;
     button.disabled = true;
@@ -1463,7 +1487,7 @@ for (const button of all("[data-folder-input]")) {
         if (field.id === "project-workspace") customProjectPath = true;
       }
     } catch {
-      if (revision === modalRevision) notify("Введите путь к папке вручную.");
+      if (revision === modalRevision) showCursorToast("Введите путь к папке вручную.", event);
     } finally {
       button.disabled = false;
       if (revision === modalRevision) field.focus();
@@ -1474,22 +1498,43 @@ for (const button of all("[data-folder-input]")) {
 const locationForm = byId("project-location-form");
 const projectsDirField = byId("default-projects-dir");
 
-function openSettings() {
+function selectSettingsTab(tab) {
+  for (const button of all(".settings-tabs .tab")) {
+    const selected = button === tab;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-selected", selected);
+    button.tabIndex = selected ? 0 : -1;
+    byId(button.getAttribute("aria-controls")).hidden = !selected;
+  }
+  clearInterval(integrationsTimer);
+  if (tab.id === "integrations-tab") {
+    refreshIntegrations();
+    integrationsTimer = setInterval(refreshIntegrations, 3000);
+  } else {
+    setGitHubForm(false);
+  }
+}
+
+const settingsTabs = [...all(".settings-tabs .tab")];
+for (const tab of settingsTabs) {
+  tab.onclick = () => selectSettingsTab(tab);
+  tab.onkeydown = (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "Home" ? settingsTabs[0]
+      : event.key === "End" ? settingsTabs[1] : settingsTabs.find((button) => button !== tab);
+    selectSettingsTab(next);
+    next.focus();
+  };
+}
+
+byId("settings-button").onclick = () => {
   projectsDirField.value = defaultProjectsDir;
   renderTelegramLogs();
   renderDeadline();
-  renderGitHub();
+  selectSettingsTab(byId("general-tab"));
   showModal("settings-modal");
-  refreshGitHub();
-}
-
-byId("settings-button").onclick = openSettings;
-all(".open-github-settings").forEach((button) => {
-  button.onclick = () => {
-    githubSettingsReturn = button.closest(".modal").id;
-    openSettings();
-  };
-});
+};
 
 byId("projects-dir-form").onsubmit = async (event) => {
   event.preventDefault();
@@ -1515,18 +1560,28 @@ byId("project-settings-button").onclick = () => {
   locationForm.reset();
   byId("settings-workspace").value = project?.workspace_path ?? "";
   byId("settings-git").value = project?.git_repo_url ?? "";
-  renderGitHub();
+  renderGitHubFields();
   showModal("project-settings-modal");
-  refreshGitHub();
+  refreshIntegrations();
 };
 
-function renderGitHub() {
+function renderIntegrations(user) {
+  telegramId = user.telegram_id;
+  githubUsername = user.github_username;
+  for (const [provider, account] of [["telegram", telegramId], ["github", githubUsername && "@" + githubUsername]]) {
+    const linked = Boolean(account);
+    byId(provider + "-card").classList.toggle("linked", linked);
+    byId(provider + "-status").textContent = linked ? account : "Не привязан";
+    byId(provider + "-connect").hidden = linked;
+    byId(provider + "-disconnect").hidden = !linked;
+  }
+  if (telegramId) showTelegramCode();
+  if (githubUsername) setGitHubForm(false);
+  renderGitHubFields();
+}
+
+function renderGitHubFields() {
   const linked = Boolean(githubUsername);
-  byId("github-status").textContent = linked ? "@" + githubUsername : "GitHub не подключён";
-  byId("github-token-field").classList.toggle("hidden", linked);
-  byId("github-token").disabled = linked;
-  byId("github-connect").classList.toggle("hidden", linked);
-  byId("github-disconnect").classList.toggle("hidden", !linked);
   for (const prefix of ["project", "settings"]) {
     const checkbox = byId(prefix + "-new-repo");
     checkbox.disabled = !linked;
@@ -1534,71 +1589,119 @@ function renderGitHub() {
     byId(prefix + "-git").readOnly = !linked;
     byId(prefix + "-git").disabled = checkbox.checked;
     byId(prefix + "-visibility-field").classList.toggle("hidden", !checkbox.checked);
-    if (linked) byId(prefix + "-github-hint").inert = true;
   }
 }
 
-async function refreshGitHub() {
-  if (githubUpdatePending) return;
+async function refreshIntegrations() {
+  if (integrationUpdatePending) return;
   const session = token;
   const revision = modalRevision;
-  const credentialsRevision = githubRevision;
+  const credentialsRevision = integrationsRevision;
   try {
     const user = await api("auth/me", undefined, session);
-    if (session === token && revision === modalRevision && credentialsRevision === githubRevision) {
-      githubUsername = user.github_username;
-      renderGitHub();
+    if (session === token && revision === modalRevision && credentialsRevision === integrationsRevision) {
+      renderIntegrations(user);
     }
   } catch (error) {
-    if (session === token && revision === modalRevision) notify(error.message);
+    if (session === token && revision === modalRevision) {
+      clearInterval(integrationsTimer);
+      notify(error.message);
+    }
   }
 }
 
-byId("project-new-repo").onchange = byId("settings-new-repo").onchange = renderGitHub;
+byId("project-new-repo").onchange = byId("settings-new-repo").onchange = renderGitHubFields;
 for (const prefix of ["project", "settings"]) {
   const field = byId(prefix + "-git");
-  const hint = byId(prefix + "-github-hint");
-  field.onclick = () => {
-    if (field.readOnly) hint.inert = false;
+  const warn = (event) => showCursorToast("Привяжите GitHub в настройках", event);
+  field.onclick = (event) => {
+    if (field.readOnly) warn(event);
   };
   field.onkeydown = (event) => {
-    if (!field.readOnly) return;
-    if (event.key === "Enter") event.preventDefault();
-    if (event.key.length === 1 || event.key === "Enter" || event.key === "Backspace" || event.key === "Delete") {
-      field.onclick();
-    }
+    if (!field.readOnly || !(event.key.length === 1 || ["Enter", "Backspace", "Delete"].includes(event.key))) return;
+    if ((event.ctrlKey || event.metaKey) && ["a", "c"].includes(event.key.toLowerCase())) return;
+    event.preventDefault();
+    warn(event);
   };
-  field.onpaste = field.onclick;
+  for (const type of ["beforeinput", "paste", "drop"]) {
+    field.addEventListener(type, (event) => {
+      if (field.readOnly) event.preventDefault();
+    });
+  }
 }
 
-byId("github-form").onsubmit = async (event) => {
-  event.preventDefault();
-  const field = byId("github-token");
-  const entered = field.value.trim();
-  if (!entered || githubUsername || githubUpdatePending) return;
-  field.value = "";
-  await updateGitHub(event.submitter, "POST", {token: entered});
+function showTelegramCode(code, expiresIn) {
+  clearTimeout(telegramCodeTimer);
+  byId("telegram-link-code").textContent = code ? "/link " + code : "";
+  byId("telegram-instructions").hidden = !code;
+  byId("telegram-connect").setAttribute("aria-expanded", Boolean(code));
+  if (code) telegramCodeTimer = setTimeout(showTelegramCode, expiresIn * 1000);
+}
+
+function setGitHubForm(open) {
+  byId("github-form").hidden = !open;
+  byId("github-connect").setAttribute("aria-expanded", open);
+  if (!open) byId("github-token").value = "";
+}
+
+byId("telegram-connect").onclick = (event) => {
+  const button = event.currentTarget;
+  updateIntegration(button, async (session) => {
+    const result = await api("auth/generate-link-code", undefined, session, "POST");
+    if (session === token) showTelegramCode(result.code, result.expires_in);
+  }, event);
 };
 
-byId("github-disconnect").onclick = ({currentTarget}) => updateGitHub(currentTarget, "DELETE");
+byId("github-connect").onclick = () => {
+  const open = byId("github-form").hidden;
+  setGitHubForm(open);
+  if (open) byId("github-token").focus();
+};
 
-async function updateGitHub(button, method, body) {
-  if (githubUpdatePending) return;
+byId("github-form").onsubmit = (event) => {
+  event.preventDefault();
+  const entered = byId("github-token").value.trim();
+  if (!entered || githubUsername) return;
+  updateIntegration(event.submitter, async (session) => {
+    const user = await api("auth/github", {token: entered}, session);
+    if (session === token) renderIntegrations(user);
+  }, event);
+};
+
+const unlinkDialog = byId("unlink-dialog");
+for (const [provider, title] of [["telegram", "Telegram"], ["github", "GitHub"]]) {
+  byId(provider + "-disconnect").onclick = () => {
+    unlinkProvider = provider;
+    byId("unlink-title").textContent = "Отвязать " + title;
+    unlinkDialog.showModal();
+  };
+}
+byId("unlink-cancel").onclick = () => unlinkDialog.close();
+byId("unlink-form").onsubmit = (event) => {
+  event.preventDefault();
+  unlinkDialog.close();
+  const provider = unlinkProvider;
+  updateIntegration(byId(provider + "-disconnect"), async (session) => {
+    const user = provider === "telegram"
+      ? await api("auth/telegram/unlink", undefined, session, "POST")
+      : await api("auth/github", undefined, session, "DELETE");
+    if (session === token) renderIntegrations(user);
+  }, event);
+};
+
+async function updateIntegration(button, action, event) {
+  if (integrationUpdatePending) return;
   const session = token;
   const revision = modalRevision;
-  githubUpdatePending = true;
-  githubRevision++;
+  integrationUpdatePending = true;
+  integrationsRevision++;
   button.disabled = true;
   try {
-    const user = await api("auth/github", body, session, method);
-    if (session === token) {
-      githubUsername = user.github_username;
-      renderGitHub();
-    }
+    await action(session);
   } catch (error) {
-    if (session === token && revision === modalRevision) notify(error.message);
+    if (session === token && revision === modalRevision) showCursorToast(error.message, event);
   } finally {
-    githubUpdatePending = false;
+    integrationUpdatePending = false;
     button.disabled = false;
   }
 }
@@ -1635,7 +1738,7 @@ locationForm.onsubmit = async (event) => {
       locationForm.reset();
       byId("settings-workspace").value = saved.workspace_path;
       byId("settings-git").value = saved.git_repo_url ?? "";
-      renderGitHub();
+      renderGitHubFields();
     }
   } catch (error) {
     if (project === target) notify(error.message);
@@ -1776,9 +1879,9 @@ byId("project-workspace").onblur = fillDefaultProjectPath;
 byId("new-project-button").onclick = () => {
   selectProjectAddTab(false);
   fillDefaultProjectPath();
-  renderGitHub();
+  renderGitHubFields();
   showModal("project-modal");
-  refreshGitHub();
+  refreshIntegrations();
   loadPresetChoices("project-presets");
 };
 byId("project-form").onsubmit = async (event) => {
@@ -2066,7 +2169,8 @@ byId("logout-button").onclick = () => {
   token = null;
   githubUsername = null;
   defaultProjectsDir = "";
-  githubSettingsReturn = undefined;
+  telegramId = null;
+  showTelegramCode();
   hubPresets = [];
   hubRatings.clear();
   hubSearch.value = "";

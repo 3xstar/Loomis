@@ -90,7 +90,7 @@ h1, h2, h3, p { margin: 0; }
 h1 { font-size: 36px; letter-spacing: -.06em; }
 h2 { font-size: 24px; letter-spacing: -.035em; }
 h3 { font-size: 17px; }
-small, .hint, .eyebrow, .composer-hint, .terminal-actions, .auth-lead, .user-copy span, .brand-row span, .telegram-status span { color: var(--muted); }
+small, .hint, .eyebrow, .composer-hint, .terminal-actions, .auth-lead, .user-copy span, .brand-row span { color: var(--muted); }
 .glass-panel, .glass-card {
   border: 1px solid var(--line);
   border-radius: 24px;
@@ -112,7 +112,7 @@ button:not(:disabled):active, select:not(:disabled):active { transform: scale(0.
 .auth-screen { display: grid; place-items: center; overflow: auto; padding: 20px; }
 .auth-brand .theme-switch { margin-left: auto; }
 .auth-card, .modal { width: min(100%, 460px); padding: 30px; }
-.auth-brand, .brand-row, .sidebar-head, .user-card, .section-label, .telegram-status,
+.auth-brand, .brand-row, .sidebar-head, .user-card, .section-label,
 .topbar, .project-title, .topbar-actions, .section-head, .terminal-head, .terminal-actions,
 .composer-top, .composer-row, .modal-head, .magic-meta { display: flex; align-items: center; gap: 12px; }
 .logo-mark { display: grid; place-items: center; width: 48px; aspect-ratio: 1; border-radius: 16px; background: var(--accent); color: var(--primary-ink); font-size: 23px; font-weight: 750; }
@@ -149,12 +149,6 @@ input, textarea, select { background: var(--surface); border: 1px solid var(--li
 #request-deadline { appearance: none; -webkit-appearance: none; width: 100%; padding-inline-end: 3.5rem; }
 .folder-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 #project-git:read-only, #settings-git:read-only { opacity: 0.5; cursor: pointer; }
-.github-hint { display: grid; grid-template-rows: 1fr; opacity: 1; transition: all var(--motion) ease; }
-.github-hint[inert] { grid-template-rows: 0fr; opacity: 0; margin-top: -14px; }
-.github-hint > div { overflow: hidden; }
-.github-hint-panel { display: flex; align-items: center; gap: 8px; padding: 8px; }
-.github-hint-panel .button { white-space: nowrap; font-size: 0.75rem; padding: 5px 8px; }
-#github-token-field.hidden { display: none; }
 .project-title { min-width: 0; }
 .project-title > div { min-width: 0; }
 .project-location { display: block; overflow-wrap: anywhere; }
@@ -174,24 +168,13 @@ option { background: var(--base); }
 .sidebar, .main-area { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
 .sidebar { padding: 16px; }
 .user-card, .section-label, .topbar, .section-head, .terminal-head, .modal-head { justify-content: space-between; }
-.user-card, .sidebar-foot { padding: 10px; background: var(--surface); border-radius: 14px; }
+.user-card { padding: 10px; background: var(--surface); border-radius: 14px; }
 .user-copy { flex: 1; overflow-wrap: anywhere; }
-.user-copy span, .brand-row span, .telegram-status div span { display: block; font-size: 12px; }
+.user-copy span, .brand-row span { display: block; font-size: 12px; }
 .avatar { display: grid; place-items: center; width: 28px; aspect-ratio: 1; border-radius: 50%; background: var(--surface); }
 .project-list { display: grid; align-content: start; gap: 6px; overflow: auto; }
 .project-button { text-align: left; overflow-wrap: anywhere; }
-.sidebar-foot { margin-top: auto; }
 .theme-switch { font-size: 12px; padding: 4px 9px; }
-.telegram-status .telegram-plane {
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-  color: #ef4444;
-  fill: currentColor;
-  stroke: none;
-  filter: drop-shadow(0 0 4px currentColor);
-}
-.telegram-status .telegram-plane.online { color: #2AABEE; }
 .topbar { padding: 12px 18px; }
 .status-pill { border: 1px solid var(--line); border-radius: 20px; padding: 2px 9px; font-size: 12px; }
 .workspace { display: flex; flex: 1; flex-direction: column; gap: 14px; min-height: 0; overflow: auto; padding: 0 2px 2px; }
@@ -693,4 +676,35 @@ option { background: var(--base); }
 
 @media (prefers-reduced-motion: reduce) {
   #hub-button, .hub-nav-label, .setting-tooltip { transition: none; }
+}
+
+.settings-tabs { display: flex; gap: 4px; padding: 4px; margin-bottom: 16px; }
+.settings-tabs .tab { flex: 1; }
+#settings-modal [hidden] { display: none; }
+.integration-card { padding: 14px; }
+.integration-row { display: flex; align-items: center; gap: 12px; }
+.integration-account { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.integration-logo { flex: 0 0 28px; width: 28px; height: 28px; color: #64748b; fill: currentColor; }
+#telegram-card.linked .integration-logo { color: #24A1DE; }
+#github-card.linked .integration-logo { color: #8b5cf6; }
+.integration-card.linked .integration-logo { filter: drop-shadow(0 0 6px currentColor); }
+#telegram-instructions, #github-form { margin-top: 12px; }
+#telegram-link-code { white-space: nowrap; }
+#unlink-dialog { width: min(420px, calc(100vw - 32px)); padding: 20px; color: var(--ink); }
+#unlink-dialog::backdrop { background: #0007; }
+.cursor-toast {
+  position: fixed;
+  margin: 0;
+  max-width: min(330px, calc(100vw - 16px));
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  backdrop-filter: blur(18px);
+  background: color-mix(in srgb, var(--base) 84%, transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cursor-toast { animation: cursor-toast-in 260ms cubic-bezier(0.22, 1.15, 0.36, 1) both; }
+  @keyframes cursor-toast-in {
+    from { opacity: 0; transform: translateY(5px) scale(0.96); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
 }

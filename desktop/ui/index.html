@@ -88,12 +88,6 @@
       <div class="section-label"><span>Проекты</span><button id="new-project-button" class="text-action">+ Создать</button></div>
       <nav id="project-list" class="project-list" aria-label="Проекты"></nav>
 
-      <div class="sidebar-foot">
-        <div class="telegram-status">
-          <svg id="telegram-plane" class="telegram-plane" viewBox="0 0 24 24" aria-hidden="true"><path d="M21.6 3.4 2.7 10.7c-1.3.5-1.3 1.2-.2 1.6l4.8 1.5 11-6.9c.5-.3 1-.1.6.2L10 15.3l-.3 4.6c.5 0 .7-.2 1-.5l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.7-.8l3.2-15.1c.3-1.2-.5-1.7-1.1-1.4Z"/></svg>
-          <div><strong>Telegram</strong><span id="telegram-label">Проверяем привязку…</span></div>
-        </div>
-      </div>
     </aside>
 
     <main id="project-page" class="main-area">
@@ -243,13 +237,7 @@
             <button class="button secondary" type="button" data-folder-input="project-workspace">Обзор...</button>
           </div>
         </div>
-        <label class="field"><span>Git-репозиторий (опционально)</span><input id="project-git" type="text" maxlength="500" placeholder="https://github.com/user/repo.git" aria-describedby="project-github-message" readonly></label>
-        <div id="project-github-hint" class="github-hint" inert>
-          <div><div class="github-hint-panel glass-panel">
-            <small id="project-github-message" role="status">Привяжите GitHub в общих Настройках приложения, чтобы подключать репозитории и включить авто-пуш</small>
-            <button class="button secondary open-github-settings" type="button">Открыть настройки</button>
-          </div></div>
-        </div>
+        <label class="field"><span>Git-репозиторий (опционально)</span><input id="project-git" type="text" maxlength="500" placeholder="https://github.com/user/repo.git" readonly></label>
         <label class="choice-chip"><input id="project-new-repo" type="checkbox"><span>Создать новый репозиторий на моём GitHub автоматически</span></label>
         <div id="project-visibility-field" class="hidden">
           <label class="field"><span>Доступ к репозиторию</span>
@@ -319,13 +307,7 @@
               <button class="button secondary" type="button" data-folder-input="settings-workspace">Обзор...</button>
             </div>
           </div>
-          <label class="field"><span>Git-репозиторий (опционально)</span><input id="settings-git" type="text" maxlength="500" placeholder="https://github.com/user/repo.git" aria-describedby="settings-github-message" readonly></label>
-          <div id="settings-github-hint" class="github-hint" inert>
-            <div><div class="github-hint-panel glass-panel">
-              <small id="settings-github-message" role="status">Привяжите GitHub в общих Настройках приложения, чтобы подключать репозитории и включить авто-пуш</small>
-              <button class="button secondary open-github-settings" type="button">Открыть настройки</button>
-            </div></div>
-          </div>
+          <label class="field"><span>Git-репозиторий (опционально)</span><input id="settings-git" type="text" maxlength="500" placeholder="https://github.com/user/repo.git" readonly></label>
           <label class="choice-chip"><input id="settings-new-repo" type="checkbox"><span>Создать новый репозиторий на моём GitHub автоматически</span></label>
           <div id="settings-visibility-field" class="hidden">
             <label class="field"><span>Доступ к репозиторию</span>
@@ -338,7 +320,11 @@
 
     <div id="settings-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
       <div class="modal-head"><h3 id="settings-modal-title">Настройки</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
-      <div class="stack">
+      <div class="settings-tabs glass-panel" role="tablist" aria-label="Разделы настроек">
+        <button id="general-tab" class="tab active" type="button" role="tab" aria-controls="general-panel" aria-selected="true">Общие</button>
+        <button id="integrations-tab" class="tab" type="button" role="tab" aria-controls="integrations-panel" aria-selected="false" tabindex="-1">Интеграции</button>
+      </div>
+      <div id="general-panel" class="stack" role="tabpanel" aria-labelledby="general-tab">
         <form id="projects-dir-form" class="stack" aria-labelledby="projects-dir-title">
           <h4 id="projects-dir-title"><label for="default-projects-dir">Общая папка для проектов</label></h4>
           <div class="folder-field">
@@ -346,16 +332,6 @@
             <button class="button secondary" type="button" data-folder-input="default-projects-dir">Обзор...</button>
           </div>
           <button class="button secondary" type="submit">Сохранить</button>
-        </form>
-        <form id="github-form" class="stack" aria-labelledby="github-title">
-          <h4 id="github-title">Авторизация GitHub</h4>
-          <div class="setting-heading" role="status">
-            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" style="fill:currentColor;stroke:none"><path d="M12 .75a11.25 11.25 0 0 0-3.56 21.92c.56.1.77-.24.77-.54v-2.1c-3.13.68-3.8-1.33-3.8-1.33-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.13.08 1.72 1.16 1.72 1.16 1 .1.25 1.67 3.28.83.1-.72.4-1.21.72-1.49-2.5-.28-5.13-1.25-5.13-5.56 0-1.23.44-2.23 1.16-3.02-.12-.29-.5-1.43.11-2.98 0 0 .95-.3 3.1 1.15a10.75 10.75 0 0 1 5.65 0c2.15-1.45 3.1-1.15 3.1-1.15.61 1.55.23 2.69.11 2.98a4.35 4.35 0 0 1 1.16 3.02c0 4.32-2.63 5.27-5.14 5.55.4.35.76 1.04.76 2.09v3.18c0 .3.2.65.78.54A11.25 11.25 0 0 0 12 .75Z"/></svg>
-            <span id="github-status">GitHub не подключён</span>
-          </div>
-          <label id="github-token-field" class="field"><span>GitHub Token</span><input id="github-token" type="password" placeholder="ghp_… или github_pat_…" autocomplete="off" spellcheck="false" required maxlength="261"></label>
-          <button id="github-connect" class="button secondary" type="submit">Привязать GitHub</button>
-          <button id="github-disconnect" class="button secondary hidden" type="button">Отвязать</button>
         </form>
         <div class="field">
           <div class="setting-heading">
@@ -415,7 +391,46 @@
           <input id="telegram-logs" type="checkbox" role="switch"><span id="telegram-logs-state" aria-hidden="true"></span>
         </div>
       </div>
+      <div id="integrations-panel" class="stack" role="tabpanel" aria-labelledby="integrations-tab" tabindex="0" hidden>
+        <section id="telegram-card" class="integration-card glass-panel" aria-labelledby="telegram-title">
+          <div class="integration-row">
+            <svg class="integration-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M21.6 3.4 2.7 10.7c-1.3.5-1.3 1.2-.2 1.6l4.8 1.5 11-6.9c.5-.3 1-.1.6.2L10 15.3l-.3 4.6c.5 0 .7-.2 1-.5l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.7-.8l3.2-15.1c.3-1.2-.5-1.7-1.1-1.4Z"/></svg>
+            <div class="integration-account">
+              <h4 id="telegram-title">Telegram</h4>
+              <small id="telegram-status" role="status">Не привязан</small>
+            </div>
+            <button id="telegram-connect" class="button secondary" type="button" aria-controls="telegram-instructions" aria-expanded="false">Привязать</button>
+            <button id="telegram-disconnect" class="button secondary" type="button" hidden>Отвязать</button>
+          </div>
+          <p id="telegram-instructions" class="hint" role="status" hidden>Отправьте боту Loomis команду <code id="telegram-link-code"></code>. Код действует 5 минут.</p>
+        </section>
+        <section id="github-card" class="integration-card glass-panel" aria-labelledby="github-title">
+          <div class="integration-row">
+            <svg class="integration-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .75a11.25 11.25 0 0 0-3.56 21.92c.56.1.77-.24.77-.54v-2.1c-3.13.68-3.8-1.33-3.8-1.33-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.13.08 1.72 1.16 1.72 1.16 1 .1.25 1.67 3.28.83.1-.72.4-1.21.72-1.49-2.5-.28-5.13-1.25-5.13-5.56 0-1.23.44-2.23 1.16-3.02-.12-.29-.5-1.43.11-2.98 0 0 .95-.3 3.1 1.15a10.75 10.75 0 0 1 5.65 0c2.15-1.45 3.1-1.15 3.1-1.15.61 1.55.23 2.69.11 2.98a4.35 4.35 0 0 1 1.16 3.02c0 4.32-2.63 5.27-5.14 5.55.4.35.76 1.04.76 2.09v3.18c0 .3.2.65.78.54A11.25 11.25 0 0 0 12 .75Z"/></svg>
+            <div class="integration-account">
+              <h4 id="github-title">GitHub</h4>
+              <small id="github-status" role="status">Не привязан</small>
+            </div>
+            <button id="github-connect" class="button secondary" type="button" aria-controls="github-form" aria-expanded="false">Привязать</button>
+            <button id="github-disconnect" class="button secondary" type="button" hidden>Отвязать</button>
+          </div>
+          <form id="github-form" class="stack" hidden>
+            <label class="field"><span>GitHub Personal Access Token</span><input id="github-token" type="password" placeholder="ghp_… или github_pat_…" autocomplete="off" spellcheck="false" required maxlength="261"></label>
+            <button class="button primary" type="submit">Подтвердить</button>
+          </form>
+        </section>
+      </div>
     </div>
+    <dialog id="unlink-dialog" class="glass-panel" aria-labelledby="unlink-title" aria-describedby="unlink-message">
+      <form id="unlink-form" class="stack" method="dialog">
+        <h3 id="unlink-title"></h3>
+        <p id="unlink-message">Вы уверены, что хотите отвязать аккаунт?</p>
+        <div class="modal-actions">
+          <button id="unlink-cancel" class="button secondary" type="button" autofocus>Отмена</button>
+          <button class="button primary" type="submit">Отвязать</button>
+        </div>
+      </form>
+    </dialog>
     <div id="hub-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="hub-modal-title">
       <div class="modal-head"><h3 id="hub-modal-title">Добавить модель в Хаб</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <form id="hub-form" class="stack">

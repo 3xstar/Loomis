@@ -263,6 +263,18 @@ async def generate_link_code(session: Session, user: CurrentUser):
     raise HTTPException(503, "Не удалось создать код. Повторите запрос.")
 
 
+@router.post("/telegram/unlink", response_model=UserView)
+async def disconnect_telegram(session: Session, user: CurrentUser):
+    if user.telegram_id is not None and not user.password_hash:
+        raise HTTPException(409, "Задайте пароль в Telegram перед отвязкой аккаунта.")
+    user.telegram_id = None
+    await session.flush()
+    await session.execute(delete(LinkToken).where(LinkToken.user_id == user.id))
+    await session.execute(delete(MagicLoginRequest).where(MagicLoginRequest.user_id == user.id))
+    await session.commit()
+    return user
+
+
 async def link_telegram(session: AsyncSession, code: str, telegram_id: int) -> bool:
     try:
         owner_id = await session.scalar(
