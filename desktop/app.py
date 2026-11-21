@@ -2,7 +2,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from time import monotonic, sleep
+from time import monotonic, sleep, time
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, build_opener
@@ -87,13 +87,13 @@ def main() -> None:
         # Load the FastAPI-mounted UI on the same origin as the API and WebSocket.
         api = DesktopAPI()
         window = webview.create_window(
-            "Loomis", f"{url}/index.html", width=1280, height=820, background_color="#0b1020", js_api=api,
+            "Loomis", f"{url}/?v={int(time())}", width=1280, height=820, background_color="#0b1020", js_api=api,
         )
         api._window = window
         if sys.platform == "win32":
             window.events.shown += lambda: set_dark_title_bar(window)
             window.events.loaded += lambda: enable_workspace_popup(window, url)
-        webview.start(private_mode=False)
+        webview.start(private_mode=True)
     finally:
         if server is not None and server.poll() is None:
             server.terminate()
