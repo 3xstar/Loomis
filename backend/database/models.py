@@ -45,6 +45,8 @@ class User(Base):
     username: Mapped[str | None] = mapped_column(String(255))
     login_name: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str | None] = mapped_column(String(255))
+    github_token: Mapped[str | None] = mapped_column(Text)
+    github_username: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     tg_logs_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())

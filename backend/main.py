@@ -32,7 +32,8 @@ def initialize_schema(connection) -> None:
     inspector = inspect(connection)
     upgrades = {
         "users": {"login_name": "VARCHAR(255)", "password_hash": "VARCHAR(255)",
-                  "tg_logs_enabled": "BOOLEAN NOT NULL DEFAULT TRUE"},
+                  "tg_logs_enabled": "BOOLEAN NOT NULL DEFAULT TRUE",
+                  "github_token": "TEXT", "github_username": "VARCHAR(100)"},
         "agent_messages": {
             "agent_id": "INTEGER REFERENCES agent_configs(id) ON DELETE CASCADE",
             "media_id": "INTEGER REFERENCES project_media(id) ON DELETE SET NULL",

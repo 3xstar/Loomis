@@ -2,6 +2,7 @@
 __pycache__/
 *.db
 .env
+.github-token-key
 workspaces/*
 temp_uploads/*
 loomis.db*

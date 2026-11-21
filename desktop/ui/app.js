@@ -14,6 +14,9 @@ let planMode = false;
 let selectedAgent;
 let attachment, recording, microphonePending;
 let telegramLogsEnabled = false;
+let githubUsername = null;
+let workspacesRoot = "";
+let customProjectPath = false;
 const teamTargets = new Set();
 const deletedAgents = new Set();
 const agentSelector = byId("agent-selector");
@@ -98,6 +101,8 @@ async function signIn(accessToken, isCurrent = () => true) {
   if (!isCurrent()) return;
   token = accessToken;
   telegramLogsEnabled = user.tg_logs_enabled;
+  githubUsername = user.github_username;
+  workspacesRoot = user.workspaces_root;
   renderTelegramLogs();
   sessionStorage.setItem("loomis-token", token);
   byId("user-name").textContent = user.username || "Loomis";
@@ -1253,6 +1258,7 @@ function showModal(id) {
   const backdrop = byId("modal-backdrop");
   if (!id && (backdrop.inert || !byId("agent-test-status").classList.contains("hidden"))) return;
   modalRevision++;
+  if (id !== "settings-modal") byId("github-token").value = "";
   if (id && backdrop.inert) modalTrigger = document.activeElement;
   backdrop.inert = !id;
   backdrop.classList.toggle("hidden", !id);
@@ -1430,6 +1436,7 @@ function renderTelegramLogs() {
 }
 
 function renderProjectTitle() {
+  byId("project-settings-button").disabled = !project;
   byId("current-project-name").textContent = project?.name || "Выберите проект";
   byId("current-project-workspace").textContent = project ? "Папка проекта на ПК: " + project.workspace_path : "";
   byId("current-project-git").textContent = project?.git_repo_url ? "Git-репозиторий: " + project.git_repo_url : "";
@@ -1442,7 +1449,10 @@ for (const button of all("[data-folder-input]")) {
     button.disabled = true;
     try {
       const path = await window.pywebview?.api?.select_folder?.();
-      if (revision === modalRevision && path) field.value = path;
+      if (revision === modalRevision && path) {
+        field.value = path;
+        if (field.id === "project-workspace") customProjectPath = true;
+      }
     } catch {
       if (revision === modalRevision) notify("Введите путь к папке вручную.");
     } finally {
@@ -1456,15 +1466,79 @@ const locationForm = byId("project-location-form");
 byId("settings-button").onclick = () => {
   renderTelegramLogs();
   renderDeadline();
-  locationForm.classList.toggle("hidden", !project);
-  byId("settings-workspace").value = project?.workspace_path ?? "";
-  byId("settings-git").value = project?.git_repo_url ?? "";
+  renderGitHub();
   showModal("settings-modal");
+  refreshGitHub();
 };
 
-function projectLocation(workspaceId, gitId) {
-  const path = byId(workspaceId).value;
-  return {workspace_path: path.trim() ? path : null, git_repo_url: byId(gitId).value.trim() || null};
+byId("project-settings-button").onclick = () => {
+  if (!project) return;
+  locationForm.reset();
+  byId("settings-workspace").value = project?.workspace_path ?? "";
+  byId("settings-git").value = project?.git_repo_url ?? "";
+  renderGitHub();
+  showModal("project-settings-modal");
+  refreshGitHub();
+};
+
+function renderGitHub() {
+  byId("github-status").textContent = githubUsername ? "GitHub подключён: @" + githubUsername : "GitHub не подключён";
+  for (const prefix of ["project", "settings"]) {
+    const checkbox = byId(prefix + "-new-repo");
+    checkbox.disabled = !githubUsername;
+    if (checkbox.disabled) checkbox.checked = false;
+    byId(prefix + "-git").disabled = checkbox.checked;
+    byId(prefix + "-visibility-field").classList.toggle("hidden", !checkbox.checked);
+    byId(prefix + "-github-hint").classList.toggle("hidden", Boolean(githubUsername));
+  }
+}
+
+async function refreshGitHub() {
+  const session = token;
+  const revision = modalRevision;
+  try {
+    const user = await api("auth/me", undefined, session);
+    if (session === token && revision === modalRevision) {
+      githubUsername = user.github_username;
+      renderGitHub();
+    }
+  } catch (error) {
+    if (session === token && revision === modalRevision) notify(error.message);
+  }
+}
+
+byId("project-new-repo").onchange = byId("settings-new-repo").onchange = renderGitHub;
+byId("github-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const field = byId("github-token");
+  const entered = field.value.trim();
+  if (!entered) return;
+  const button = event.submitter;
+  const session = token;
+  const revision = modalRevision;
+  button.disabled = true;
+  field.value = "";
+  try {
+    const user = await api("auth/github", {token: entered}, session);
+    if (session === token) {
+      githubUsername = user.github_username;
+      renderGitHub();
+    }
+  } catch (error) {
+    if (session === token && revision === modalRevision) notify(error.message);
+  } finally {
+    button.disabled = false;
+  }
+};
+
+function projectLocation(prefix) {
+  const path = byId(prefix + "-workspace").value;
+  const creating = byId(prefix + "-new-repo").checked;
+  return {
+    workspace_path: path.trim() ? path : null,
+    git_repo_url: creating ? null : byId(prefix + "-git").value.trim() || null,
+    ...(creating && {github_visibility: byId(prefix + "-visibility").value}),
+  };
 }
 
 locationForm.onsubmit = async (event) => {
@@ -1473,7 +1547,7 @@ locationForm.onsubmit = async (event) => {
   const target = project;
   const revision = modalRevision;
   const button = event.submitter;
-  const updates = projectLocation("settings-workspace", "settings-git");
+  const updates = projectLocation("settings");
   for (const key of Object.keys(updates)) {
     if (updates[key] === target[key]) delete updates[key];
   }
@@ -1486,8 +1560,10 @@ locationForm.onsubmit = async (event) => {
     target.git_repo_url = saved.git_repo_url;
     renderProjectTitle();
     if (revision === modalRevision) {
+      locationForm.reset();
       byId("settings-workspace").value = saved.workspace_path;
       byId("settings-git").value = saved.git_repo_url ?? "";
+      renderGitHub();
     }
   } catch (error) {
     if (project === target) notify(error.message);
@@ -1608,9 +1684,28 @@ byId("agent-preset-search").oninput = ({target} = {target: byId("agent-preset-se
     row.classList.toggle("hidden", !matchesPreset({name, config_json: {model}}, target.value));
   }
 };
+function fillDefaultProjectPath() {
+  if (customProjectPath) return;
+  const name = byId("project-name").value.trim();
+  let folder = Array.from(name.replace(/[<>:"/\\|?*\x00-\x1f]+/g, "-").replace(/^[ .]+|[ .]+$/g, ""))
+    .slice(0, 120).join("").replace(/[ .]+$/g, "") || "project";
+  if (/^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$/i.test(folder.split(".")[0])) folder = "_" + folder;
+  const separator = workspacesRoot.includes("\\") ? "\\" : "/";
+  byId("project-workspace").value = name && workspacesRoot ? workspacesRoot + separator + folder : "";
+}
+
+byId("project-name").oninput = fillDefaultProjectPath;
+byId("project-workspace").oninput = ({target}) => {
+  customProjectPath = Boolean(target.value.trim());
+};
+byId("project-workspace").onblur = fillDefaultProjectPath;
+
 byId("new-project-button").onclick = () => {
   selectProjectAddTab(false);
+  fillDefaultProjectPath();
+  renderGitHub();
   showModal("project-modal");
+  refreshGitHub();
   loadPresetChoices("project-presets");
 };
 byId("project-form").onsubmit = async (event) => {
@@ -1625,8 +1720,8 @@ byId("project-form").onsubmit = async (event) => {
   try {
     const created = await api("projects", {
       name: byId("project-name").value,
-      description: byId("project-description").value,
-      ...projectLocation("project-workspace", "project-git"),
+      ...projectLocation("project"),
+      ...(!customProjectPath && {workspace_path: null}),
     }, session);
     let importError;
     if (presetIds.length) {
@@ -1640,6 +1735,7 @@ byId("project-form").onsubmit = async (event) => {
     const modalCurrent = revision === modalRevision;
     if (modalCurrent) {
       form.reset();
+      customProjectPath = false;
       showModal();
     }
     await loadProjects(created.id);
@@ -1895,6 +1991,7 @@ byId("stats-button").onclick = async () => {
 
 byId("logout-button").onclick = () => {
   token = null;
+  githubUsername = null;
   hubPresets = [];
   hubRatings.clear();
   hubSearch.value = "";

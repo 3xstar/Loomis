@@ -85,7 +85,7 @@
         <span class="hub-nav-label hub-nav-models" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m7.3 11 8.4-4m-8.4 6 8.4 4"/></svg>Хаб нейросетей</span>
         <span class="hub-nav-label hub-nav-projects" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>Проекты</span>
       </button>
-      <div class="section-label"><span>Проекты</span><button id="new-project-button" class="text-action">Создать</button></div>
+      <div class="section-label"><span>Проекты</span><button id="new-project-button" class="text-action">+ Создать</button></div>
       <nav id="project-list" class="project-list" aria-label="Проекты"></nav>
 
       <div class="sidebar-foot">
@@ -108,6 +108,7 @@
           <span id="project-status" class="status-pill">idle</span>
         </div>
         <div class="topbar-actions">
+          <button id="project-settings-button" class="button secondary" type="button" disabled>Настройки проекта</button>
           <button id="stats-button" class="button secondary" type="button" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg> Статистика</button>
           <button class="button secondary" type="button" data-action="regenerate_plan" disabled>Пересобрать план</button>
           <button id="theme-switch-top" class="theme-switch" type="button" aria-label="Светлая тема"></button>
@@ -232,18 +233,24 @@
   </div>
   <div id="modal-backdrop" class="modal-backdrop hidden" inert>
     <div id="project-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true">
-      <div class="modal-head"><div><p class="eyebrow">Новый проект</p><h3>Создать воркспейс</h3></div><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <div class="modal-head"><h3>Создать проект</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <form id="project-form" class="stack">
-        <label class="field"><span>Название</span><input id="project-name" type="text" placeholder="Например, Loomis Cloud" required maxlength="255"></label>
-        <label class="field"><span>Описание</span><textarea id="project-description" rows="3" placeholder="Коротко о задаче и ожидаемом результате"></textarea></label>
+        <label class="field"><span>Название проекта</span><input id="project-name" type="text" placeholder="Например, MyApp" required maxlength="255"></label>
         <div class="field">
-          <label for="project-workspace">Путь сохранения проекта</label>
+          <label for="project-workspace">Путь сохранения на ПК</label>
           <div class="folder-field">
             <input id="project-workspace" type="text" maxlength="1024" placeholder="По умолчанию (workspaces)">
             <button class="button secondary" type="button" data-folder-input="project-workspace">Обзор...</button>
           </div>
         </div>
-        <label class="field"><span>Git-репозиторий (опционально)</span><input id="project-git" type="text" maxlength="500" placeholder="https://github.com/user/repo.git"></label>
+        <label class="field"><span>GitHub-репозиторий проекта (опционально)</span><input id="project-git" type="text" maxlength="500" placeholder="https://github.com/user/repo.git"></label>
+        <label class="choice-chip"><input id="project-new-repo" type="checkbox"><span>Создать новый репозиторий на моём GitHub автоматически</span></label>
+        <div id="project-visibility-field" class="hidden">
+          <label class="field"><span>Доступ к репозиторию</span>
+            <select id="project-visibility"><option value="private">Приватный</option><option value="public">Публичный</option></select>
+          </label>
+        </div>
+        <small id="project-github-hint" class="hidden">Подключите GitHub в общих настройках.</small>
         <div class="glass-tabs" aria-label="Подключение агентов">
           <button id="project-hub-tab" class="tab active" type="button" aria-pressed="true">Из хаба</button>
           <button id="project-manual-tab" class="tab" type="button" aria-pressed="false">Добавить новую вручную</button>
@@ -297,19 +304,39 @@
         <button id="agent-submit" class="button primary wide" type="submit">Добавить агента</button>
       </form>
     </div>
-    <div id="settings-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
-      <div class="modal-head"><h3 id="settings-modal-title">Настройки</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
-      <div class="stack">
-        <form id="project-location-form" class="stack hidden">
+    <div id="project-settings-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="project-settings-title">
+      <div class="modal-head"><h3 id="project-settings-title">Настройки проекта</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+        <form id="project-location-form" class="stack">
           <div class="field">
-            <label for="settings-workspace">Путь сохранения проекта</label>
+            <label for="settings-workspace">Путь сохранения на ПК</label>
             <div class="folder-field">
               <input id="settings-workspace" type="text" maxlength="1024" placeholder="По умолчанию (workspaces)">
               <button class="button secondary" type="button" data-folder-input="settings-workspace">Обзор...</button>
             </div>
           </div>
-          <label class="field"><span>Git-репозиторий (опционально)</span><input id="settings-git" type="text" maxlength="500" placeholder="https://github.com/user/repo.git"></label>
+          <label class="field"><span>GitHub-репозиторий проекта (опционально)</span><input id="settings-git" type="text" maxlength="500" placeholder="https://github.com/user/repo.git"></label>
+          <label class="choice-chip"><input id="settings-new-repo" type="checkbox"><span>Создать новый репозиторий на моём GitHub автоматически</span></label>
+          <div id="settings-visibility-field" class="hidden">
+            <label class="field"><span>Доступ к репозиторию</span>
+              <select id="settings-visibility"><option value="private">Приватный</option><option value="public">Публичный</option></select>
+            </label>
+          </div>
+          <small id="settings-github-hint" class="hidden">Подключите GitHub в общих настройках.</small>
           <button class="button secondary" type="submit">Сохранить папку и Git</button>
+        </form>
+    </div>
+
+    <div id="settings-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+      <div class="modal-head"><h3 id="settings-modal-title">Настройки</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <div class="stack">
+        <form id="github-form" class="stack" aria-labelledby="github-title">
+          <h4 id="github-title">Интеграция с GitHub</h4>
+          <div class="setting-heading" role="status">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" style="fill:currentColor;stroke:none"><path d="M12 .75a11.25 11.25 0 0 0-3.56 21.92c.56.1.77-.24.77-.54v-2.1c-3.13.68-3.8-1.33-3.8-1.33-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.13.08 1.72 1.16 1.72 1.16 1 .1.25 1.67 3.28.83.1-.72.4-1.21.72-1.49-2.5-.28-5.13-1.25-5.13-5.56 0-1.23.44-2.23 1.16-3.02-.12-.29-.5-1.43.11-2.98 0 0 .95-.3 3.1 1.15a10.75 10.75 0 0 1 5.65 0c2.15-1.45 3.1-1.15 3.1-1.15.61 1.55.23 2.69.11 2.98a4.35 4.35 0 0 1 1.16 3.02c0 4.32-2.63 5.27-5.14 5.55.4.35.76 1.04.76 2.09v3.18c0 .3.2.65.78.54A11.25 11.25 0 0 0 12 .75Z"/></svg>
+            <span id="github-status">GitHub не подключён</span>
+          </div>
+          <label class="field"><span>GitHub Personal Access Token</span><input id="github-token" type="password" placeholder="ghp_… или github_pat_…" autocomplete="off" spellcheck="false" required maxlength="261"></label>
+          <button class="button secondary" type="submit">Проверить и привязать</button>
         </form>
         <div class="field">
           <div class="setting-heading">

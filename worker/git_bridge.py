@@ -1,7 +1,15 @@
 import asyncio
+import os
+import re
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import time_ns
 from uuid import uuid4
+
+
+def is_github_repo(url: str) -> bool:
+    return bool(re.fullmatch(r"https://github\.com/[A-Za-z0-9-]+/[A-Za-z0-9_.-]+", url, re.IGNORECASE)
+                and url.rsplit("/", 1)[-1] not in {".", ".."})
 
 
 class GitBridge:
@@ -10,10 +18,10 @@ class GitBridge:
         self.branch = f"loomis/project-{project_id}"
         self.tags = f"loomis/project-{project_id}/"
 
-    async def git(self, *args, allowed=(0,)):
+    async def git(self, *args, allowed=(0,), env=None):
         process = await asyncio.create_subprocess_exec(
             "git", "-c", "core.hooksPath=.git/loomis-disabled-hooks", *args, cwd=self.workspace,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
         )
         try:
             out, err = await asyncio.wait_for(process.communicate(), 45)
@@ -104,3 +112,49 @@ class GitBridge:
 
     async def push(self):
         await self.git("push", "origin", f"HEAD:refs/heads/{self.branch}")
+
+    async def push_github_main(self, url: str, token: str):
+        if not is_github_repo(url):
+            raise ValueError("Для автопуша укажите HTTPS-адрес репозитория на github.com.")
+        try:
+            # Use only the workspace's committed objects. Its Git config can be edited by agents.
+            head = await self.git("rev-parse", "--verify", "HEAD^{commit}")
+            objects = await self.git("rev-parse", "--path-format=absolute", "--git-path", "objects")
+            if not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", head):
+                raise ValueError("Не удалось определить коммит для GitHub.")
+            with TemporaryDirectory(prefix="loomis-github-") as directory:
+                workspace = Path(directory)
+                askpass = workspace / "askpass.sh"
+                askpass.write_bytes(
+                    b'#!/bin/sh\ncase "$1" in\n'
+                    b'  Username*) printf "%s\\n" x-access-token ;;\n'
+                    b'  Password*) printf "%s\\n" "$LOOMIS_GITHUB_PAT" ;;\n'
+                    b'  *) exit 1 ;;\nesac\n'
+                )
+                askpass.chmod(0o700)
+                env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+                env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                           GIT_TERMINAL_PROMPT="0", GIT_ALLOW_PROTOCOL="https", LC_ALL="C")
+                isolated = GitBridge(workspace, 0)
+                object_format = "sha256" if len(head) == 64 else "sha1"
+                await isolated.git("init", "--bare", "--template=", f"--object-format={object_format}", env=env)
+                alternates = workspace / "objects" / "info" / "alternates"
+                if "\n" in objects or "\r" in objects or not Path(objects).is_absolute():
+                    raise ValueError("Не удалось открыть объекты коммита для GitHub.")
+                alternates.write_bytes((Path(objects).as_posix() + "\n").encode("utf-8"))
+                await isolated.git("update-ref", "refs/heads/main", head, env=env)
+                await isolated.git("remote", "add", "origin", url, env=env)
+                env.update(GIT_ASKPASS=askpass.as_posix(), LOOMIS_GITHUB_PAT=token)
+                await isolated.git("-c", "http.followRedirects=false", "-c", "credential.helper=",
+                                   "push", "-u", "origin", "main", env=env)
+        except TimeoutError:
+            raise RuntimeError("Истекло время ожидания GitHub.") from None
+        except (OSError, RuntimeError) as exc:
+            error = str(exc).lower()
+            if any(word in error for word in ("non-fast-forward", "fetch first", "[rejected]")):
+                message = "В GitHub есть изменения в main. Синхронизируйте историю с локальной копией."
+            elif any(word in error for word in ("authentication", "denied", "403", "401", "not found")):
+                message = "GitHub отказал в доступе. Проверьте токен и права записи в репозиторий."
+            else:
+                message = "Не удалось отправить коммит. Проверьте сеть и доступность репозитория GitHub."
+            raise RuntimeError(message) from None

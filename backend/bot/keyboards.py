@@ -38,6 +38,7 @@ def main_menu(account_exists: bool) -> InlineKeyboardMarkup:
 
 def profile_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Подключить GitHub", callback_data="profile:github")],
         [InlineKeyboardButton(text="🔑 Сгенерировать новый пароль", callback_data="profile:new_password")],
         [InlineKeyboardButton(text="Мои проекты", callback_data="projects")],
     ])

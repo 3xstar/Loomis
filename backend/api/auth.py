@@ -9,15 +9,16 @@ from typing import Annotated
 from aiogram.exceptions import TelegramAPIError
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, computed_field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.bot.keyboards import magic_login_keyboard
+from backend.core.github import bind_github
 from backend.database.db import get_session
 from backend.database.models import LinkToken, MagicLoginRequest, User, utc_now
-from backend.settings import settings
+from backend.settings import ROOT, settings
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 Session = Annotated[AsyncSession, Depends(get_session)]
@@ -42,6 +43,12 @@ class UserView(BaseModel):
     username: str | None
     telegram_id: int | None
     tg_logs_enabled: bool
+    github_username: str | None
+
+    @computed_field
+    @property
+    def workspaces_root(self) -> str:
+        return str(ROOT / "workspaces")
 
 
 def _derive(password: str, salt: str) -> str:
@@ -183,6 +190,16 @@ async def magic_login_status(request_id: str, session: Session):
 
 @router.get("/me", response_model=UserView)
 async def me(user: CurrentUser):
+    return user
+
+
+class GitHubCredentials(BaseModel):
+    token: SecretStr
+
+
+@router.post("/github", response_model=UserView)
+async def connect_github(data: GitHubCredentials, session: Session, user: CurrentUser):
+    await bind_github(session, user, data.token.get_secret_value())
     return user
 
 

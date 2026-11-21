@@ -25,6 +25,7 @@ from worker.quality_gate import check_quality
 from worker.sandbox import workspace_file
 
 from .council import periodic_meeting, starting_council
+from .github import github_token
 from .model_performance import cache_response, cached_response, model_key, prompt_digest, rank_configs, record_model_result
 
 logger = logging.getLogger(__name__)
@@ -932,6 +933,7 @@ class Orchestrator:
         await self.message(project.id, config.name, target, "team_chat", report, config,
                            step_title=STEP_TITLES["execute"])
         await self.notify(project.id, report, event_type="step_log", config=config, in_team_chat=True)
+        await self.publish_github_step(project, bridge, complete)
         if complete:
             runtime.ready.clear()
             await self.status(project.id, "completed", turn_state=runtime.snapshot())
@@ -941,6 +943,22 @@ class Orchestrator:
             await self.pause_for_approval(project, runtime, f"Следующий шаг: @{next_config.name}.", "step", next_config)
         else:
             await self.save_turn(project.id, runtime)
+
+    async def publish_github_step(self, project, bridge, complete):
+        if not project.git_repo_url:
+            return
+        async with async_session_factory() as session:
+            encrypted_token = await session.scalar(select(User.github_token).where(User.id == project.owner_id))
+        if not encrypted_token:
+            return
+        try:
+            await bridge.push_github_main(project.git_repo_url, github_token(encrypted_token))
+        except (RuntimeError, ValueError) as exc:
+            status = f"GitHub · ошибка отправки в main. {exc}"
+        else:
+            status = "GitHub · итоговый коммит отправлен в main." if complete else "GitHub · коммит шага отправлен в main."
+        await self.message(project.id, "Loomis", "@All", "team_chat", status, step_title="GitHub")
+        await self.notify(project.id, status, event_type="step_log", critical=True, in_team_chat=True)
 
     async def diagnose_failure(self, bridge, checkpoint, config, stage, last_output, remote):
         notes = [f"Этап: {stage}."]

@@ -19,10 +19,11 @@ from backend.api.auth import CurrentUser, Session
 from backend.api.ws import manager
 from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
+from backend.core.github import create_github_repo
 from backend.core.media import MAX_MEDIA_BYTES, make_media, media_spec_content
 from backend.core.model_performance import model_key
 from backend.core.orchestrator import count_tokens, orchestrator, probe_agent
-from backend.database.models import AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia, SpecItem, TaskLog, UserModelPreset, utc_now
+from backend.database.models import AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia, SpecItem, TaskLog, User, UserModelPreset, utc_now
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
 from worker.git_bridge import GitBridge
@@ -54,11 +55,16 @@ class ProjectCreate(BaseModel):
     verbosity_level: VerbosityLevel = "concise"
 
 
+class ProjectCreateRequest(ProjectCreate):
+    github_visibility: Literal["private", "public"] | None = None
+
+
 class ProjectPatch(BaseModel):
     name: ProjectName | None = None
     description: str | None = None
     workspace_path: str | None = Field(default=None, min_length=1, max_length=1024)
     git_repo_url: GitRepoURL | None = None
+    github_visibility: Literal["private", "public"] | None = None
 
     test_command: str | None = None
     meeting_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
@@ -142,6 +148,32 @@ def default_workspace(project: Project | ProjectView) -> str:
     return str(ROOT / "workspaces" / f"{project.id}-{slug}")
 
 
+def new_workspace(name: str) -> str:
+    folder = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", name).strip(" .")[:120].rstrip(" .") or "project"
+    if re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³]", folder.split(".")[0], re.IGNORECASE):
+        folder = "_" + folder
+    return str(ROOT / "workspaces" / folder)
+
+
+async def available_workspace(session: AsyncSession, project: Project, path: str) -> str:
+    absolute_path = os.path.realpath(path)
+    used = await session.scalars(select(Project).where(Project.id != project.id))
+    if any(os.path.normcase(os.path.realpath(other.workspace_path or default_workspace(other))) ==
+           os.path.normcase(absolute_path) for other in used):
+        raise HTTPException(409, "Эта папка уже используется. Выберите другую папку проекта.")
+    return absolute_path
+
+
+async def link_workspace(path: str, project_id: int, repo_url: str) -> None:
+    try:
+        parsed = urlsplit(repo_url)
+        if parsed.scheme.lower() in {"http", "https"} and (parsed.username is not None or parsed.password is not None):
+            raise HTTPException(422, "Укажите адрес Git без учётных данных.")
+        await GitBridge(Path(path), project_id).link_origin(repo_url)
+    except (OSError, RuntimeError, TimeoutError, ValueError):
+        raise HTTPException(422, "Не удалось настроить Git. Проверьте репозиторий и права доступа к папке.") from None
+
+
 async def prepare_workspace(path: str, project_id: int, repo_url: str | None) -> str:
     try:
         absolute_path = path if os.path.isabs(path) else os.path.abspath(path)
@@ -149,26 +181,45 @@ async def prepare_workspace(path: str, project_id: int, repo_url: str | None) ->
     except (OSError, ValueError) as exc:
         raise HTTPException(422, "Не удалось создать папку проекта. Проверьте путь и права доступа.") from exc
     if repo_url:
-        try:
-            await GitBridge(Path(absolute_path), project_id).link_origin(repo_url)
-        except (OSError, RuntimeError, TimeoutError) as exc:
-            raise HTTPException(422, "Не удалось настроить Git. Проверьте репозиторий и права доступа к папке.") from exc
+        await link_workspace(absolute_path, project_id, repo_url)
     return absolute_path
 
 
 async def create_project(session: AsyncSession, owner_id: int, data: ProjectCreate) -> Project:
-    project = Project(owner_id=owner_id, **data.model_dump())
+    fields = data.model_dump()
+    visibility = fields.pop("github_visibility", None)
+    project = Project(owner_id=owner_id, **fields)
+    if visibility and project.git_repo_url:
+        raise HTTPException(422, "Выберите адрес существующего репозитория или автоматическое создание.")
     session.add(project)
     await session.flush()
     try:
+        path = await available_workspace(session, project, project.workspace_path or new_workspace(project.name))
         project.workspace_path = await prepare_workspace(
-            project.workspace_path or default_workspace(project), project.id, project.git_repo_url,
+            path, project.id, project.git_repo_url,
         )
+        if visibility:
+            project.git_repo_url = await provision_project_repo(session, project, project.workspace_path,
+                                                               project.name, visibility)
     except HTTPException:
         await session.rollback()
         raise
     await session.commit()
     return project
+
+
+async def provision_project_repo(session, project, path, name, visibility) -> str:
+    owner = await session.get(User, project.owner_id)
+    try:
+        await GitBridge(Path(path), project.id).initialize()
+    except (OSError, RuntimeError, TimeoutError):
+        raise HTTPException(422, "Не удалось подготовить Git в папке проекта.") from None
+    url = await create_github_repo(owner, name, visibility)
+    try:
+        await link_workspace(path, project.id, url)
+    except HTTPException:
+        raise HTTPException(422, f"GitHub создал репозиторий {url}. Проверьте папку и привяжите этот адрес вручную.") from None
+    return url
 
 
 async def owned_project(project_id: int, session: Session, user: CurrentUser) -> Project:
@@ -191,7 +242,7 @@ async def list_projects(session: Session, user: CurrentUser):
 
 
 @router.post("", response_model=ProjectView, status_code=201)
-async def add_project(data: ProjectCreate, session: Session, user: CurrentUser):
+async def add_project(data: ProjectCreateRequest, session: Session, user: CurrentUser):
     return await create_project(session, user.id, data)
 
 
@@ -266,10 +317,13 @@ async def add_spec_item(request: Request, project: OwnedProject, session: Sessio
 @router.patch("/{project_id}", response_model=ProjectView)
 async def edit_project(data: ProjectPatch, project: OwnedProject, session: Session):
     updates = data.model_dump(exclude_unset=True)
+    visibility = updates.pop("github_visibility", None)
+    if visibility and updates.get("git_repo_url"):
+        raise HTTPException(422, "Выберите адрес существующего репозитория или автоматическое создание.")
     required = {"name", "deadline_minutes", "meeting_interval_minutes", "autonomy_mode", "failover_mode", "verbosity_level"}
     if any(field in required and value is None for field, value in updates.items()):
         raise HTTPException(422, "Обязательные настройки проекта не могут быть пустыми.")
-    configure_workspace = bool(updates.keys() & {"workspace_path", "git_repo_url"})
+    configure_workspace = bool(visibility or updates.keys() & {"workspace_path", "git_repo_url"})
     boundary = orchestrator.runtime(project.id).boundary if configure_workspace else nullcontext()
     async with boundary:
         await session.refresh(project)
@@ -277,8 +331,14 @@ async def edit_project(data: ProjectPatch, project: OwnedProject, session: Sessi
             raise HTTPException(409, "Сначала приостановите проект.")
         if configure_workspace:
             path = updates.get("workspace_path", project.workspace_path) or default_workspace(project)
-            repo_url = updates.get("git_repo_url", project.git_repo_url)
+            if "workspace_path" in updates:
+                path = await available_workspace(session, project, path)
+            repo_url = None if visibility else updates.get("git_repo_url", project.git_repo_url)
             updates["workspace_path"] = await prepare_workspace(path, project.id, repo_url)
+            if visibility:
+                updates["git_repo_url"] = await provision_project_repo(
+                    session, project, updates["workspace_path"], updates.get("name", project.name), visibility,
+                )
         workspace_changed = updates.get("workspace_path", project.workspace_path) != project.workspace_path
         for field, value in updates.items():
             setattr(project, field, value)

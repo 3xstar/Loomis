@@ -11,6 +11,7 @@ class ProjectSetup(StatesGroup):
 class AccountSetup(StatesGroup):
     username = State()
     link_code = State()
+    github_token = State()
 
 
 class AgentInteraction(StatesGroup):

@@ -2,12 +2,14 @@ import json
 import logging
 import re
 import secrets
+from contextlib import suppress
 from datetime import datetime
 from html import escape
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
@@ -25,6 +27,7 @@ from backend.api.projects import (
 from backend.api.ws import manager
 from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
+from backend.core.github import bind_github
 from backend.core.media import MAX_MEDIA_BYTES, MEDIA_TYPES, make_media
 from backend.core.orchestrator import orchestrator
 from backend.core.voice import VoiceTranscriber
@@ -290,8 +293,40 @@ async def profile_callback(callback: CallbackQuery, account: User | None):
         await callback.answer("Откройте профиль заново через /start.", show_alert=True)
         return
     await callback.answer()
-    await callback.message.answer(f"Профиль: {account.username}\nTelegram привязан.",
+    github_status = f"GitHub подключён: @{account.github_username}" if account.github_username else "GitHub не подключён."
+    await callback.message.answer(f"Профиль: {account.username}\nTelegram привязан.\n{github_status}",
                                   reply_markup=profile_keyboard())
+
+
+@router.callback_query(F.data == "profile:github")
+async def github_profile(callback: CallbackQuery, state: FSMContext, account: User | None):
+    if account is None or not isinstance(callback.message, Message) or callback.message.chat.type != "private":
+        await callback.answer("Откройте профиль в личном чате с ботом.", show_alert=True)
+        return
+    await callback.answer()
+    await state.set_state(AccountSetup.github_token)
+    await callback.message.answer("Отправьте GitHub Personal Access Token (ghp_… или github_pat_…).",
+                                  reply_markup=cancel_keyboard())
+
+
+@router.message(AccountSetup.github_token, F.chat.type == "private")
+async def save_github_token(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
+    if not message.text:
+        await message.answer("Отправьте токен текстом.", reply_markup=cancel_keyboard())
+        return
+    with suppress(TelegramAPIError):
+        await message.delete()
+    if account is None:
+        await state.set_state(None)
+        await message.answer(LINK_HELP, reply_markup=main_menu(False))
+        return
+    try:
+        await bind_github(session, account, message.text)
+    except HTTPException as exc:
+        await message.answer(exc.detail, reply_markup=cancel_keyboard())
+        return
+    await state.set_state(None)
+    await message.answer(f"GitHub подключён: @{account.github_username}", reply_markup=profile_keyboard())
 
 
 @router.callback_query(F.data == "profile:new_password")
