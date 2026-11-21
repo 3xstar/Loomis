@@ -237,20 +237,25 @@
       <form id="project-form" class="stack">
         <label class="field"><span>Название проекта</span><input id="project-name" type="text" placeholder="Например, MyApp" required maxlength="255"></label>
         <div class="field">
-          <label for="project-workspace">Путь сохранения на ПК</label>
+          <label for="project-workspace">Личная папка проекта</label>
           <div class="folder-field">
-            <input id="project-workspace" type="text" maxlength="1024" placeholder="По умолчанию (workspaces)">
+            <input id="project-workspace" type="text" maxlength="1024">
             <button class="button secondary" type="button" data-folder-input="project-workspace">Обзор...</button>
           </div>
         </div>
-        <label class="field"><span>GitHub-репозиторий проекта (опционально)</span><input id="project-git" type="text" maxlength="500" placeholder="https://github.com/user/repo.git"></label>
+        <label class="field"><span>Git-репозиторий (опционально)</span><input id="project-git" type="text" maxlength="500" placeholder="https://github.com/user/repo.git" aria-describedby="project-github-message" readonly></label>
+        <div id="project-github-hint" class="github-hint" inert>
+          <div><div class="github-hint-panel glass-panel">
+            <small id="project-github-message" role="status">Привяжите GitHub в общих Настройках приложения, чтобы подключать репозитории и включить авто-пуш</small>
+            <button class="button secondary open-github-settings" type="button">Открыть настройки</button>
+          </div></div>
+        </div>
         <label class="choice-chip"><input id="project-new-repo" type="checkbox"><span>Создать новый репозиторий на моём GitHub автоматически</span></label>
         <div id="project-visibility-field" class="hidden">
           <label class="field"><span>Доступ к репозиторию</span>
             <select id="project-visibility"><option value="private">Приватный</option><option value="public">Публичный</option></select>
           </label>
         </div>
-        <small id="project-github-hint" class="hidden">Подключите GitHub в общих настройках.</small>
         <div class="glass-tabs" aria-label="Подключение агентов">
           <button id="project-hub-tab" class="tab active" type="button" aria-pressed="true">Из хаба</button>
           <button id="project-manual-tab" class="tab" type="button" aria-pressed="false">Добавить новую вручную</button>
@@ -308,35 +313,49 @@
       <div class="modal-head"><h3 id="project-settings-title">Настройки проекта</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
         <form id="project-location-form" class="stack">
           <div class="field">
-            <label for="settings-workspace">Путь сохранения на ПК</label>
+            <label for="settings-workspace">Личная папка проекта</label>
             <div class="folder-field">
               <input id="settings-workspace" type="text" maxlength="1024" placeholder="По умолчанию (workspaces)">
               <button class="button secondary" type="button" data-folder-input="settings-workspace">Обзор...</button>
             </div>
           </div>
-          <label class="field"><span>GitHub-репозиторий проекта (опционально)</span><input id="settings-git" type="text" maxlength="500" placeholder="https://github.com/user/repo.git"></label>
+          <label class="field"><span>Git-репозиторий (опционально)</span><input id="settings-git" type="text" maxlength="500" placeholder="https://github.com/user/repo.git" aria-describedby="settings-github-message" readonly></label>
+          <div id="settings-github-hint" class="github-hint" inert>
+            <div><div class="github-hint-panel glass-panel">
+              <small id="settings-github-message" role="status">Привяжите GitHub в общих Настройках приложения, чтобы подключать репозитории и включить авто-пуш</small>
+              <button class="button secondary open-github-settings" type="button">Открыть настройки</button>
+            </div></div>
+          </div>
           <label class="choice-chip"><input id="settings-new-repo" type="checkbox"><span>Создать новый репозиторий на моём GitHub автоматически</span></label>
           <div id="settings-visibility-field" class="hidden">
             <label class="field"><span>Доступ к репозиторию</span>
               <select id="settings-visibility"><option value="private">Приватный</option><option value="public">Публичный</option></select>
             </label>
           </div>
-          <small id="settings-github-hint" class="hidden">Подключите GitHub в общих настройках.</small>
-          <button class="button secondary" type="submit">Сохранить папку и Git</button>
+          <button class="button secondary" type="submit">Сохранить</button>
         </form>
     </div>
 
     <div id="settings-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
       <div class="modal-head"><h3 id="settings-modal-title">Настройки</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <div class="stack">
+        <form id="projects-dir-form" class="stack" aria-labelledby="projects-dir-title">
+          <h4 id="projects-dir-title"><label for="default-projects-dir">Общая папка для проектов</label></h4>
+          <div class="folder-field">
+            <input id="default-projects-dir" type="text" maxlength="1024" required>
+            <button class="button secondary" type="button" data-folder-input="default-projects-dir">Обзор...</button>
+          </div>
+          <button class="button secondary" type="submit">Сохранить</button>
+        </form>
         <form id="github-form" class="stack" aria-labelledby="github-title">
-          <h4 id="github-title">Интеграция с GitHub</h4>
+          <h4 id="github-title">Авторизация GitHub</h4>
           <div class="setting-heading" role="status">
             <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" style="fill:currentColor;stroke:none"><path d="M12 .75a11.25 11.25 0 0 0-3.56 21.92c.56.1.77-.24.77-.54v-2.1c-3.13.68-3.8-1.33-3.8-1.33-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.13.08 1.72 1.16 1.72 1.16 1 .1.25 1.67 3.28.83.1-.72.4-1.21.72-1.49-2.5-.28-5.13-1.25-5.13-5.56 0-1.23.44-2.23 1.16-3.02-.12-.29-.5-1.43.11-2.98 0 0 .95-.3 3.1 1.15a10.75 10.75 0 0 1 5.65 0c2.15-1.45 3.1-1.15 3.1-1.15.61 1.55.23 2.69.11 2.98a4.35 4.35 0 0 1 1.16 3.02c0 4.32-2.63 5.27-5.14 5.55.4.35.76 1.04.76 2.09v3.18c0 .3.2.65.78.54A11.25 11.25 0 0 0 12 .75Z"/></svg>
             <span id="github-status">GitHub не подключён</span>
           </div>
-          <label class="field"><span>GitHub Personal Access Token</span><input id="github-token" type="password" placeholder="ghp_… или github_pat_…" autocomplete="off" spellcheck="false" required maxlength="261"></label>
-          <button class="button secondary" type="submit">Проверить и привязать</button>
+          <label id="github-token-field" class="field"><span>GitHub Token</span><input id="github-token" type="password" placeholder="ghp_… или github_pat_…" autocomplete="off" spellcheck="false" required maxlength="261"></label>
+          <button id="github-connect" class="button secondary" type="submit">Привязать GitHub</button>
+          <button id="github-disconnect" class="button secondary hidden" type="button">Отвязать</button>
         </form>
         <div class="field">
           <div class="setting-heading">

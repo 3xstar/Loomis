@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import hmac
+import os
 import secrets
 import time
 from datetime import timedelta
@@ -9,7 +10,7 @@ from typing import Annotated
 from aiogram.exceptions import TelegramAPIError
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, computed_field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, computed_field, field_validator
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.bot.keyboards import magic_login_keyboard
 from backend.core.github import bind_github
 from backend.database.db import get_session
-from backend.database.models import LinkToken, MagicLoginRequest, User, utc_now
+from backend.database.models import DEFAULT_PROJECTS_DIR, LinkToken, MagicLoginRequest, User, utc_now
 from backend.settings import ROOT, settings
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -44,6 +45,12 @@ class UserView(BaseModel):
     telegram_id: int | None
     tg_logs_enabled: bool
     github_username: str | None
+    default_projects_dir: str
+
+    @field_validator("default_projects_dir", mode="before")
+    @classmethod
+    def resolve_default_projects_dir(cls, value: str | None) -> str:
+        return value or DEFAULT_PROJECTS_DIR
 
     @computed_field
     @property
@@ -203,13 +210,31 @@ async def connect_github(data: GitHubCredentials, session: Session, user: Curren
     return user
 
 
+@router.delete("/github", response_model=UserView)
+async def disconnect_github(session: Session, user: CurrentUser):
+    user.github_token = None
+    user.github_username = None
+    await session.commit()
+    return user
+
+
 class UserPreferences(BaseModel):
-    tg_logs_enabled: bool
+    tg_logs_enabled: bool | None = None
+    default_projects_dir: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1024,
+                               pattern=r"^[^\x00-\x1f]+$")
+    ] | None = None
 
 
 @router.patch("/me", response_model=UserView)
 async def update_preferences(data: UserPreferences, session: Session, user: CurrentUser):
-    user.tg_logs_enabled = data.tg_logs_enabled
+    if data.default_projects_dir is not None:
+        path = os.path.abspath(data.default_projects_dir)
+        if len(path) > 1024 or (os.path.exists(path) and not os.path.isdir(path)):
+            raise HTTPException(422, "Укажите допустимый путь к папке проектов.")
+        user.default_projects_dir = path
+    if data.tg_logs_enabled is not None:
+        user.tg_logs_enabled = data.tg_logs_enabled
     await session.commit()
     return user
 

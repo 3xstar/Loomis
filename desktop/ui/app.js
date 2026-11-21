@@ -15,8 +15,11 @@ let selectedAgent;
 let attachment, recording, microphonePending;
 let telegramLogsEnabled = false;
 let githubUsername = null;
-let workspacesRoot = "";
+let defaultProjectsDir = "";
 let customProjectPath = false;
+let githubSettingsReturn;
+let githubUpdatePending = false;
+let githubRevision = 0;
 const teamTargets = new Set();
 const deletedAgents = new Set();
 const agentSelector = byId("agent-selector");
@@ -102,7 +105,7 @@ async function signIn(accessToken, isCurrent = () => true) {
   token = accessToken;
   telegramLogsEnabled = user.tg_logs_enabled;
   githubUsername = user.github_username;
-  workspacesRoot = user.workspaces_root;
+  defaultProjectsDir = user.default_projects_dir;
   renderTelegramLogs();
   sessionStorage.setItem("loomis-token", token);
   byId("user-name").textContent = user.username || "Loomis";
@@ -1257,7 +1260,13 @@ async function mutateFromModal(button, target, method, body, onError = (error) =
 function showModal(id) {
   const backdrop = byId("modal-backdrop");
   if (!id && (backdrop.inert || !byId("agent-test-status").classList.contains("hidden"))) return;
+  if (!id && githubSettingsReturn) {
+    id = githubSettingsReturn;
+    githubSettingsReturn = undefined;
+    fillDefaultProjectPath();
+  }
   modalRevision++;
+  for (const prefix of ["project", "settings"]) byId(prefix + "-github-hint").inert = true;
   if (id !== "settings-modal") byId("github-token").value = "";
   if (id && backdrop.inert) modalTrigger = document.activeElement;
   backdrop.inert = !id;
@@ -1463,12 +1472,42 @@ for (const button of all("[data-folder-input]")) {
 }
 
 const locationForm = byId("project-location-form");
-byId("settings-button").onclick = () => {
+const projectsDirField = byId("default-projects-dir");
+
+function openSettings() {
+  projectsDirField.value = defaultProjectsDir;
   renderTelegramLogs();
   renderDeadline();
   renderGitHub();
   showModal("settings-modal");
   refreshGitHub();
+}
+
+byId("settings-button").onclick = openSettings;
+all(".open-github-settings").forEach((button) => {
+  button.onclick = () => {
+    githubSettingsReturn = button.closest(".modal").id;
+    openSettings();
+  };
+});
+
+byId("projects-dir-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const session = token;
+  const button = event.submitter;
+  button.disabled = true;
+  try {
+    const user = await api("auth/me", {default_projects_dir: projectsDirField.value}, session, "PATCH");
+    if (session !== token) return;
+    defaultProjectsDir = user.default_projects_dir;
+    projectsDirField.value = defaultProjectsDir;
+    fillDefaultProjectPath();
+    notify("Общая папка сохранена");
+  } catch (error) {
+    if (session === token) notify(error.message);
+  } finally {
+    button.disabled = false;
+  }
 };
 
 byId("project-settings-button").onclick = () => {
@@ -1482,23 +1521,31 @@ byId("project-settings-button").onclick = () => {
 };
 
 function renderGitHub() {
-  byId("github-status").textContent = githubUsername ? "GitHub подключён: @" + githubUsername : "GitHub не подключён";
+  const linked = Boolean(githubUsername);
+  byId("github-status").textContent = linked ? "@" + githubUsername : "GitHub не подключён";
+  byId("github-token-field").classList.toggle("hidden", linked);
+  byId("github-token").disabled = linked;
+  byId("github-connect").classList.toggle("hidden", linked);
+  byId("github-disconnect").classList.toggle("hidden", !linked);
   for (const prefix of ["project", "settings"]) {
     const checkbox = byId(prefix + "-new-repo");
-    checkbox.disabled = !githubUsername;
+    checkbox.disabled = !linked;
     if (checkbox.disabled) checkbox.checked = false;
+    byId(prefix + "-git").readOnly = !linked;
     byId(prefix + "-git").disabled = checkbox.checked;
     byId(prefix + "-visibility-field").classList.toggle("hidden", !checkbox.checked);
-    byId(prefix + "-github-hint").classList.toggle("hidden", Boolean(githubUsername));
+    if (linked) byId(prefix + "-github-hint").inert = true;
   }
 }
 
 async function refreshGitHub() {
+  if (githubUpdatePending) return;
   const session = token;
   const revision = modalRevision;
+  const credentialsRevision = githubRevision;
   try {
     const user = await api("auth/me", undefined, session);
-    if (session === token && revision === modalRevision) {
+    if (session === token && revision === modalRevision && credentialsRevision === githubRevision) {
       githubUsername = user.github_username;
       renderGitHub();
     }
@@ -1508,18 +1555,42 @@ async function refreshGitHub() {
 }
 
 byId("project-new-repo").onchange = byId("settings-new-repo").onchange = renderGitHub;
+for (const prefix of ["project", "settings"]) {
+  const field = byId(prefix + "-git");
+  const hint = byId(prefix + "-github-hint");
+  field.onclick = () => {
+    if (field.readOnly) hint.inert = false;
+  };
+  field.onkeydown = (event) => {
+    if (!field.readOnly) return;
+    if (event.key === "Enter") event.preventDefault();
+    if (event.key.length === 1 || event.key === "Enter" || event.key === "Backspace" || event.key === "Delete") {
+      field.onclick();
+    }
+  };
+  field.onpaste = field.onclick;
+}
+
 byId("github-form").onsubmit = async (event) => {
   event.preventDefault();
   const field = byId("github-token");
   const entered = field.value.trim();
-  if (!entered) return;
-  const button = event.submitter;
+  if (!entered || githubUsername || githubUpdatePending) return;
+  field.value = "";
+  await updateGitHub(event.submitter, "POST", {token: entered});
+};
+
+byId("github-disconnect").onclick = ({currentTarget}) => updateGitHub(currentTarget, "DELETE");
+
+async function updateGitHub(button, method, body) {
+  if (githubUpdatePending) return;
   const session = token;
   const revision = modalRevision;
+  githubUpdatePending = true;
+  githubRevision++;
   button.disabled = true;
-  field.value = "";
   try {
-    const user = await api("auth/github", {token: entered}, session);
+    const user = await api("auth/github", body, session, method);
     if (session === token) {
       githubUsername = user.github_username;
       renderGitHub();
@@ -1527,16 +1598,17 @@ byId("github-form").onsubmit = async (event) => {
   } catch (error) {
     if (session === token && revision === modalRevision) notify(error.message);
   } finally {
+    githubUpdatePending = false;
     button.disabled = false;
   }
-};
+}
 
 function projectLocation(prefix) {
   const path = byId(prefix + "-workspace").value;
   const creating = byId(prefix + "-new-repo").checked;
   return {
     workspace_path: path.trim() ? path : null,
-    git_repo_url: creating ? null : byId(prefix + "-git").value.trim() || null,
+    ...(githubUsername && {git_repo_url: creating ? null : byId(prefix + "-git").value.trim() || null}),
     ...(creating && {github_visibility: byId(prefix + "-visibility").value}),
   };
 }
@@ -1690,8 +1762,9 @@ function fillDefaultProjectPath() {
   let folder = Array.from(name.replace(/[<>:"/\\|?*\x00-\x1f]+/g, "-").replace(/^[ .]+|[ .]+$/g, ""))
     .slice(0, 120).join("").replace(/[ .]+$/g, "") || "project";
   if (/^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$/i.test(folder.split(".")[0])) folder = "_" + folder;
-  const separator = workspacesRoot.includes("\\") ? "\\" : "/";
-  byId("project-workspace").value = name && workspacesRoot ? workspacesRoot + separator + folder : "";
+  const separator = defaultProjectsDir.includes("\\") ? "\\" : "/";
+  const root = defaultProjectsDir.endsWith(separator) ? defaultProjectsDir : defaultProjectsDir + separator;
+  byId("project-workspace").value = name && defaultProjectsDir ? root + folder : "";
 }
 
 byId("project-name").oninput = fillDefaultProjectPath;
@@ -1992,6 +2065,8 @@ byId("stats-button").onclick = async () => {
 byId("logout-button").onclick = () => {
   token = null;
   githubUsername = null;
+  defaultProjectsDir = "";
+  githubSettingsReturn = undefined;
   hubPresets = [];
   hubRatings.clear();
   hubSearch.value = "";

@@ -23,7 +23,7 @@ from backend.core.github import create_github_repo
 from backend.core.media import MAX_MEDIA_BYTES, make_media, media_spec_content
 from backend.core.model_performance import model_key
 from backend.core.orchestrator import count_tokens, orchestrator, probe_agent
-from backend.database.models import AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia, SpecItem, TaskLog, User, UserModelPreset, utc_now
+from backend.database.models import DEFAULT_PROJECTS_DIR, AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia, SpecItem, TaskLog, User, UserModelPreset, utc_now
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
 from worker.git_bridge import GitBridge
@@ -148,11 +148,16 @@ def default_workspace(project: Project | ProjectView) -> str:
     return str(ROOT / "workspaces" / f"{project.id}-{slug}")
 
 
-def new_workspace(name: str) -> str:
+def new_workspace(name: str, projects_dir: str | None = None) -> str:
     folder = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", name).strip(" .")[:120].rstrip(" .") or "project"
     if re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³]", folder.split(".")[0], re.IGNORECASE):
         folder = "_" + folder
-    return str(ROOT / "workspaces" / folder)
+    return str(Path(projects_dir or DEFAULT_PROJECTS_DIR) / folder)
+
+
+def require_github(user: User) -> None:
+    if not (user.github_token and user.github_username):
+        raise HTTPException(422, "Сначала привяжите GitHub в общих настройках.")
 
 
 async def available_workspace(session: AsyncSession, project: Project, path: str) -> str:
@@ -191,10 +196,14 @@ async def create_project(session: AsyncSession, owner_id: int, data: ProjectCrea
     project = Project(owner_id=owner_id, **fields)
     if visibility and project.git_repo_url:
         raise HTTPException(422, "Выберите адрес существующего репозитория или автоматическое создание.")
+    owner = await session.get(User, owner_id)
+    if visibility:
+        require_github(owner)
+    requested_path = project.workspace_path or new_workspace(project.name, owner.default_projects_dir)
     session.add(project)
     await session.flush()
     try:
-        path = await available_workspace(session, project, project.workspace_path or new_workspace(project.name))
+        path = await available_workspace(session, project, requested_path)
         project.workspace_path = await prepare_workspace(
             path, project.id, project.git_repo_url,
         )
@@ -243,6 +252,8 @@ async def list_projects(session: Session, user: CurrentUser):
 
 @router.post("", response_model=ProjectView, status_code=201)
 async def add_project(data: ProjectCreateRequest, session: Session, user: CurrentUser):
+    if data.git_repo_url:
+        require_github(user)
     return await create_project(session, user.id, data)
 
 
@@ -315,7 +326,13 @@ async def add_spec_item(request: Request, project: OwnedProject, session: Sessio
 
 
 @router.patch("/{project_id}", response_model=ProjectView)
-async def edit_project(data: ProjectPatch, project: OwnedProject, session: Session):
+async def update_project(data: ProjectPatch, project: OwnedProject, session: Session, user: CurrentUser):
+    if data.github_visibility or data.git_repo_url:
+        require_github(user)
+    return await edit_project(data, project, session)
+
+
+async def edit_project(data: ProjectPatch, project: Project, session: AsyncSession):
     updates = data.model_dump(exclude_unset=True)
     visibility = updates.pop("github_visibility", None)
     if visibility and updates.get("git_repo_url"):
