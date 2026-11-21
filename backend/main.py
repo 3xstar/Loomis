@@ -6,7 +6,7 @@ import uvicorn
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from aiogram.fsm.storage.memory import SimpleEventIsolation
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, inspect, select, update
 from sqlalchemy.schema import CreateTable
@@ -197,6 +197,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Loomis", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def disable_frontend_cache(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static/") or path.endswith((".js", ".css", ".html")):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(projects.hub_router)

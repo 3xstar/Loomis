@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
   <title>Loomis — локальная студия агентов</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=latest">
 </head>
 <body>
   <div id="ambient-bg" aria-hidden="true">
@@ -481,7 +481,7 @@
       }
     } else {
       const appScript = document.createElement("script");
-      appScript.src = "/app.js";
+      appScript.src = "/app.js?v=latest";
       document.body.append(appScript);
     }
   </script>
