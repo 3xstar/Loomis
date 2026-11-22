@@ -688,8 +688,24 @@ option { background: var(--base); }
 #telegram-card.linked .integration-logo { color: #24A1DE; }
 #github-card.linked .integration-logo { color: #8b5cf6; }
 .integration-card.linked .integration-logo { filter: drop-shadow(0 0 6px currentColor); }
-#telegram-instructions, #github-form { margin-top: 12px; }
-#telegram-link-code { white-space: nowrap; }
+.integration-identity { display: flex; align-items: center; gap: 8px; }
+.integration-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #475569;
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+}
+.integration-avatar img { width: 100%; height: 100%; object-fit: cover; }
+#telegram-instructions, #github-device-instructions, #github-manual, #github-form { margin-top: 12px; }
+#github-manual summary { cursor: pointer; }
+#telegram-link-code, #github-device-code { white-space: nowrap; user-select: text; }
 #unlink-dialog { width: min(420px, calc(100vw - 32px)); padding: 20px; color: var(--ink); }
 #unlink-dialog::backdrop { background: #0007; }
 .cursor-toast {

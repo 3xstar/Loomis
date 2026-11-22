@@ -57,9 +57,9 @@ async def _request(token: str, method: str, path: str, **kwargs) -> dict:
     raise HTTPException(502, "GitHub вернул неожиданный ответ.")
 
 
-async def bind_github(session, user, token: str) -> None:
+async def bind_github(session, user, token: str, *, device_flow: bool = False) -> None:
     token = token.strip()
-    if not re.fullmatch(r"(?:ghp_|github_pat_)[A-Za-z0-9_]{1,250}", token):
+    if not device_flow and not re.fullmatch(r"(?:ghp_|github_pat_)[A-Za-z0-9_]{1,250}", token):
         raise HTTPException(422, "Введите персональный токен GitHub с префиксом ghp_ или github_pat_.")
     profile = await _request(token, "GET", "/user")
     username = profile.get("login")
@@ -70,6 +70,8 @@ async def bind_github(session, user, token: str) -> None:
     except (OSError, ValueError):
         raise HTTPException(503, "Не удалось безопасно сохранить токен GitHub.") from None
     user.github_username = username
+    avatar_url = profile.get("avatar_url")
+    user.github_avatar_url = avatar_url if isinstance(avatar_url, str) else None
     await session.commit()
 
 

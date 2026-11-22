@@ -7,7 +7,9 @@ import time
 from datetime import timedelta
 from typing import Annotated
 
+import httpx
 from aiogram.exceptions import TelegramAPIError
+from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, computed_field, field_validator
@@ -26,6 +28,7 @@ Session = Annotated[AsyncSession, Depends(get_session)]
 Username = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
                                           max_length=255, pattern=r"^[\w.@-]+$")]
 bearer = HTTPBearer(auto_error=False)
+load_dotenv(ROOT / ".env")
 
 
 class Credentials(BaseModel):
@@ -45,6 +48,9 @@ class UserView(BaseModel):
     telegram_id: int | None
     tg_logs_enabled: bool
     github_username: str | None
+    github_avatar_url: str | None
+    telegram_username: str | None
+    telegram_avatar_url: str | None
     default_projects_dir: str
 
     @field_validator("default_projects_dir", mode="before")
@@ -204,6 +210,80 @@ class GitHubCredentials(BaseModel):
     token: SecretStr
 
 
+class GitHubDevicePoll(BaseModel):
+    device_code: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    expires_at: int
+    signature: Annotated[str, StringConstraints(min_length=64, max_length=64, pattern=r"^[0-9a-f]+$")]
+
+
+def _github_client_id() -> str:
+    client_id = os.getenv("GITHUB_CLIENT_ID", "").strip()
+    if not client_id:
+        raise HTTPException(503, "Укажите GITHUB_CLIENT_ID в .env и перезапустите Loomis.")
+    return client_id
+
+
+async def _github_oauth(path: str, data: dict[str, str]) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
+            response = await client.post("https://github.com/login/" + path, data=data,
+                                         headers={"Accept": "application/json"})
+            result = response.json()
+            if isinstance(result, dict) and (response.is_success or result.get("error")):
+                return result
+    except (httpx.RequestError, ValueError):
+        pass
+    raise HTTPException(502, "GitHub OAuth недоступен. Повторите попытку.")
+
+
+def _device_signature(user_id: int, client_id: str, device_code: str, expires_at: int) -> str:
+    return _sign(f"github-device:{user_id}:{client_id}:{device_code}:{expires_at}")
+
+
+@router.post("/github/device/start")
+async def start_github_device(user: CurrentUser):
+    client_id = _github_client_id()
+    result = await _github_oauth("device/code", {"client_id": client_id, "scope": "repo"})
+    if result.get("error") == "device_flow_disabled":
+        raise HTTPException(503, "Включите Device Flow в настройках GitHub OAuth App.")
+    device_code, user_code = result.get("device_code"), result.get("user_code")
+    expires_in, interval = result.get("expires_in"), result.get("interval")
+    if not (isinstance(device_code, str) and 0 < len(device_code) <= 255
+            and isinstance(user_code, str) and user_code
+            and type(expires_in) is int and expires_in > 0
+            and type(interval) is int and interval > 0):
+        raise HTTPException(502, "GitHub не выдал код. Проверьте GITHUB_CLIENT_ID и настройки Device Flow.")
+    expires_at = int(time.time()) + expires_in
+    return {
+        "device_code": device_code, "user_code": user_code, "expires_in": expires_in,
+        "interval": interval, "expires_at": expires_at,
+        "signature": _device_signature(user.id, client_id, device_code, expires_at),
+    }
+
+
+@router.post("/github/device/poll")
+async def poll_github_device(data: GitHubDevicePoll, session: Session, user: CurrentUser):
+    client_id = _github_client_id()
+    signature = _device_signature(user.id, client_id, data.device_code, data.expires_at)
+    if not hmac.compare_digest(signature, data.signature):
+        raise HTTPException(400, "Запрос входа через GitHub недействителен.")
+    if time.time() >= data.expires_at:
+        return {"status": "expired_token"}
+    result = await _github_oauth("oauth/access_token", {
+        "client_id": client_id, "device_code": data.device_code,
+        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+    })
+    error = result.get("error")
+    if error in ("authorization_pending", "slow_down", "expired_token", "access_denied"):
+        interval = result.get("interval")
+        return {"status": error, "interval": interval if type(interval) is int and interval > 0 else None}
+    token = result.get("access_token")
+    if error or not isinstance(token, str) or not token.strip():
+        raise HTTPException(502, "GitHub не выдал токен. Начните вход заново.")
+    await bind_github(session, user, token, device_flow=True)
+    return {"status": "authorized", "user": UserView.model_validate(user)}
+
+
 @router.post("/github", response_model=UserView)
 async def connect_github(data: GitHubCredentials, session: Session, user: CurrentUser):
     await bind_github(session, user, data.token.get_secret_value())
@@ -214,6 +294,7 @@ async def connect_github(data: GitHubCredentials, session: Session, user: Curren
 async def disconnect_github(session: Session, user: CurrentUser):
     user.github_token = None
     user.github_username = None
+    user.github_avatar_url = None
     await session.commit()
     return user
 
@@ -245,8 +326,19 @@ def _code_digest(code: str) -> str:
 
 @router.post("/generate-link-code")
 async def generate_link_code(session: Session, user: CurrentUser):
+    from backend.core.orchestrator import orchestrator
+
     if user.telegram_id is not None:
         raise HTTPException(409, "Telegram уже привязан.")
+    bot = orchestrator.bot
+    if bot is None:
+        raise HTTPException(503, "Telegram-бот недоступен. Проверьте BOT_TOKEN в .env.")
+    try:
+        bot_username = (await bot.get_me()).username
+    except TelegramAPIError:
+        bot_username = None
+    if not bot_username:
+        raise HTTPException(503, "Не удалось получить имя Telegram-бота.")
     user_id = user.id
     for _ in range(10):
         code = f"{secrets.randbelow(1_000_000):06d}"
@@ -259,7 +351,8 @@ async def generate_link_code(session: Session, user: CurrentUser):
         except IntegrityError:
             await session.rollback()
         else:
-            return {"code": code, "expires_in": 300}
+            return {"code": code, "expires_in": 300,
+                    "deep_link": f"https://t.me/{bot_username}?start=link_{code}"}
     raise HTTPException(503, "Не удалось создать код. Повторите запрос.")
 
 
@@ -268,6 +361,8 @@ async def disconnect_telegram(session: Session, user: CurrentUser):
     if user.telegram_id is not None and not user.password_hash:
         raise HTTPException(409, "Задайте пароль в Telegram перед отвязкой аккаунта.")
     user.telegram_id = None
+    user.telegram_username = None
+    user.telegram_avatar_url = None
     await session.flush()
     await session.execute(delete(LinkToken).where(LinkToken.user_id == user.id))
     await session.execute(delete(MagicLoginRequest).where(MagicLoginRequest.user_id == user.id))
@@ -275,7 +370,8 @@ async def disconnect_telegram(session: Session, user: CurrentUser):
     return user
 
 
-async def link_telegram(session: AsyncSession, code: str, telegram_id: int) -> bool:
+async def link_telegram(session: AsyncSession, code: str, telegram_id: int,
+                        telegram_username: str | None = None) -> bool:
     try:
         owner_id = await session.scalar(
             update(LinkToken)
@@ -286,7 +382,8 @@ async def link_telegram(session: AsyncSession, code: str, telegram_id: int) -> b
         if owner_id is not None:
             linked = await session.scalar(
                 update(User).where(User.id == owner_id, User.telegram_id.is_(None))
-                .values(telegram_id=telegram_id).returning(User.id)
+                .values(telegram_id=telegram_id, telegram_username=telegram_username,
+                        telegram_avatar_url=None).returning(User.id)
             )
             if linked is not None:
                 await session.commit()

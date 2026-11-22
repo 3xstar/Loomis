@@ -19,6 +19,9 @@ let defaultProjectsDir = "";
 let customProjectPath = false;
 let telegramId = null;
 let telegramCodeTimer;
+let telegramLinkAttempt;
+let githubDeviceTimer;
+let githubDeviceFlow;
 let integrationsTimer;
 let integrationUpdatePending = false;
 let integrationsRevision = 0;
@@ -1509,7 +1512,9 @@ function selectSettingsTab(tab) {
   clearInterval(integrationsTimer);
   if (tab.id === "integrations-tab") {
     refreshIntegrations();
-    integrationsTimer = setInterval(refreshIntegrations, 3000);
+    integrationsTimer = setInterval(() => {
+      if (!telegramLinkAttempt) refreshIntegrations();
+    }, 3000);
   } else {
     setGitHubForm(false);
   }
@@ -1568,16 +1573,46 @@ byId("project-settings-button").onclick = () => {
 function renderIntegrations(user) {
   telegramId = user.telegram_id;
   githubUsername = user.github_username;
-  for (const [provider, account] of [["telegram", telegramId], ["github", githubUsername && "@" + githubUsername]]) {
+  for (const [provider, account, avatarUrl] of [
+    ["telegram", telegramId && (user.telegram_username || String(telegramId)), user.telegram_avatar_url],
+    ["github", githubUsername && "@" + githubUsername, user.github_avatar_url],
+  ]) {
     const linked = Boolean(account);
     byId(provider + "-card").classList.toggle("linked", linked);
-    byId(provider + "-status").textContent = linked ? account : "Не привязан";
+    const status = byId(provider + "-status");
+    const displayName = linked ? account : "Не привязан";
+    if (status.textContent !== displayName) status.textContent = displayName;
+    renderIntegrationAvatar(provider, account, avatarUrl);
     byId(provider + "-connect").hidden = linked;
     byId(provider + "-disconnect").hidden = !linked;
   }
   if (telegramId) showTelegramCode();
-  if (githubUsername) setGitHubForm(false);
+  byId("github-manual").hidden = Boolean(githubUsername);
+  if (githubUsername) {
+    setGitHubForm(false);
+    stopGitHubDevice();
+  }
   renderGitHubFields();
+}
+
+function renderIntegrationAvatar(provider, account, url) {
+  const avatar = byId(provider + "-avatar");
+  const name = account || "";
+  const source = name && url ? url : "";
+  avatar.hidden = !name;
+  if (avatar.dataset.name === name && avatar.dataset.source === source) return;
+  avatar.dataset.name = name;
+  avatar.dataset.source = source;
+  avatar.textContent = [...name.replace(/^@/, "")].slice(0, 2).join("").toUpperCase();
+  if (source) {
+    const image = element("img");
+    image.alt = "";
+    image.referrerPolicy = "no-referrer";
+    image.onload = () => {
+      if (avatar.dataset.name === name && avatar.dataset.source === source) avatar.replaceChildren(image);
+    };
+    image.src = source;
+  }
 }
 
 function renderGitHubFields() {
@@ -1592,7 +1627,7 @@ function renderGitHubFields() {
   }
 }
 
-async function refreshIntegrations() {
+async function refreshIntegrations(background = false) {
   if (integrationUpdatePending) return;
   const session = token;
   const revision = modalRevision;
@@ -1603,7 +1638,7 @@ async function refreshIntegrations() {
       renderIntegrations(user);
     }
   } catch (error) {
-    if (session === token && revision === modalRevision) {
+    if (!background && session === token && revision === modalRevision) {
       clearInterval(integrationsTimer);
       notify(error.message);
     }
@@ -1630,39 +1665,91 @@ for (const prefix of ["project", "settings"]) {
   }
 }
 
-function showTelegramCode(code, expiresIn) {
+function showTelegramCode(result) {
   clearTimeout(telegramCodeTimer);
-  byId("telegram-link-code").textContent = code ? "/link " + code : "";
-  byId("telegram-instructions").hidden = !code;
-  byId("telegram-connect").setAttribute("aria-expanded", Boolean(code));
-  if (code) telegramCodeTimer = setTimeout(showTelegramCode, expiresIn * 1000);
+  telegramLinkAttempt = result;
+  byId("telegram-link-code").textContent = result ? "/link " + result.code : "";
+  byId("telegram-instructions").hidden = !result;
+  if (result) {
+    byId("telegram-link").href = result.deep_link;
+    telegramCodeTimer = setTimeout(showTelegramCode, result.expires_in * 1000);
+  } else {
+    byId("telegram-link").removeAttribute("href");
+  }
 }
 
 function setGitHubForm(open) {
-  byId("github-form").hidden = !open;
-  byId("github-connect").setAttribute("aria-expanded", open);
+  byId("github-manual").open = open;
   if (!open) byId("github-token").value = "";
+}
+
+function stopGitHubDevice() {
+  clearTimeout(githubDeviceTimer);
+  githubDeviceFlow = undefined;
+  byId("github-device-instructions").hidden = true;
+  byId("github-device-code").textContent = "";
 }
 
 byId("telegram-connect").onclick = (event) => {
   const button = event.currentTarget;
   updateIntegration(button, async (session) => {
     const result = await api("auth/generate-link-code", undefined, session, "POST");
-    if (session === token) showTelegramCode(result.code, result.expires_in);
+    if (session !== token) return;
+    showTelegramCode(result);
+    window.open(result.deep_link, "_blank", "noopener,noreferrer");
+    const check = async () => {
+      if (session !== token || telegramLinkAttempt !== result) return;
+      await refreshIntegrations(true);
+      if (telegramLinkAttempt === result) setTimeout(check, 3000);
+    };
+    setTimeout(check, 3000);
   }, event);
 };
 
-byId("github-connect").onclick = () => {
-  const open = byId("github-form").hidden;
-  setGitHubForm(open);
-  if (open) byId("github-token").focus();
+byId("github-connect").onclick = (event) => {
+  if (githubDeviceFlow) return;
+  updateIntegration(event.currentTarget, async (session) => {
+    const flow = await api("auth/github/device/start", {}, session);
+    if (session !== token) return;
+    githubDeviceFlow = flow;
+    byId("github-device-code").textContent = flow.user_code;
+    byId("github-device-instructions").hidden = false;
+    window.open(byId("github-device-link").href, "_blank", "noopener,noreferrer");
+    const poll = async () => {
+      if (session !== token || githubDeviceFlow !== flow) return;
+      try {
+        flow.polling = true;
+        const result = await api("auth/github/device/poll", {
+          device_code: flow.device_code, signature: flow.signature, expires_at: flow.expires_at,
+        }, session);
+        if (session !== token || githubDeviceFlow !== flow) return;
+        if (result.status === "authorized") {
+          integrationsRevision++;
+          renderIntegrations(result.user);
+        } else if (result.status === "authorization_pending" || result.status === "slow_down") {
+          if (result.status === "slow_down") flow.interval = Math.max(flow.interval + 5, result.interval || 0);
+          githubDeviceTimer = setTimeout(poll, flow.interval * 1000);
+        } else {
+          throw new Error(result.status === "access_denied" ? "Вход через GitHub отклонён." : "Код GitHub истёк. Начните вход заново.");
+        }
+      } catch (error) {
+        if (session !== token || githubDeviceFlow !== flow) return;
+        stopGitHubDevice();
+        notify(error.message);
+      } finally {
+        flow.polling = false;
+      }
+    };
+    githubDeviceTimer = setTimeout(poll, flow.interval * 1000);
+  }, event);
 };
 
 byId("github-form").onsubmit = (event) => {
   event.preventDefault();
   const entered = byId("github-token").value.trim();
-  if (!entered || githubUsername) return;
+  if (!entered || githubUsername || githubDeviceFlow?.polling) return;
   updateIntegration(event.submitter, async (session) => {
+    stopGitHubDevice();
     const user = await api("auth/github", {token: entered}, session);
     if (session === token) renderIntegrations(user);
   }, event);
@@ -2171,6 +2258,7 @@ byId("logout-button").onclick = () => {
   defaultProjectsDir = "";
   telegramId = null;
   showTelegramCode();
+  stopGitHubDevice();
   hubPresets = [];
   hubRatings.clear();
   hubSearch.value = "";

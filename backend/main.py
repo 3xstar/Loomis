@@ -16,7 +16,7 @@ from backend.bot.handlers import router as bot_router
 from backend.core.orchestrator import orchestrator
 from backend.database.db import Base, engine
 from backend.database.models import AgentConfig, Project, TaskLog, UserModelPreset
-from backend.settings import settings
+from backend.settings import ROOT, settings
 
 
 dispatcher = Dispatcher(events_isolation=SimpleEventIsolation())
@@ -34,6 +34,8 @@ def initialize_schema(connection) -> None:
         "users": {"login_name": "VARCHAR(255)", "password_hash": "VARCHAR(255)",
                   "tg_logs_enabled": "BOOLEAN NOT NULL DEFAULT TRUE",
                   "github_token": "TEXT", "github_username": "VARCHAR(100)",
+                  "github_avatar_url": "VARCHAR", "telegram_username": "VARCHAR",
+                  "telegram_avatar_url": "VARCHAR",
                   "default_projects_dir": "VARCHAR(1024)"},
         "agent_messages": {
             "agent_id": "INTEGER REFERENCES agent_configs(id) ON DELETE CASCADE",
@@ -197,6 +199,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Loomis", lifespan=lifespan)
+avatar_dir = ROOT / "temp_uploads" / "avatars"
+avatar_dir.mkdir(parents=True, exist_ok=True)
 
 
 @app.middleware("http")
@@ -220,6 +224,7 @@ async def health():
     return {"status": "ok"}
 
 
+app.mount("/static/avatars", StaticFiles(directory=avatar_dir), name="avatars")
 app.mount("/", StaticFiles(
     directory=Path(__file__).resolve().parents[1] / "desktop" / "ui",
     html=True,

@@ -6,7 +6,7 @@ from contextlib import suppress
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -128,7 +128,12 @@ async def prompt_code(message: Message, state: FSMContext):
 
 
 @router.message(CommandStart())
-async def start(message: Message, account: User | None, state: FSMContext):
+async def start(message: Message, command: CommandObject, session: AsyncSession,
+                account: User | None, state: FSMContext):
+    payload = (command.args or "").strip()
+    if payload.startswith("link_"):
+        await link(message, CommandObject(args=payload.removeprefix("link_")), session, account, state)
+        return
     if await state.get_state() == ProjectSetup.spec_buffer.state:
         project_id = (await state.get_data()).get("project_id")
         await message.answer("Буфер ТЗ открыт. Отправьте текст, изображение, аудио или документ.", reply_markup=spec_keyboard(project_id))
@@ -183,12 +188,41 @@ async def link(message: Message, command: CommandObject, session: AsyncSession,
         await link_account(message, code, session, state)
 
 
+async def save_telegram_avatar(message: Message, session: AsyncSession) -> None:
+    telegram_id = message.from_user.id
+    directory = ROOT / "temp_uploads" / "avatars"
+    filename = f"tg_{telegram_id}.jpg"
+    temporary = None
+    try:
+        photos = await message.bot.get_user_profile_photos(telegram_id, limit=1)
+        if not photos.photos:
+            return
+        directory.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(dir=directory, delete=False) as file:
+            temporary = Path(file.name)
+            await message.bot.download(photos.photos[0][-1], destination=file)
+        temporary.replace(directory / filename)
+    except (TelegramAPIError, OSError, TimeoutError):
+        logger.warning("Не удалось загрузить аватар Telegram для пользователя %s.", telegram_id)
+        return
+    finally:
+        if temporary is not None:
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
+    await session.execute(update(User).where(User.telegram_id == telegram_id)
+                          .values(telegram_avatar_url=f"/static/avatars/{filename}"))
+    await session.commit()
+
+
 async def link_account(message: Message, code: str, session: AsyncSession, state: FSMContext):
     if not re.fullmatch(r"[0-9]{6}", code):
         await message.answer("Код должен состоять из 6 цифр. Введите код ещё раз:")
         await state.set_state(AccountSetup.link_code)
         return
-    if await link_telegram(session, code, message.from_user.id):
+    sender = message.from_user
+    username = f"@{sender.username}" if sender.username else sender.first_name
+    if await link_telegram(session, code, sender.id, username):
+        await save_telegram_avatar(message, session)
         await state.clear()
         await message.answer("Telegram привязан к аккаунту Loomis.", reply_markup=main_menu(True))
     else:

@@ -45,11 +45,14 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     telegram_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True)
+    telegram_username: Mapped[str | None] = mapped_column(String, nullable=True)
+    telegram_avatar_url: Mapped[str | None] = mapped_column(String, nullable=True)
     username: Mapped[str | None] = mapped_column(String(255))
     login_name: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str | None] = mapped_column(String(255))
     github_token: Mapped[str | None] = mapped_column(Text)
     github_username: Mapped[str | None] = mapped_column(String(100))
+    github_avatar_url: Mapped[str | None] = mapped_column(String, nullable=True)
     default_projects_dir: Mapped[str | None] = mapped_column(String(1024), default=DEFAULT_PROJECTS_DIR)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
