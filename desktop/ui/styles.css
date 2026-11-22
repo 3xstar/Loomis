@@ -146,13 +146,14 @@ button:not(:disabled):hover { box-shadow: inset 0 0 0 1px var(--accent); }
 .stack { gap: 14px; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 input, textarea, select { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px; min-width: 0; }
-#request-deadline { appearance: none; -webkit-appearance: none; width: 100%; padding-inline-end: 3.5rem; }
+#request-deadline { appearance: none; -webkit-appearance: none; width: 100%; padding-inline-end: 42px; }
 .folder-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 #project-git:read-only, #settings-git:read-only { opacity: 0.5; cursor: pointer; }
 .project-title { min-width: 0; }
 .project-title > div { min-width: 0; }
 .project-location { display: block; overflow-wrap: anywhere; }
-.deadline-input { position: relative; width: min(100%, 12rem); }
+.deadline-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.deadline-input { position: relative; flex: 0 0 auto; width: 104px; }
 .deadline-input span { position: absolute; inset-inline-end: 12px; top: 50%; transform: translateY(-50%); color: var(--text-secondary); pointer-events: none; }
 option { background: var(--base); }
 .form-error:not(:empty), .magic-meta { margin-top: 12px; }
@@ -678,12 +679,55 @@ option { background: var(--base); }
   #hub-button, .hub-nav-label, .setting-tooltip { transition: none; }
 }
 
-.settings-tabs { display: flex; gap: 4px; padding: 4px; margin-bottom: 16px; }
-.settings-tabs .tab { flex: 1; }
+.settings-tabs {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 16px;
+}
+.settings-tabs::before {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+  inset: 4px auto 4px 4px;
+  width: calc(50% - 6px);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  pointer-events: none;
+  transform: translate3d(0, 0, 0);
+}
+.settings-tabs:has(#integrations-tab[aria-selected="true"])::before {
+  transform: translate3d(calc(100% + 4px), 0, 0);
+}
+.settings-tabs .tab { position: relative; }
+.settings-tabs .tab.active { border-color: transparent; background: transparent; }
+@media (prefers-reduced-motion: no-preference) {
+  .settings-tabs::before { transition: transform var(--motion) cubic-bezier(0.22, 1, 0.36, 1); }
+  #settings-modal [role="tabpanel"]:not([hidden]) {
+    animation: settings-panel-in var(--motion) cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @keyframes settings-panel-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}
 #settings-modal [hidden] { display: none; }
 .integration-card { padding: 14px; }
-.integration-row { display: flex; align-items: center; gap: 12px; }
-.integration-account { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.integration-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.integration-account {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.integration-account h4 { margin: 0; }
 .integration-logo { flex: 0 0 28px; width: 28px; height: 28px; color: #64748b; fill: currentColor; }
 #telegram-card.linked .integration-logo { color: #24A1DE; }
 #github-card.linked .integration-logo { color: #8b5cf6; }
@@ -703,8 +747,7 @@ option { background: var(--base); }
   font-weight: 600;
 }
 .integration-avatar img { width: 100%; height: 100%; object-fit: cover; }
-#telegram-instructions, #github-device-instructions, #github-manual, #github-form { margin-top: 12px; }
-#github-manual summary { cursor: pointer; }
+#telegram-instructions, #github-device-instructions { margin: 12px 0 0; }
 #telegram-link-code, #github-device-code { white-space: nowrap; user-select: text; }
 #unlink-dialog { width: min(420px, calc(100vw - 32px)); padding: 20px; color: var(--ink); }
 #unlink-dialog::backdrop { background: #0007; }

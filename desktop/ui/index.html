@@ -325,8 +325,8 @@
         <button id="integrations-tab" class="tab" type="button" role="tab" aria-controls="integrations-panel" aria-selected="false" tabindex="-1">Интеграции</button>
       </div>
       <div id="general-panel" class="stack" role="tabpanel" aria-labelledby="general-tab">
-        <form id="projects-dir-form" class="stack" aria-labelledby="projects-dir-title">
-          <h4 id="projects-dir-title"><label for="default-projects-dir">Общая папка для проектов</label></h4>
+        <form id="projects-dir-form" class="field" aria-labelledby="projects-dir-title">
+          <label id="projects-dir-title" for="default-projects-dir">Общая папка для проектов</label>
           <div class="folder-field">
             <input id="default-projects-dir" type="text" maxlength="1024" required>
             <button class="button secondary" type="button" data-folder-input="default-projects-dir">Обзор...</button>
@@ -369,15 +369,15 @@
           </select>
         </div>
         <form id="deadline-form" class="stack">
-          <div class="field">
+          <div class="field deadline-row">
             <div class="setting-heading">
-            <label for="request-deadline">Дедлайн одного запроса агента (в минутах)</label>
-            <button class="setting-help" type="button" aria-label="Справка: Дедлайн одного запроса агента (в минутах)" aria-describedby="request-deadline-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
-            <div id="request-deadline-help" class="setting-tooltip" role="tooltip"><span>Введите целое число от 1 до 1440.</span><span><strong>По истечении срока</strong> — Loomis сохраняет частичную работу и запускает передачу задачи.</span></div>
-          </div>
+              <label for="request-deadline">Дедлайн одного запроса агента</label>
+              <button class="setting-help" type="button" aria-label="Справка: Дедлайн одного запроса агента" aria-describedby="request-deadline-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
+              <div id="request-deadline-help" class="setting-tooltip" role="tooltip"><span>Введите целое число от 1 до 1440.</span><span><strong>По истечении срока</strong> — Loomis сохраняет частичную работу и запускает передачу задачи.</span></div>
+            </div>
             <div class="deadline-input">
-              <input id="request-deadline" type="text" inputmode="numeric" pattern="[0-9]{1,4}" maxlength="4" required disabled>
-              <span aria-hidden="true">мин</span>
+              <input id="request-deadline" type="text" inputmode="numeric" pattern="[0-9]{1,4}" maxlength="4" aria-describedby="deadline-unit" required disabled>
+              <span id="deadline-unit">мин</span>
             </div>
           </div>
           <button id="save-deadline" class="button secondary" type="submit" disabled>Сохранить дедлайн</button>
@@ -421,13 +421,6 @@
             <button id="github-disconnect" class="button secondary" type="button" hidden>Отвязать</button>
           </div>
           <p id="github-device-instructions" class="hint" role="status" hidden>Введите код <code id="github-device-code"></code> <a id="github-device-link" href="https://github.com/login/device" target="_blank" rel="noopener noreferrer">на GitHub</a>.</p>
-          <details id="github-manual">
-            <summary>Ввести токен вручную</summary>
-            <form id="github-form" class="stack">
-              <label class="field"><span>GitHub Personal Access Token</span><input id="github-token" type="password" placeholder="ghp_… или github_pat_…" autocomplete="off" spellcheck="false" required maxlength="261"></label>
-              <button class="button primary" type="submit">Подтвердить</button>
-            </form>
-          </details>
         </section>
       </div>
     </div>

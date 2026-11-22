@@ -1294,7 +1294,6 @@ function showModal(id) {
   if (!id && (backdrop.inert || !byId("agent-test-status").classList.contains("hidden"))) return;
   modalRevision++;
   clearInterval(integrationsTimer);
-  if (id !== "settings-modal") setGitHubForm(false);
   if (id && backdrop.inert) modalTrigger = document.activeElement;
   backdrop.inert = !id;
   backdrop.classList.toggle("hidden", !id);
@@ -1515,8 +1514,6 @@ function selectSettingsTab(tab) {
     integrationsTimer = setInterval(() => {
       if (!telegramLinkAttempt) refreshIntegrations();
     }, 3000);
-  } else {
-    setGitHubForm(false);
   }
 }
 
@@ -1587,11 +1584,7 @@ function renderIntegrations(user) {
     byId(provider + "-disconnect").hidden = !linked;
   }
   if (telegramId) showTelegramCode();
-  byId("github-manual").hidden = Boolean(githubUsername);
-  if (githubUsername) {
-    setGitHubForm(false);
-    stopGitHubDevice();
-  }
+  if (githubUsername) stopGitHubDevice();
   renderGitHubFields();
 }
 
@@ -1678,11 +1671,6 @@ function showTelegramCode(result) {
   }
 }
 
-function setGitHubForm(open) {
-  byId("github-manual").open = open;
-  if (!open) byId("github-token").value = "";
-}
-
 function stopGitHubDevice() {
   clearTimeout(githubDeviceTimer);
   githubDeviceFlow = undefined;
@@ -1718,7 +1706,6 @@ byId("github-connect").onclick = (event) => {
     const poll = async () => {
       if (session !== token || githubDeviceFlow !== flow) return;
       try {
-        flow.polling = true;
         const result = await api("auth/github/device/poll", {
           device_code: flow.device_code, signature: flow.signature, expires_at: flow.expires_at,
         }, session);
@@ -1736,22 +1723,9 @@ byId("github-connect").onclick = (event) => {
         if (session !== token || githubDeviceFlow !== flow) return;
         stopGitHubDevice();
         notify(error.message);
-      } finally {
-        flow.polling = false;
       }
     };
     githubDeviceTimer = setTimeout(poll, flow.interval * 1000);
-  }, event);
-};
-
-byId("github-form").onsubmit = (event) => {
-  event.preventDefault();
-  const entered = byId("github-token").value.trim();
-  if (!entered || githubUsername || githubDeviceFlow?.polling) return;
-  updateIntegration(event.submitter, async (session) => {
-    stopGitHubDevice();
-    const user = await api("auth/github", {token: entered}, session);
-    if (session === token) renderIntegrations(user);
   }, event);
 };
 
