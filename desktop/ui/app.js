@@ -26,6 +26,7 @@ let integrationsTimer;
 let integrationUpdatePending = false;
 let integrationsRevision = 0;
 let unlinkProvider;
+const teamHistory = new Map();
 const teamTargets = new Set();
 const deletedAgents = new Set();
 const agentSelector = byId("agent-selector");
@@ -145,6 +146,8 @@ async function signIn(accessToken, isCurrent = () => true) {
   byId("user-name").textContent = user.username || "Loomis";
   byId("user-avatar").textContent = byId("user-name").textContent[0].toUpperCase();
   showWorkspace(true);
+  renderCoreStatus();
+  loadHubModels();
   try {
     await loadProjects();
   } catch (error) {
@@ -345,6 +348,7 @@ function refreshStream(reset = false) {
     byId("terminal-count").textContent = entries.length + " записей";
     byId("clear-terminal").disabled = !entries.length;
   }
+  renderTeamEmpty();
   if (atBottom) pane.scrollTop = pane.scrollHeight;
 }
 
@@ -604,6 +608,14 @@ function setStatus(status) {
     awaiting_approval: "План на утверждении",
     running: "В работе", paused: "Пауза", completed: "Завершён", deleted: "Удалён",
   })[status] || status;
+  const step = {draft: 1, planning: 2, council: 2, awaiting_approval: 2,
+    running: 3, paused: 3, completed: 4}[status];
+  all("#project-stepper li").forEach((item, index) => {
+    const active = index + 1 === step;
+    item.classList.toggle("active", active);
+    if (active) item.setAttribute("aria-current", "step");
+    else item.removeAttribute("aria-current");
+  });
   const pause = document.querySelector('[data-action="pause"]');
   pause.querySelector("strong").textContent = status === "paused" ? "Продолжить" : "Пауза";
   renderProjectControls();
@@ -631,6 +643,44 @@ function renderProjectControls() {
     || !agentsInProject.some((agent) => agent.enabled);
   syncComposer();
   byId("spec-add").disabled = byId("spec-attach").disabled = byId("spec-image-button").disabled = specBusy || actionBusy;
+  renderTeamEmpty();
+}
+
+function renderTeamEmpty() {
+  const card = byId("team-empty");
+  const visible = Boolean(project && view === "team" && !streams.team.get(0)?.length);
+  card.classList.toggle("hidden", !visible);
+  if (view === "team") byId("team").classList.toggle("hidden", visible);
+  if (!visible) return;
+  const button = byId("team-empty-action");
+  const hasAgents = agentsInProject.some((agent) => agent.enabled);
+  const status = project.status;
+  let copy, label, action;
+  if (!hasAgents) {
+    copy = "Подключите ИИ-агента, чтобы обсудить задачу и подготовить план.";
+    label = "Добавить агента";
+    action = () => openAgentModal();
+  } else if (status === "draft") {
+    copy = "Добавьте материалы в буфер и соберите ТЗ, чтобы открыть консилиум.";
+    label = "Перейти к ТЗ";
+    action = () => byId("spec-text").focus();
+  } else if (status === "planning") {
+    copy = "Запустите консилиум, чтобы агенты обсудили ТЗ и подготовили план.";
+    label = "Запустить консилиум";
+    action = () => document.querySelector('[data-action="council"]').click();
+  } else if (status === "awaiting_approval") {
+    copy = "План готов. Утвердите его, чтобы начать разработку.";
+    label = "Утвердить план";
+    action = () => document.querySelector('[data-action="approve"]').click();
+  } else {
+    copy = status === "council" ? "Агенты готовят план. Сообщения появятся здесь." : "Задайте агентам вопрос о проекте.";
+    label = "Написать агентам";
+    action = () => byId("message-input").focus();
+  }
+  byId("team-empty-copy").textContent = copy;
+  button.textContent = label;
+  button.onclick = action;
+  button.disabled = actionBusy || (status === "council" && hasAgents && byId("message-input").disabled);
 }
 
 function appendSpecItem({title, content}) {
@@ -762,10 +812,19 @@ function showCommandApproval({id, command, kind}, projectId) {
   byId("command-approvals").append(panel);
 }
 
+function renderCoreStatus() {
+  const status = byId("core-status");
+  const connected = Boolean(project && socket?.readyState === WebSocket.OPEN);
+  status.classList.toggle("active", Boolean(token && (!project || connected)));
+  status.querySelector("small").textContent = connected ? "API & WebSocket: Активно"
+    : project ? "WebSocket: подключение…" : "API: Активно";
+}
+
 function connect(projectId, current) {
   if (current !== selection) return;
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   socket = new WebSocket(scheme + "//" + location.host + "/ws/" + projectId, ["loomis", token]);
+  socket.onopen = () => { if (current === selection) renderCoreStatus(); };
   socket.onmessage = ({data}) => {
     if (current !== selection) return;
     const event = JSON.parse(data);
@@ -784,12 +843,15 @@ function connect(projectId, current) {
   };
   socket.onclose = () => {
     if (current !== selection) return;
+    renderCoreStatus();
     setTimeout(() => connect(projectId, current), 3500);
   };
 }
 
 async function selectProject(item) {
   if (item?.id !== project?.id) dockWorkspace();
+  const previousMessages = streams.team.get(0);
+  if (project && project.status !== "deleted" && previousMessages?.length) teamHistory.set(project.id, previousMessages);
   const current = ++selection;
   discardRecording();
   setAttachment();
@@ -804,7 +866,10 @@ async function selectProject(item) {
   byId("spec-empty").classList.remove("hidden");
   byId("command-approvals").replaceChildren();
   socket?.close();
+  socket = undefined;
+  renderCoreStatus();
   Object.values(streams).forEach((stream) => stream.clear());
+  if (item && teamHistory.has(item.id)) streams.team.set(0, teamHistory.get(item.id));
   Object.keys(streams).forEach((channel) => byId(channel).replaceChildren());
   traffic.clear();
   lights.clear();
@@ -819,6 +884,7 @@ async function selectProject(item) {
   renderTeamTargets();
   renderProjectTitle();
   renderProjectModes();
+  selectView("team");
   setStatus(item?.status || "—");
   all(".project-button").forEach((button) => button.setAttribute("aria-current", button.dataset.id === String(item?.id)));
   popoutButton.disabled = byId("stats-button").disabled = byId("add-agent-button").disabled = !item;
@@ -973,6 +1039,9 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
   const session = token;
   const projects = await api("projects");
   if (!token || token !== session) return;
+  byId("welcome-projects").textContent = projects.length;
+  const projectIds = new Set(projects.map((item) => item.id));
+  for (const id of teamHistory.keys()) if (!projectIds.has(id)) teamHistory.delete(id);
   const buttons = projects.map((item) => {
     const button = document.createElement("button");
     button.className = "project-button";
@@ -999,7 +1068,7 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
     buttons[projects.indexOf(active)].setAttribute("aria-current", "true");
     return;
   }
-  await selectProject(projects.find((item) => item.id === preferredId) || projects[0]);
+  await selectProject(projects.find((item) => item.id === preferredId));
 }
 
 async function runProjectAction(button) {
@@ -1471,11 +1540,19 @@ function renderTelegramLogs() {
 }
 
 function renderProjectTitle() {
+  for (const id of ["project-heading", "project-status", "dashboard-button", "project-settings-button",
+    "stats-button", "project-stepper", "project-work-area"]) {
+    byId(id).classList.toggle("hidden", !project);
+  }
+  document.querySelector('[data-action="regenerate_plan"]').classList.toggle("hidden", !project);
+  byId("welcome-dashboard").classList.toggle("hidden", Boolean(project));
   byId("project-settings-button").disabled = !project;
   byId("current-project-name").textContent = project?.name || "Выберите проект";
   byId("current-project-workspace").textContent = project ? "Папка проекта на ПК: " + project.workspace_path : "";
   byId("current-project-git").textContent = project?.git_repo_url ? "Git-репозиторий: " + project.git_repo_url : "";
 }
+
+byId("dashboard-button").onclick = () => selectProject();
 
 for (const button of all("[data-folder-input]")) {
   button.onclick = async (event) => {
@@ -1575,6 +1652,9 @@ function renderIntegrations(user) {
     ["github", githubUsername && "@" + githubUsername, user.github_avatar_url],
   ]) {
     const linked = Boolean(account);
+    const badge = byId("welcome-" + provider);
+    badge.classList.toggle("linked", linked);
+    badge.textContent = (provider === "github" ? "GitHub" : "Telegram") + (linked ? " · Да" : " · Нет");
     byId(provider + "-card").classList.toggle("linked", linked);
     const status = byId(provider + "-status");
     const displayName = linked ? account : "Не привязан";
@@ -1937,14 +2017,29 @@ byId("project-workspace").oninput = ({target}) => {
 };
 byId("project-workspace").onblur = fillDefaultProjectPath;
 
-byId("new-project-button").onclick = () => {
+const projectTemplates = {
+  web: ["Веб-приложение", "Цель приложения:\nПользователи и их сценарии:\nЭкраны и API:\nМодель данных:\nКритерии готовности:"],
+  bot: ["Telegram-бот", "Назначение бота:\nКоманды и сценарии диалога:\nУведомления:\nХранение данных:\nКритерии готовности:"],
+  script: ["Скрипт автоматизации", "Задача:\nИсточники и форматы данных:\nПравила обработки:\nФормат результата:\nРасписание запуска:"],
+  repo: ["Доработка репозитория", "Репозиторий и ветка:\nТекущее поведение:\nНеобходимые изменения:\nОграничения:\nКак проверить результат:"],
+};
+
+function openProjectModal(template) {
+  const [name, spec] = template || ["", ""];
+  byId("project-name").value = name;
+  byId("project-template").value = spec;
+  byId("project-template-field").classList.toggle("hidden", !template);
   selectProjectAddTab(false);
   fillDefaultProjectPath();
   renderGitHubFields();
   showModal("project-modal");
   refreshIntegrations();
   loadPresetChoices("project-presets");
-};
+}
+byId("new-project-button").onclick = byId("welcome-create").onclick = () => openProjectModal();
+all("[data-template]").forEach((button) => {
+  button.onclick = () => openProjectModal(projectTemplates[button.dataset.template]);
+});
 byId("project-form").onsubmit = async (event) => {
   event.preventDefault();
   const button = event.submitter;
@@ -1953,6 +2048,7 @@ byId("project-form").onsubmit = async (event) => {
   const revision = modalRevision;
   const session = token;
   const form = event.currentTarget;
+  const spec = byId("project-template").value.trim();
   button.disabled = true;
   try {
     const created = await api("projects", {
@@ -1960,7 +2056,14 @@ byId("project-form").onsubmit = async (event) => {
       ...projectLocation("project"),
       ...(!customProjectPath && {workspace_path: null}),
     }, session);
-    let importError;
+    let importError, specError;
+    if (spec) {
+      try {
+        await api("projects/" + created.id + "/spec-items", {text: spec}, session);
+      } catch (error) {
+        specError = error;
+      }
+    }
     if (presetIds.length) {
       try {
         await api("projects/" + created.id + "/agents/from-hub", {preset_ids: presetIds}, session);
@@ -1976,6 +2079,10 @@ byId("project-form").onsubmit = async (event) => {
       showModal();
     }
     await loadProjects(created.id);
+    if (specError) {
+      if (project?.id === created.id) byId("spec-text").value = spec;
+      notify("Проект создан. Не удалось сохранить шаблон ТЗ: " + specError.message);
+    }
     if (importError) notify("Проект создан. " + importError.message);
     if (modalCurrent && byId("modal-backdrop").inert && project?.id === created.id && (manual || importError)) {
       openAgentModal(undefined, manual, importError ? presetIds : []);
@@ -2125,6 +2232,7 @@ async function loadHubModels() {
     ]);
     if (revision !== hubRequest || session !== token) return;
     hubPresets = presets;
+    byId("welcome-models").textContent = presets.length;
     hubRatings = new Map(leaderboard.map((entry) => [entry.model_key, entry.reliability_score]));
     renderHubModels();
   } catch (error) {
@@ -2241,6 +2349,8 @@ byId("logout-button").onclick = () => {
   sessionStorage.removeItem("loomis-token");
   stopMagic();
   selectProject(undefined);
+  teamHistory.clear();
+  byId("welcome-models").textContent = byId("welcome-projects").textContent = "—";
   showWorkspace(false);
 };
 
