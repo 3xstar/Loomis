@@ -5,19 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
   <title>Loomis — локальная студия агентов</title>
+  <link rel="icon" type="image/png" href="/static/favicon.png">
   <link rel="stylesheet" href="/styles.css?v=latest">
 </head>
 <body>
-  <div id="ambient-bg" aria-hidden="true">
-    <span class="orb orb-a"></span>
-    <span class="orb orb-b"></span>
-    <span class="orb orb-c"></span>
-  </div>
-
   <section id="auth-screen" class="screen auth-screen">
     <div class="auth-card glass-panel">
       <div class="auth-brand">
-        <div class="logo-mark">L</div>
+        <span class="logo-mark" aria-hidden="true"><img class="logo-dark" src="/static/logo-dark.png" alt=""><img class="logo-light" src="/static/logo-light.png" alt=""></span>
         <div>
           <h1>Loomis</h1>
         </div>
@@ -71,7 +66,7 @@
   <section id="app-screen" class="screen app-screen hidden" inert>
     <aside class="sidebar glass-panel">
       <div class="sidebar-head">
-        <div class="brand-row"><div class="logo-mark small">L</div><div><strong>Loomis</strong></div></div>
+        <div class="brand-row"><span class="logo-mark small" aria-hidden="true"><img class="logo-dark" src="/static/logo-dark.png" alt=""><img class="logo-light" src="/static/logo-light.png" alt=""></span><div><strong>Loomis</strong></div></div>
         <button id="settings-button" class="icon-button" type="button" title="Настройки" aria-label="Настройки"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m10 3-.7 2.2-1.9 1.1-2.3-.5-2 3.4 1.6 1.7v2.2l-1.6 1.7 2 3.4 2.3-.5 1.9 1.1.7 2.2h4l.7-2.2 1.9-1.1 2.3.5 2-3.4-1.6-1.7v-2.2l1.6-1.7-2-3.4-2.3.5-1.9-1.1L14 3Z"/><circle cx="12" cy="12" r="3"/></svg></button>
       </div>
 
@@ -113,7 +108,7 @@
       <section id="welcome-dashboard" class="welcome-dashboard" aria-labelledby="welcome-title">
         <div class="welcome-content">
           <div class="welcome-hero">
-            <span class="dashboard-icon welcome-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20M2 12h20M5 5l14 14M19 5 5 19"/><circle cx="12" cy="12" r="5"/></svg></span>
+            <span class="logo-mark welcome-mark" aria-hidden="true"><img class="logo-dark" src="/static/logo-dark.png" alt=""><img class="logo-light" src="/static/logo-light.png" alt=""></span>
             <h1 id="welcome-title">Добро пожаловать в Loomis</h1>
             <p>Откройте проект из списка или начните с шаблона.</p>
           </div>
@@ -527,7 +522,7 @@
       document.title = "Loomis — рабочая область";
       const root = document.getElementById("popout-root");
       for (const node of [...document.body.children]) {
-        if (![root, document.currentScript].includes(node) && !["ambient-bg", "toasts"].includes(node.id)) node.remove();
+        if (![root, document.currentScript].includes(node) && node.id !== "toasts") node.remove();
       }
       root.classList.remove("hidden");
       if (!window.opener?.loomisMountWorkspace?.(window, params.get("project_id"))) {

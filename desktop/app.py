@@ -11,6 +11,7 @@ import webview
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ICON_PATH = Path(__file__).with_name("ui") / "logo.ico"
 if __package__ in (None, ""):
     sys.path.insert(0, str(ROOT))
 
@@ -34,6 +35,24 @@ def set_dark_title_bar(window) -> None:
     set_attribute = windll.dwmapi.DwmSetWindowAttribute
     if set_attribute(hwnd, 20, byref(enabled), 4) != 0:
         set_attribute(hwnd, 19, byref(enabled), 4)
+
+
+def set_windows_icon(window) -> None:
+    from ctypes import windll
+    from ctypes.wintypes import HWND, LPARAM, UINT, WPARAM
+    from System import Action
+
+    def configure():
+        hwnd = window.native.Handle.ToInt64()
+        icon = window.native.Icon.Handle.ToInt64()
+        send_message = windll.user32.SendMessageW
+        send_message.argtypes = (HWND, UINT, WPARAM, LPARAM)
+        send_message.restype = LPARAM
+        wm_seticon = 0x0080
+        send_message(hwnd, wm_seticon, 0, icon)  # ICON_SMALL
+        send_message(hwnd, wm_seticon, 1, icon)  # ICON_BIG
+
+    window.native.Invoke(Action(configure))
 
 
 def enable_workspace_popup(window, origin: str) -> None:
@@ -87,13 +106,14 @@ def main() -> None:
         # Load the FastAPI-mounted UI on the same origin as the API and WebSocket.
         api = DesktopAPI()
         window = webview.create_window(
-            "Loomis", f"{url}/?v={int(time())}", width=1280, height=820, background_color="#0b1020", js_api=api,
+            "Loomis", f"{url}/?v={int(time())}", width=1280, height=820, background_color="#09090b", js_api=api,
         )
         api._window = window
         if sys.platform == "win32":
             window.events.shown += lambda: set_dark_title_bar(window)
+            window.events.shown += lambda: set_windows_icon(window)
             window.events.loaded += lambda: enable_workspace_popup(window, url)
-        webview.start(private_mode=True)
+        webview.start(private_mode=True, icon=str(ICON_PATH))
     finally:
         if server is not None and server.poll() is None:
             server.terminate()

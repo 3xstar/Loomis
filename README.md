@@ -1,3 +1,4 @@
+<p align="center"><img src="desktop/ui/favicon.png" width="96" height="96" alt="Логотип Loomis"></p>
 <h1 align="center">Loomis</h1>
 <p align="center"><strong>От первого сообщения с ТЗ до проверенного изменения в Git.</strong></p>
 
@@ -79,7 +80,7 @@ Swagger UI доступен по адресу [http://127.0.0.1:8000/docs](http:
 python -m desktop.app
 ```
 
-Клиент запускает API автоматически, если `/health` недоступен. В окне доступны темы Dark Liquid Glass и Light iOS Glass. Выбор темы сохраняется между запусками.
+Клиент запускает API автоматически, если `/health` недоступен. В окне доступны темы Dark Monochrome Liquid Glass и Light Monochrome Liquid Glass. Выбор темы сохраняется между запусками.
 
 ### Переменные окружения
 

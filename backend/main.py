@@ -225,8 +225,10 @@ async def health():
 
 
 app.mount("/static/avatars", StaticFiles(directory=avatar_dir), name="avatars")
+desktop_ui = ROOT / "desktop" / "ui"
+app.mount("/static", StaticFiles(directory=desktop_ui), name="desktop-assets")
 app.mount("/", StaticFiles(
-    directory=Path(__file__).resolve().parents[1] / "desktop" / "ui",
+    directory=desktop_ui,
     html=True,
 ), name="desktop")
 
