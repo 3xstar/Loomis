@@ -23,7 +23,7 @@ from backend.core.github import create_github_repo
 from backend.core.media import MAX_MEDIA_BYTES, make_media, media_spec_content
 from backend.core.model_performance import model_key
 from backend.core.orchestrator import count_tokens, history_visible, message_event, orchestrator, probe_agent
-from backend.database.models import DEFAULT_PROJECTS_DIR, AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia, SpecItem, TaskLog, User, UserModelPreset, utc_now
+from backend.database.models import DEFAULT_PROJECTS_DIR, AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia, ResponseCache, SpecItem, TaskLog, User, UserModelPreset, utc_now
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
 from worker.git_bridge import GitBridge
@@ -262,6 +262,20 @@ async def add_project(data: ProjectCreateRequest, session: Session, user: Curren
     if data.git_repo_url:
         require_github(user)
     return await create_project(session, user.id, data)
+
+
+@router.get("/dashboard-usage")
+async def dashboard_usage(session: Session, user: CurrentUser):
+    project_ids = select(Project.id).where(Project.owner_id == user.id)
+    logs = (select(TaskLog.agent_id, func.sum(TaskLog.tokens).label("tokens"))
+            .where(TaskLog.project_id.in_(project_ids)).group_by(TaskLog.agent_id).subquery())
+    logged = func.coalesce(logs.c.tokens, 0)
+    agent_tokens = await session.scalar(select(func.coalesce(func.sum(case(
+        (AgentConfig.total_tokens_used > logged, AgentConfig.total_tokens_used), else_=logged,
+    )), 0)).outerjoin(logs, logs.c.agent_id == AgentConfig.id).where(AgentConfig.project_id.in_(project_ids)))
+    unassigned_tokens = await session.scalar(select(logged).where(logs.c.agent_id.is_(None))) or 0
+    tokens_saved = await session.scalar(select(func.coalesce(func.sum(ResponseCache.tokens_saved), 0)))
+    return {"total_tokens": agent_tokens + unassigned_tokens, "tokens_saved": tokens_saved}
 
 
 @router.get("/{project_id}", response_model=ProjectDetail)

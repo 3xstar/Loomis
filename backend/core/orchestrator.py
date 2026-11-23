@@ -1054,6 +1054,7 @@ class Orchestrator:
             runtime.handoff = (next_config.id, report)
         if committed:
             await self.save_commit_state(project, bridge, runtime, complete)
+            await manager.broadcast(project.id, {"type": "git_commit", "project_id": project.id})
             if project.auto_push_mode == "after_each":
                 await self.publish_github_step(project, bridge, complete)
         if complete:

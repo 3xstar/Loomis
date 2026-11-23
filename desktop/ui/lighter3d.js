@@ -4,8 +4,6 @@ const widgetArea = content.querySelector(".welcome-scroll");
 const stage = document.querySelector(".lighter-stage");
 const canvas = document.querySelector("#welcome-lighter");
 const toggle = document.querySelector("#lighter-toggle");
-const smoke = document.querySelector("#welcome-smoke");
-const smokeContext = smoke.getContext("2d");
 const ash = document.querySelector("#welcome-ash");
 const ashContext = ash.getContext("2d");
 const widgets = [...content.querySelectorAll(".welcome-hero, .dashboard-stat, .quick-start-heading, .quick-card, #welcome-create")];
@@ -19,9 +17,6 @@ let model;
 let loading = false;
 let pointer;
 let ashes = [];
-let puffs = [];
-let smokeTimer = 0;
-const smokeSprites = new Map();
 // Outer flame, inner flame, core, and reflected light at each project count.
 const flamePalettes = [
   ["#ff7b00", "#ffb703", "#ffedce", "#ff9b32"],
@@ -41,71 +36,6 @@ function syncProjectCount() {
   stage.style.setProperty("--flame-core", core);
   stage.style.setProperty("--flame-glow", glow);
   scheduleFrame();
-}
-
-function smokeSprite(light) {
-  if (smokeSprites.has(light)) return smokeSprites.get(light);
-  const sprite = document.createElement("canvas");
-  sprite.width = sprite.height = 96;
-  const context = sprite.getContext("2d");
-  const shade = light ? "75, 82, 101" : "178, 185, 203";
-  for (const [x, y, radius] of [[43, 48, 34], [62, 40, 27], [37, 31, 23], [55, 60, 25]]) {
-    const falloff = context.createRadialGradient(x, y, 0, x, y, radius);
-    falloff.addColorStop(0, `rgba(${shade}, .45)`);
-    falloff.addColorStop(.55, `rgba(${shade}, .17)`);
-    falloff.addColorStop(1, `rgba(${shade}, 0)`);
-    context.fillStyle = falloff;
-    context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-  }
-  smokeSprites.set(light, sprite);
-  return sprite;
-}
-
-function drawSmoke(dt, lit, tip) {
-  if (!smokeContext || (!lit && !puffs.length)) return false;
-  const bounds = smoke.getBoundingClientRect();
-  const ratio = Math.min(devicePixelRatio, 2);
-  const width = Math.round(bounds.width * ratio);
-  const height = Math.round(bounds.height * ratio);
-  if (smoke.width !== width || smoke.height !== height) {
-    smoke.width = width;
-    smoke.height = height;
-  }
-  smokeContext.setTransform(ratio, 0, 0, ratio, 0, 0);
-  smokeContext.clearRect(0, 0, bounds.width, bounds.height);
-  if (reducedMotion.matches) {
-    puffs = [];
-    smokeTimer = 0;
-    return false;
-  }
-  smokeTimer -= dt;
-  if (lit && tip && smokeTimer <= 0) {
-    const y = tip.y - bounds.top;
-    const life = 4 + Math.random() * 2;
-    puffs.push({
-      x: tip.x - bounds.left, y, age: 0, life,
-      speed: Math.max(40, (y + 50) / life),
-      phase: Math.random() * Math.PI * 2, drift: (Math.random() - .5) * 30,
-    });
-    smokeTimer = .17 + Math.random() * .12;
-  }
-  const sprite = smokeSprite(document.documentElement.dataset.theme === "light");
-  puffs = puffs.filter(puff => puff.age < puff.life);
-  for (const puff of puffs) {
-    puff.age += dt;
-    const progress = Math.min(1, puff.age / puff.life);
-    const size = 10 + progress * 142;
-    const x = puff.x + (puff.drift + 36 * Math.sin(puff.phase + puff.age * 2)) * progress;
-    const y = puff.y - puff.speed * puff.age;
-    smokeContext.globalAlpha = .28 * Math.min(1, puff.age * 4) * (1 - progress);
-    smokeContext.save();
-    smokeContext.translate(x, y);
-    smokeContext.rotate(puff.phase + puff.age * .55);
-    smokeContext.drawImage(sprite, -size / 2, -size / 2, size, size);
-    smokeContext.restore();
-  }
-  smokeContext.globalAlpha = 1;
-  return lit || puffs.length > 0;
 }
 
 function disperseWidgets() {
@@ -153,11 +83,6 @@ function drawAsh(dt) {
   }
 }
 
-function fallbackTip() {
-  const bounds = stage.querySelector(".lighter-fallback").getBoundingClientRect();
-  return { x: bounds.left + bounds.width / 2, y: bounds.top - 66 };
-}
-
 function animate(now) {
   frame = 0;
   const dt = Math.min((now - (previousTime || now)) / 1000, .035);
@@ -168,9 +93,8 @@ function animate(now) {
   }
   const lit = burning && !ignition;
   const moving = model?.draw(now / 1000, dt, burning, lit);
-  const smoking = drawSmoke(dt, lit, lit ? model?.flameTip() ?? fallbackTip() : undefined);
   if (ashes.length) drawAsh(dt);
-  if (moving || ignition || ashes.length || smoking) frame = requestAnimationFrame(animate);
+  if (moving || ignition || ashes.length) frame = requestAnimationFrame(animate);
 }
 
 function scheduleFrame() {
@@ -189,7 +113,6 @@ toggle.addEventListener("click", event => {
     ignition = performance.now() + (reducedMotion.matches ? 0 : 190);
   } else {
     ignition = 0;
-    smokeTimer = 0;
     stage.removeAttribute("data-burning");
     if (!content.inert && !reducedMotion.matches && ashContext) disperseWidgets();
   }
@@ -239,9 +162,6 @@ function syncVisibility() {
   ignition = 0;
   pointer = undefined;
   ashes = [];
-  puffs = [];
-  smokeTimer = 0;
-  smokeContext?.clearRect(0, 0, smoke.width, smoke.height);
   ashContext?.clearRect(0, 0, ash.width, ash.height);
   toggle.setAttribute("aria-expanded", "false");
   stage.removeAttribute("data-open");
@@ -279,7 +199,6 @@ function createLighter(THREE) {
   renderer.setClearColor(0x000000, 0);
   const scene = new THREE.Scene();
   const camera = new THREE.OrthographicCamera();
-  const viewHeight = 3.85;
   const target = new THREE.Vector3();
   const projection = new THREE.Vector3();
   const raycaster = new THREE.Raycaster();
@@ -305,6 +224,7 @@ function createLighter(THREE) {
     width = nextWidth;
     height = nextHeight;
     floorOffset = nextOffset;
+    const viewHeight = Math.min(3.85, Math.max(3.2, height * 3.85 / 326));
     const halfWidth = viewHeight * width / height / 2;
     Object.assign(camera, { left: -halfWidth, right: halfWidth, top: viewHeight / 2, bottom: -viewHeight / 2, near: .1, far: 30 });
     target.y = viewHeight * (.5 - floorOffset / height) / .981;
@@ -543,14 +463,6 @@ function createLighter(THREE) {
     };
   }
 
-  function flameTip() {
-    const time = flameUniforms.time.value;
-    const wobble = Math.sin(time * 9 + 13) + .42 * Math.sin(time * 17 - 19);
-    const scale = flame.scale.y;
-    return projectPoint((flameUniforms.bend.value + wobble * .038) * scale,
-      .84 * (1 + .10 * Math.sin(time * 9)) * scale, flameUniforms.depth.value * scale);
-  }
-
   function reset() {
     angle = velocity = fire = bend = depth = sparkTimer = 0;
     for (const spark of sparks) {
@@ -574,7 +486,7 @@ function createLighter(THREE) {
   stage.setAttribute("data-webgl", "");
 
   const lighter = {
-    hitTest, flameTip, reset,
+    hitTest, reset,
     draw(time, dt, open, lit) {
       resize();
       const light = document.documentElement.dataset.theme === "light";

@@ -27,6 +27,7 @@ let integrationUpdatePending = false;
 let integrationsRevision = 0;
 let unlinkProvider;
 let historyRequest;
+let activeProjectKey;
 const teamTargets = new Set();
 const deletedAgents = new Set();
 const agentSelector = byId("agent-selector");
@@ -138,6 +139,7 @@ async function signIn(accessToken, isCurrent = () => true) {
   const user = await api("auth/me", undefined, accessToken);
   if (!isCurrent()) return;
   token = accessToken;
+  activeProjectKey = "loomis-project:" + user.id;
   telegramLogsEnabled = user.tg_logs_enabled;
   renderIntegrations(user);
   defaultProjectsDir = user.default_projects_dir;
@@ -148,7 +150,7 @@ async function signIn(accessToken, isCurrent = () => true) {
   showWorkspace(true);
   loadHubModels();
   try {
-    await loadProjects();
+    await loadProjects(Number(localStorage.getItem(activeProjectKey)));
   } catch (error) {
     if (token === accessToken) notify(error.message);
   }
@@ -630,6 +632,8 @@ function setStatus(status) {
   const pause = document.querySelector('[data-action="pause"]');
   pause.querySelector("strong").textContent = status === "paused" ? "Продолжить" : "Пауза";
   renderProjectControls();
+  renderGitPush();
+  if (byId("git-panel").open) loadGitCommits();
   if (enteringDraft) loadSpecItems(project.id, selection).catch((error) => notify(error.message));
 }
 
@@ -870,7 +874,11 @@ function connect(projectId, current) {
       historyRequest?.live.push(event);
       receiveHistoryEvent(event);
     }
-    if (event.type === "history_changed") refreshHistory(projectId, current);
+    if (event.type === "history_changed") {
+      refreshHistory(projectId, current);
+      loadGitCommits();
+    }
+    if (event.type === "git_commit") loadGitCommits();
     if (event.type === "approval_closed") {
       Array.from(byId("command-approvals").children)
         .find((panel) => panel.dataset.approvalId === event.id)?.remove();
@@ -890,6 +898,11 @@ function connect(projectId, current) {
 async function selectProject(item) {
   if (item?.id !== project?.id) dockWorkspace();
   const current = ++selection;
+  closeContextMenu();
+  byId("git-panel").open = false;
+  byId("git-commits").replaceChildren();
+  if (item) localStorage.setItem(activeProjectKey, item.id);
+  else if (token) localStorage.removeItem(activeProjectKey);
   historyRequest = undefined;
   discardRecording();
   setAttachment();
@@ -961,21 +974,27 @@ async function loadAgents(projectId, current) {
       byId("message-input").focus();
     };
     description.append(name, details);
-    const retry = element("button", "button secondary small", "Повторить шаг");
+    const retry = element("button", "icon-button retry-agent");
+    retry.innerHTML = icon('<path d="M4 11a8 8 0 1 1 2 6m-2-6V5m0 6h6"/>');
+    retry.setAttribute("aria-label", "Перезапустить");
     retry.type = "button";
     retry.onclick = async () => {
       const current = selection;
+      retry.dataset.pending = "";
       retry.disabled = true;
       try {
         await api("projects/" + projectId + "/agents/" + agent.id + "/retry", {});
+        await loadAgents(projectId, current);
       } catch (error) {
         if (current === selection) notify(error.message);
       } finally {
-        retry.disabled = false;
+        delete retry.dataset.pending;
+        if (current === selection) updateLight(agent.id);
       }
     };
-    description.append(retry);
-    card.append(description, light);
+    const signals = element("div", "agent-signals");
+    signals.append(light, retry);
+    card.append(description, signals);
     lights.set(agent.id, {light, agent, retry});
     updateLight(agent.id);
     return card;
@@ -995,7 +1014,10 @@ function updateLight(id) {
   const status = agent.enabled ? state.traffic_state : "error";
   const labels = {working: "Работает", asking: "Ждёт ответа в личном чате", waiting: "Ждёт своей очереди",
     error: state.last_error || "Агент недоступен"};
-  retry.hidden = !agent.enabled || status !== "error" || !(state.can_retry ?? agent.can_retry);
+  retry.hidden = !agent.enabled || status !== "error";
+  const canRetry = state.can_retry ?? agent.can_retry;
+  retry.disabled = "pending" in retry.dataset || !canRetry;
+  retry.title = canRetry ? "Перезапустить" : "Нет сохранённого контекста для перезапуска";
   light.dataset.state = status;
   light.title = labels[status] || "Состояние неизвестно";
   light.setAttribute("aria-label", agent.name + " · " + light.title);
@@ -1008,8 +1030,6 @@ const projectModes = [
   ["autonomy-mode", "autonomy_mode", "autonomous"],
   ["failover-mode", "failover_mode", "auto"],
   ["verbosity-mode", "verbosity_level", "concise"],
-  ["commit-mode", "commit_mode", "sequential"],
-  ["auto-push-mode", "auto_push_mode", "after_each"],
 ];
 function renderProjectModes() {
   for (const [id, field, fallback] of projectModes) {
@@ -1088,11 +1108,26 @@ function dismissAgentMenu(event) {
 }
 document.addEventListener("focusin", dismissAgentMenu);
 
+let dashboardUsageRequest = 0;
+async function loadDashboardUsage() {
+  const session = token;
+  const request = ++dashboardUsageRequest;
+  try {
+    const usage = await api("projects/dashboard-usage");
+    if (session !== token || request !== dashboardUsageRequest) return;
+    byId("welcome-tokens").textContent = usage.total_tokens.toLocaleString("ru-RU");
+    byId("welcome-cache").textContent = usage.tokens_saved.toLocaleString("ru-RU");
+  } catch (error) {
+    if (session === token && request === dashboardUsageRequest) notify(error.message);
+  }
+}
+
 async function loadProjects(preferredId = project?.id, preserveSelection = false) {
   const session = token;
   const projects = await api("projects");
   if (!token || token !== session) return;
   byId("welcome-projects").textContent = projects.length;
+  loadDashboardUsage();
   byId("welcome-dashboard").dataset.projectCount = projects.length;
   const buttons = projects.map((item) => {
     const button = document.createElement("button");
@@ -1105,7 +1140,10 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
     button.onclick = () => {
       document.querySelector(".sidebar").classList.remove("open");
       showHubPage(false);
-      if (project?.id === item.id) return;
+      if (project?.id === item.id) {
+        refreshHistory(item.id, selection);
+        return;
+      }
       selectProject(item).catch((error) => notify(error.message));
     };
     return button;
@@ -1307,6 +1345,12 @@ function openContextMenu(event, target) {
   const edit = byId("context-edit");
   edit.innerHTML = icon('<path d="m14 5 5 5M4 20l1-5L16 4a2 2 0 0 1 3 0l1 1a2 2 0 0 1 0 3L9 19l-5 1Z"/>');
   edit.append(target.kind === "project" ? "Переименовать" : "Редактировать");
+  const commitMenu = target.kind === "commit";
+  edit.hidden = byId("context-delete").hidden = commitMenu;
+  const rollback = byId("context-rollback-commit");
+  const copy = byId("context-copy-commit");
+  rollback.hidden = copy.hidden = !commitMenu;
+  rollback.disabled = gitRollbackPending || ["running", "council"].includes(project?.status);
   const margin = 8;
   const anchor = contextTrigger.getBoundingClientRect();
   const x = event.clientX || (event.clientY ? 0 : anchor.left);
@@ -1314,7 +1358,7 @@ function openContextMenu(event, target) {
   contextMenu.style.left = Math.max(margin, Math.min(x, innerWidth - contextMenu.offsetWidth - margin)) + "px";
   contextMenu.style.top = Math.max(margin, Math.min(y, innerHeight - contextMenu.offsetHeight - margin)) + "px";
   contextMenu.inert = false;
-  byId("context-edit").focus({preventScroll: true});
+  contextMenu.querySelector("button:not([hidden]):enabled").focus({preventScroll: true});
 }
 
 function closeContextMenu(restoreFocus = false) {
@@ -1332,8 +1376,7 @@ window.addEventListener("resize", () => closeContextMenu());
 contextMenu.addEventListener("keydown", (event) => {
   if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
-  const first = byId("context-edit");
-  const last = byId("context-delete");
+  const [first, last = first] = contextMenu.querySelectorAll("button:not([hidden]):enabled");
   (event.key === "Home" || (event.key !== "End" && document.activeElement === last) ? first : last).focus();
 });
 
@@ -1593,77 +1636,112 @@ function renderTelegramLogs() {
 
 function renderProjectTitle() {
   for (const id of ["project-heading", "project-status", "dashboard-button", "project-settings-button",
-    "stats-button", "git-button", "project-stepper", "project-work-area"]) {
+    "stats-button", "project-stepper", "project-work-area"]) {
     byId(id).classList.toggle("hidden", !project);
   }
   document.querySelector('[data-action="regenerate_plan"]').classList.toggle("hidden", !project);
   byId("welcome-dashboard").classList.toggle("hidden", Boolean(project));
+  renderGitPush();
   byId("project-settings-button").disabled = !project;
   byId("current-project-name").textContent = project?.name || "Выберите проект";
   byId("current-project-workspace").textContent = project ? "Папка проекта на ПК: " + project.workspace_path : "";
   byId("current-project-git").textContent = project?.git_repo_url ? "Git-репозиторий: " + project.git_repo_url : "";
 }
 
-byId("dashboard-button").onclick = () => selectProject();
+byId("dashboard-button").onclick = () => {
+  selectProject();
+  loadDashboardUsage();
+};
 
-byId("git-button").onclick = async () => {
-  if (!project) return;
+const gitPanel = byId("git-panel");
+let gitRequest = 0;
+let gitPushPending = false;
+let gitRollbackPending = false;
+
+function renderGitPush() {
+  const push = byId("git-push");
+  push.classList.toggle("hidden", project?.auto_push_mode !== "manual_finish");
+  push.disabled = gitPushPending || !project?.git_repo_url || project.status !== "completed";
+  push.title = !project?.git_repo_url ? "Укажите Git-репозиторий в настройках проекта."
+    : push.disabled && !gitPushPending ? "Доступно после завершения проекта." : "";
+}
+
+byId("git-push").onclick = async () => {
+  if (!project || gitPushPending) return;
+  const current = selection;
+  gitPushPending = true;
+  renderGitPush();
+  try {
+    await api("projects/" + project.id + "/push", {});
+    if (current === selection) notify("Коммиты отправлены.");
+  } catch (error) {
+    if (current === selection) notify(error.message);
+  } finally {
+    gitPushPending = false;
+    renderGitPush();
+  }
+};
+
+gitPanel.ontoggle = () => {
+  if (gitPanel.open) loadGitCommits();
+  else closeContextMenu();
+};
+
+async function loadGitCommits() {
+  if (!project || !gitPanel.open) return;
   const current = selection;
   const path = "projects/" + project.id;
+  const request = ++gitRequest;
   const list = byId("git-commits");
-  const pending = element("p", "", "Загрузка истории…");
-  list.replaceChildren(pending);
-  const push = byId("git-push");
-  push.disabled = !project.git_repo_url || project.status === "running" || project.status === "council"
-    || ((project.commit_mode === "single_preset" || project.auto_push_mode === "manual_finish")
-      && project.status !== "completed");
-  push.onclick = async () => {
-    push.disabled = true;
-    try {
-      await api(path + "/push", {});
-      if (current === selection) notify("Коммит отправлен.");
-    } catch (error) {
-      if (current === selection) notify(error.message);
-    } finally {
-      if (current === selection) push.disabled = false;
-    }
-  };
-  showModal("git-modal");
-  const revision = modalRevision;
+  if (!list.childElementCount) list.replaceChildren(element("p", "", "Загрузка коммитов…"));
   try {
     const commits = await api(path + "/commits");
-    if (current !== selection || revision !== modalRevision) return;
-    if (!commits.length) {
-      pending.textContent = "Коммитов пока нет.";
-      return;
-    }
-    list.replaceChildren(...commits.map((commit) => {
-      const row = element("div", "stack");
-      const title = element("strong", "", commit.short_hash + " · " + commit.message.split("\n", 1)[0]);
-      const details = element("small", "", commit.author + " · " + new Date(commit.created_at).toLocaleString());
-      const rollback = element("button", "button danger small", "Откатить к этому коммиту");
-      rollback.disabled = ["running", "council"].includes(project.status);
-      rollback.onclick = async () => {
-        if (current !== selection || !confirm("Откатить файлы и состояние проекта к " + commit.short_hash + "?")) return;
-        rollback.disabled = true;
-        try {
-          const result = await api(path + "/commits/" + commit.hash + "/rollback", {});
-          if (current !== selection) return;
-          setStatus(result.status);
-          if (revision === modalRevision) showModal();
-          await loadHistory(project.id, current);
-          if (!result.context_restored) notify("Для этого коммита история восстановлена по дате. План нужно утвердить заново.");
-        } catch (error) {
-          if (current === selection) notify(error.message);
-        } finally {
-          rollback.disabled = false;
-        }
-      };
-      row.append(title, details, rollback);
+    if (current !== selection || request !== gitRequest || !gitPanel.open) return;
+    if (contextTarget?.kind === "commit") closeContextMenu();
+    list.replaceChildren(...(commits.length ? commits.map((commit) => {
+      const row = element("div", "git-commit glass-card");
+      row.tabIndex = 0;
+      row.oncontextmenu = (event) => openContextMenu(event, {kind: "commit", commit, path, current});
+      row.append(
+        element("strong", "", commit.short_hash + " · " + commit.message.split("\n", 1)[0]),
+        element("small", "", commit.author + " · " + new Date(commit.created_at).toLocaleString())
+      );
       return row;
-    }));
+    }) : [element("p", "", "Коммитов пока нет.")]));
   } catch (error) {
-    if (current === selection && revision === modalRevision) pending.textContent = error.message;
+    if (current === selection && request === gitRequest) list.replaceChildren(element("p", "", error.message));
+  }
+}
+
+byId("context-copy-commit").onclick = async () => {
+  const {commit} = contextTarget;
+  closeContextMenu(true);
+  try {
+    await navigator.clipboard.writeText(commit.hash);
+    notify("Хэш коммита скопирован.");
+  } catch {
+    notify("Не удалось скопировать хэш коммита.");
+  }
+};
+
+byId("context-rollback-commit").onclick = async () => {
+  const {commit, path, current} = contextTarget;
+  closeContextMenu(true);
+  if (current !== selection || gitRollbackPending ||
+    !confirm("Откатить файлы и контекст ИИ до коммита " + commit.short_hash + "?")) return;
+  gitRollbackPending = true;
+  try {
+    const result = await api(path + "/commits/" + commit.hash + "/rollback", {});
+    if (current !== selection) return;
+    closeContextMenu();
+    setStatus(result.status);
+    refreshHistory(project.id, current);
+    await loadAgents(project.id, current);
+    if (!result.context_restored) notify("Для этого коммита история восстановлена по дате. План нужно утвердить заново.");
+  } catch (error) {
+    if (current === selection) notify(error.message);
+  } finally {
+    gitRollbackPending = false;
   }
 };
 
@@ -1720,13 +1798,20 @@ for (const tab of settingsTabs) {
   };
 }
 
-byId("settings-button").onclick = () => {
+function openSettings(tabId) {
   projectsDirField.value = defaultProjectsDir;
   renderTelegramLogs();
   renderDeadline();
-  selectSettingsTab(byId("general-tab"));
   showModal("settings-modal");
-};
+  const tab = byId(tabId);
+  selectSettingsTab(tab);
+  if (tabId === "integrations-tab") tab.focus();
+}
+
+byId("settings-button").onclick = () => openSettings("general-tab");
+for (const provider of ["telegram", "github"]) {
+  byId(provider + "-alert").onclick = () => openSettings("integrations-tab");
+}
 
 byId("projects-dir-form").onsubmit = async (event) => {
   event.preventDefault();
@@ -1752,6 +1837,7 @@ byId("project-settings-button").onclick = () => {
   locationForm.reset();
   byId("settings-workspace").value = project?.workspace_path ?? "";
   byId("settings-git").value = project?.git_repo_url ?? "";
+  renderGitModes(project);
   renderGitHubFields();
   showModal("project-settings-modal");
   refreshIntegrations();
@@ -1765,9 +1851,7 @@ function renderIntegrations(user) {
     ["github", githubUsername && "@" + githubUsername, user.github_avatar_url],
   ]) {
     const linked = Boolean(account);
-    const badge = byId("welcome-" + provider);
-    badge.classList.toggle("linked", linked);
-    badge.textContent = (provider === "github" ? "GitHub" : "Telegram") + (linked ? " · Да" : " · Нет");
+    byId(provider + "-alert").hidden = linked;
     byId(provider + "-card").classList.toggle("linked", linked);
     const status = byId(provider + "-status");
     const displayName = linked ? account : "Не привязан";
@@ -1960,11 +2044,18 @@ async function updateIntegration(button, action, event) {
   }
 }
 
+function renderGitModes(item) {
+  byId("settings-commit-mode").value = item.commit_mode || "sequential";
+  byId("settings-auto-push-mode").value = item.auto_push_mode || "after_each";
+}
+
 function projectLocation(prefix) {
   const path = byId(prefix + "-workspace").value;
   const creating = byId(prefix + "-new-repo").checked;
   return {
     workspace_path: path.trim() ? path : null,
+    commit_mode: byId(prefix + "-commit-mode").value,
+    auto_push_mode: byId(prefix + "-auto-push-mode").value,
     ...(githubUsername && {git_repo_url: creating ? null : byId(prefix + "-git").value.trim() || null}),
     ...(creating && {github_visibility: byId(prefix + "-visibility").value}),
   };
@@ -1987,11 +2078,14 @@ locationForm.onsubmit = async (event) => {
     if (project !== target) return;
     target.workspace_path = saved.workspace_path;
     target.git_repo_url = saved.git_repo_url;
+    target.commit_mode = saved.commit_mode;
+    target.auto_push_mode = saved.auto_push_mode;
     renderProjectTitle();
     if (revision === modalRevision) {
       locationForm.reset();
       byId("settings-workspace").value = saved.workspace_path;
       byId("settings-git").value = saved.git_repo_url ?? "";
+      renderGitModes(saved);
       renderGitHubFields();
     }
   } catch (error) {
@@ -2462,7 +2556,7 @@ byId("logout-button").onclick = () => {
   sessionStorage.removeItem("loomis-token");
   stopMagic();
   selectProject(undefined);
-  byId("welcome-models").textContent = byId("welcome-projects").textContent = "—";
+  for (const metric of ["models", "projects", "tokens", "cache"]) byId("welcome-" + metric).textContent = "—";
   delete byId("welcome-dashboard").dataset.projectCount;
   showWorkspace(false);
 };
