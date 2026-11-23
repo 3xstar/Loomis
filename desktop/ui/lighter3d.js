@@ -1,6 +1,6 @@
 const dashboard = document.querySelector("#welcome-dashboard");
 const content = document.querySelector("#welcome-widgets");
-const scroll = content.querySelector(".welcome-scroll");
+const widgetArea = content.querySelector(".welcome-scroll");
 const stage = document.querySelector(".lighter-stage");
 const canvas = document.querySelector("#welcome-lighter");
 const toggle = document.querySelector("#lighter-toggle");
@@ -22,6 +22,26 @@ let ashes = [];
 let puffs = [];
 let smokeTimer = 0;
 const smokeSprites = new Map();
+// Outer flame, inner flame, core, and reflected light at each project count.
+const flamePalettes = [
+  ["#ff7b00", "#ffb703", "#ffedce", "#ff9b32"],
+  ["#ff9f43", "#ffd792", "#f0faff", "#ffc382"],
+  ["#86c9fb", "#c6e8ff", "#edfaff", "#8ac7ff"],
+  ["#0284c7", "#38bdf8", "#c7efff", "#38bdf8"],
+  ["#0277c4", "#38bdf8", "#98dcff", "#249ffa"],
+  ["#2563eb", "#60a5fa", "#86bfff", "#2563eb"],
+];
+let projectCount = 0;
+
+function syncProjectCount() {
+  projectCount = Math.min(flamePalettes.length - 1, Number(dashboard.dataset.projectCount) || 0);
+  const [outer, inner, core, glow] = flamePalettes[projectCount];
+  stage.style.setProperty("--flame-outer", outer);
+  stage.style.setProperty("--flame-inner", inner);
+  stage.style.setProperty("--flame-core", core);
+  stage.style.setProperty("--flame-glow", glow);
+  scheduleFrame();
+}
 
 function smokeSprite(light) {
   if (smokeSprites.has(light)) return smokeSprites.get(light);
@@ -90,7 +110,7 @@ function drawSmoke(dt, lit, tip) {
 
 function disperseWidgets() {
   const bounds = dashboard.getBoundingClientRect();
-  const viewport = scroll.getBoundingClientRect();
+  const viewport = widgetArea.getBoundingClientRect();
   const light = document.documentElement.dataset.theme === "light";
   const ratio = Math.min(devicePixelRatio, 2);
   ash.width = Math.max(1, Math.round(bounds.width * ratio));
@@ -166,7 +186,6 @@ toggle.addEventListener("click", event => {
   toggle.setAttribute("aria-expanded", String(burning));
   stage.toggleAttribute("data-open", burning);
   if (burning) {
-    scroll.scrollTop = 0;
     ignition = performance.now() + (reducedMotion.matches ? 0 : 190);
   } else {
     ignition = 0;
@@ -243,6 +262,10 @@ new ResizeObserver(scheduleFrame).observe(stage);
 new MutationObserver(scheduleFrame).observe(document.documentElement, {
   attributes: true, attributeFilter: ["data-theme"],
 });
+new MutationObserver(syncProjectCount).observe(dashboard, {
+  attributes: true, attributeFilter: ["data-project-count"],
+});
+syncProjectCount();
 reducedMotion.addEventListener("change", scheduleFrame);
 syncVisibility();
 
@@ -253,6 +276,7 @@ function createLighter(THREE) {
   } catch {
     return undefined;
   }
+  renderer.setClearColor(0x000000, 0);
   const scene = new THREE.Scene();
   const camera = new THREE.OrthographicCamera();
   const viewHeight = 3.85;
@@ -270,11 +294,13 @@ function createLighter(THREE) {
   let depth = 0;
   let sparkTimer = 0;
   let theme;
+  let temperature = projectCount;
+  const palettes = flamePalettes.map(palette => palette.map(color => new THREE.Color(color)));
 
   function resize() {
     const nextWidth = canvas.clientWidth;
     const nextHeight = canvas.clientHeight;
-    const nextOffset = parseFloat(getComputedStyle(stage).getPropertyValue("--lighter-floor"));
+    const nextOffset = parseFloat(getComputedStyle(toggle).bottom) + 8;
     if (!nextWidth || !nextHeight || (width === nextWidth && height === nextHeight && floorOffset === nextOffset)) return;
     width = nextWidth;
     height = nextHeight;
@@ -322,7 +348,7 @@ function createLighter(THREE) {
   };
   const steel = new THREE.MeshStandardMaterial({ color: 0xb1b4bc, metalness: .8, roughness: .29 });
   const dark = new THREE.MeshStandardMaterial({ color: 0x18191e, roughness: .85 });
-  const fireLight = new THREE.PointLight(0xffb878, 0, 3);
+  const fireLight = new THREE.PointLight(palettes[projectCount][3], 0, 3);
   fireLight.position.set(0, 1.93, .29);
   scene.add(fireLight);
 
@@ -400,7 +426,9 @@ function createLighter(THREE) {
 
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(5, 3.2), new THREE.ShaderMaterial({
     transparent: true, depthWrite: false,
-    uniforms: { glow: { value: 0 }, tint: { value: new THREE.Color() } },
+    uniforms: {
+      glow: { value: 0 }, tint: { value: new THREE.Color() }, glowColor: { value: fireLight.color },
+    },
     vertexShader: `
       varying vec2 floorUv;
       void main() {
@@ -410,7 +438,7 @@ function createLighter(THREE) {
     fragmentShader: `
       varying vec2 floorUv;
       uniform float glow;
-      uniform vec3 tint;
+      uniform vec3 tint, glowColor;
       void main() {
         vec2 p = (floorUv - .5) * 2.;
         float pool = exp(-dot(p * vec2(2.9, 2.6), p * vec2(2.9, 2.6)));
@@ -419,7 +447,7 @@ function createLighter(THREE) {
           * (1. - smoothstep(.2, 1.1, abs(mirror.y))) * smoothstep(.07, .2, -p.y);
         float alpha = (pool * (.11 + glow * .52) + silhouette * .19)
           * (1. - smoothstep(.68, 1., length(p)));
-        gl_FragColor = vec4(mix(tint, vec3(1., .72, .47), glow * .72), alpha);
+        gl_FragColor = vec4(mix(tint, glowColor, glow * .9), alpha);
         #include <colorspace_fragment>
       }`,
   }));
@@ -434,17 +462,17 @@ function createLighter(THREE) {
   const flameUniforms = {
     time: { value: 0 }, bend: { value: 0 }, depth: { value: 0 }, strength: { value: 0 },
   };
-  for (const [radius, length, opacity, color, bottom] of [
-    [.23, .84, .39, 0xffa65f, .00],
-    [.165, .70, .72, 0xffdcab, .01],
-    [.092, .44, .97, 0xfff6e5, .025],
+  for (const [radius, length, opacity, bottom] of [
+    [.23, .84, .39, .00],
+    [.165, .70, .72, .01],
+    [.092, .44, .97, .025],
   ]) {
     const material = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false,
       uniforms: {
         ...flameUniforms,
         radius: { value: radius }, length: { value: length }, opacity: { value: opacity },
-        color: { value: new THREE.Color(color) }, bottom: { value: bottom },
+        color: { value: palettes[projectCount][layers.length].clone() }, bottom: { value: bottom },
       },
       vertexShader: `
         uniform float time, bend, depth, radius, length, bottom;
@@ -559,6 +587,14 @@ function createLighter(THREE) {
         floor.material.uniforms.tint.value.setHex(light ? 0x747986 : 0xa2a9b8);
       }
       const still = reducedMotion.matches;
+      temperature = still ? projectCount : THREE.MathUtils.damp(temperature, projectCount, 8, dt);
+      const lower = Math.floor(temperature);
+      const upper = Math.min(lower + 1, palettes.length - 1);
+      const blend = temperature - lower;
+      for (const [index, layer] of layers.entries()) {
+        layer.material.uniforms.color.value.lerpColors(palettes[lower][index], palettes[upper][index], blend);
+      }
+      fireLight.color.lerpColors(palettes[lower][3], palettes[upper][3], blend);
       scene.updateMatrixWorld();
       const hit = Boolean(pointer?.onToggle && hitTest(pointer, open));
       stage.toggleAttribute("data-hit", hit);
@@ -610,7 +646,8 @@ function createLighter(THREE) {
       }
       renderer.render(scene, camera);
       return !still && (lit || fire > .002 || Math.abs(angle - goal) > .0005 ||
-        Math.abs(velocity) > .001 || sparks.some(spark => spark.life > 0));
+        Math.abs(velocity) > .001 || Math.abs(temperature - projectCount) > .001 ||
+        sparks.some(spark => spark.life > 0));
     },
   };
   return lighter;

@@ -146,7 +146,6 @@ async function signIn(accessToken, isCurrent = () => true) {
   byId("user-name").textContent = user.username || "Loomis";
   byId("user-avatar").textContent = byId("user-name").textContent[0].toUpperCase();
   showWorkspace(true);
-  renderCoreStatus();
   loadHubModels();
   try {
     await loadProjects();
@@ -812,19 +811,10 @@ function showCommandApproval({id, command, kind}, projectId) {
   byId("command-approvals").append(panel);
 }
 
-function renderCoreStatus() {
-  const status = byId("core-status");
-  const connected = Boolean(project && socket?.readyState === WebSocket.OPEN);
-  status.classList.toggle("active", Boolean(token && (!project || connected)));
-  status.querySelector("small").textContent = connected ? "API & WebSocket: Активно"
-    : project ? "WebSocket: подключение…" : "API: Активно";
-}
-
 function connect(projectId, current) {
   if (current !== selection) return;
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   socket = new WebSocket(scheme + "//" + location.host + "/ws/" + projectId, ["loomis", token]);
-  socket.onopen = () => { if (current === selection) renderCoreStatus(); };
   socket.onmessage = ({data}) => {
     if (current !== selection) return;
     const event = JSON.parse(data);
@@ -843,7 +833,6 @@ function connect(projectId, current) {
   };
   socket.onclose = () => {
     if (current !== selection) return;
-    renderCoreStatus();
     setTimeout(() => connect(projectId, current), 3500);
   };
 }
@@ -867,7 +856,6 @@ async function selectProject(item) {
   byId("command-approvals").replaceChildren();
   socket?.close();
   socket = undefined;
-  renderCoreStatus();
   Object.values(streams).forEach((stream) => stream.clear());
   if (item && teamHistory.has(item.id)) streams.team.set(0, teamHistory.get(item.id));
   Object.keys(streams).forEach((channel) => byId(channel).replaceChildren());
@@ -1040,6 +1028,7 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
   const projects = await api("projects");
   if (!token || token !== session) return;
   byId("welcome-projects").textContent = projects.length;
+  byId("welcome-dashboard").dataset.projectCount = projects.length;
   const projectIds = new Set(projects.map((item) => item.id));
   for (const id of teamHistory.keys()) if (!projectIds.has(id)) teamHistory.delete(id);
   const buttons = projects.map((item) => {
@@ -2351,6 +2340,7 @@ byId("logout-button").onclick = () => {
   selectProject(undefined);
   teamHistory.clear();
   byId("welcome-models").textContent = byId("welcome-projects").textContent = "—";
+  delete byId("welcome-dashboard").dataset.projectCount;
   showWorkspace(false);
 };
 
