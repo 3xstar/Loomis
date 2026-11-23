@@ -99,14 +99,14 @@
         <div class="topbar-actions">
           <button id="dashboard-button" class="button secondary hidden" type="button" title="Стартовый дашборд" aria-label="Стартовый дашборд"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3Z"/></svg></button>
           <button id="project-settings-button" class="button secondary hidden" type="button" disabled>Настройки проекта</button>
-          <button id="stats-button" class="button secondary" type="button" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg> Статистика</button>
-          <button class="button secondary" type="button" data-action="regenerate_plan" disabled>Пересобрать план</button>
+          <button id="stats-button" class="button secondary hidden" type="button" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg> Статистика</button>
+          <button class="button secondary hidden" type="button" data-action="regenerate_plan" disabled>Пересобрать план</button>
           <button id="theme-switch-top" class="theme-switch" type="button" aria-label="Светлая тема"></button>
         </div>
       </header>
 
       <section id="welcome-dashboard" class="welcome-dashboard" aria-labelledby="welcome-title">
-        <div class="welcome-content">
+        <div id="welcome-widgets" class="welcome-content" inert>
           <div class="welcome-hero">
             <span class="logo-mark welcome-mark" aria-hidden="true"><img class="logo-dark" src="/static/logo-dark.png" alt=""><img class="logo-light" src="/static/logo-light.png" alt=""></span>
             <h1 id="welcome-title">Добро пожаловать в Loomis</h1>
@@ -137,6 +137,13 @@
             </button>
           </div>
           <button id="welcome-create" class="button primary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Создать пустой проект</button>
+        </div>
+        <canvas id="welcome-ash" aria-hidden="true"></canvas>
+        <div class="lighter-stage">
+          <div class="lighter-fallback" aria-hidden="true"><i></i><span>Loomis</span></div>
+          <canvas id="welcome-lighter" aria-hidden="true"></canvas>
+          <button id="lighter-toggle" type="button" aria-label="Зажигалка Loomis"
+            aria-controls="welcome-widgets" aria-expanded="false"></button>
         </div>
       </section>
 
@@ -532,6 +539,7 @@
       const appScript = document.createElement("script");
       appScript.src = "/app.js?v=latest";
       document.body.append(appScript);
+      import("/static/lighter3d.js?v=latest");
     }
   </script>
 </body>
