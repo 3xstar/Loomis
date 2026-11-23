@@ -7,8 +7,8 @@
   <img alt="Aiogram 3" src="https://img.shields.io/badge/Aiogram%203-229ED9?style=flat-square">
   <img alt="SQLAlchemy async" src="https://img.shields.io/badge/SQLAlchemy%20async-BF3027?style=flat-square">
   <img alt="WebSocket" src="https://img.shields.io/badge/WebSocket-465671?style=flat-square">
-  <img alt="pywebview, Этап 3" src="https://img.shields.io/badge/pywebview-Stage%203-6366F1?style=flat-square">
-  <img alt="Vanilla JS, Этап 3" src="https://img.shields.io/badge/Vanilla%20JS-Stage%203-B5860D?style=flat-square">
+  <img alt="pywebview" src="https://img.shields.io/badge/pywebview-6366F1?style=flat-square">
+  <img alt="Vanilla JS" src="https://img.shields.io/badge/Vanilla%20JS-B5860D?style=flat-square">
 </p>
 
 Loomis — локальная система управления проектами и агентами разработки. Соберите требования в Telegram, запустите консилиум и утвердите план. FastAPI управляет проектами и передаёт в реальном времени статусы и журналы выполнения.
@@ -28,7 +28,7 @@ Loomis — локальная система управления проекта
 
 ```mermaid
 flowchart LR
-    Desktop["Liquid Glass Desktop<br/>pywebview + Vanilla JS · Этап 3"] -. "HTTP / WebSocket" .-> API["FastAPI"]
+    Desktop["Liquid Glass Desktop<br/>pywebview + Vanilla JS"] -. "HTTP / WebSocket" .-> API["FastAPI"]
     Telegram["Telegram Bot<br/>Aiogram 3"] <--> API
     API --> ORM["SQLAlchemy async"]
     ORM --> DB[("SQLite")]
@@ -74,13 +74,19 @@ uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 Swagger UI доступен по адресу [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs), проверка состояния — по `GET /health`. Чтобы запустить сервер с адресом и портом из настроек Loomis, используйте `python -m backend.main`.
 
-Этап 3 «Liquid Glass Desktop + Magic Login» полностью реализован и готов к запуску из корня проекта с активированным окружением.
+Запустите десктопный клиент из корня проекта в активированном окружении.
 
 ```powershell
 python -m desktop.app
 ```
 
 Клиент запускает API автоматически, если `/health` недоступен. В окне доступны темы Dark Monochrome Liquid Glass и Light Monochrome Liquid Glass. Выбор темы сохраняется между запусками.
+
+### Генераторы изображений
+
+В Хабе или в настройках агента выберите роль «Генератор изображений» и укажите OpenAI-совместимый API с маршрутом `/images/generations`. На карточке модели появится бейдж `IMG`. При подключении Loomis проверяет модель пробной генерацией.
+
+Универсальные модели участвуют в консилиуме и могут назначить генератору шаг в `PLAN.md`. Loomis создаёт PNG по указанному пути, показывает миниатюру в Общем чате ИИ и передаёт ход следующему исполнителю. Для генерации вне плана отправьте описание в личный чат художника или обратитесь к нему через `@Имя` в Общем чате. Эти файлы сохраняются в `assets/generated/` проекта.
 
 ### Переменные окружения
 
@@ -147,5 +153,3 @@ python -m desktop.app
 ## Лицензия и статус
 
 Файл лицензии в репозитории отсутствует.
-
-**Loomis · Stage 3.**

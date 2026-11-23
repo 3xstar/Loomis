@@ -459,6 +459,26 @@ option { background: var(--base); }
 .agent-signals { display: flex; align-items: center; gap: 5px; flex: none; }
 .retry-agent { width: 28px; height: 28px; padding: 4px; }
 .retry-agent svg { width: 16px; height: 16px; }
+.image-agent-badge {
+  display: inline-block;
+  margin-inline-start: .5em;
+  padding: 1px 4px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: .65em;
+  font-weight: 600;
+  vertical-align: middle;
+  opacity: .75;
+}
+.chat-thumbnail {
+  display: block;
+  width: auto;
+  max-width: min(100%, 280px);
+  max-height: 240px;
+  margin-top: 8px;
+  border-radius: 8px;
+  object-fit: contain;
+}
 .agent-card { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .traffic-light {
   --signal: var(--muted);

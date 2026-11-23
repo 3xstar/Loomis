@@ -5,13 +5,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from html import escape
+from io import BytesIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import monotonic
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select, true, update
 from sqlalchemy.exc import SQLAlchemyError
 from aiogram.exceptions import TelegramRetryAfter
+from aiogram.types import BufferedInputFile
+from PIL import Image
 
 from backend.api.ws import manager, workers
 from backend.bot.formatting import telegram_html
@@ -25,7 +29,7 @@ from worker.git_bridge import GitBridge, is_github_repo
 from worker.quality_gate import check_quality
 from worker.sandbox import workspace_file
 
-from .council import periodic_meeting, starting_council
+from .council import periodic_meeting, scheduled_steps, starting_council
 from .github import github_token
 from .model_performance import cache_response, cached_response, model_key, prompt_digest, rank_configs, record_model_result
 
@@ -86,6 +90,7 @@ class Runtime:
     answer: str = ""
     pending_failover: str | None = None
     retry_agent: int | None = None
+    plan_step: int = 0
     restored: bool = False
 
     def restore(self, project):
@@ -99,14 +104,22 @@ class Runtime:
             self.pending_failover = state["pending_failover"]
             self.answer = state["answer"]
             self.retry_agent = state.get("retry_agent")
+            self.plan_step = state.get("plan_step", 0)
         self.restored = True
 
     def snapshot(self):
         return {
             "last_agent": self.last_agent, "handoff": self.handoff,
             "successful_agents": self.successful_agents, "pending_question": self.pending_question,
-            "pending_failover": self.pending_failover, "answer": self.answer, "retry_agent": self.retry_agent,
+            "pending_failover": self.pending_failover, "answer": self.answer,
+            "retry_agent": self.retry_agent, "plan_step": self.plan_step,
         }
+
+
+def image_agent(config, workspace):
+    if config.provider.lower() in CLI_PROVIDERS or config.settings.get("worker"):
+        raise ValueError("Генератор изображений требует прямое подключение к OpenAI-совместимому API.")
+    return ApiAgent.from_config(config.model, config.settings, workspace_path=workspace)
 
 
 async def probe_agent(project_id, config):
@@ -115,6 +128,14 @@ async def probe_agent(project_id, config):
     success = False
     cancelled = False
     try:
+        if config.agent_role_type == "image_gen":
+            async with asyncio.timeout(90):
+                with TemporaryDirectory() as directory:
+                    await image_agent(config, Path(directory)).generate_image(
+                        "Minimal black circle on a plain white background.", "test.png",
+                    )
+            success = True
+            return 0
         async with asyncio.timeout(15):
             node = config.settings.get("worker")
             if node:
@@ -371,7 +392,8 @@ class Orchestrator:
             if media is not None:
                 session.add(media)
                 await session.flush()
-                rows[0].media_id = media.id
+                for row in rows:
+                    row.media_id = media.id
             session.add_all(rows)
             await session.commit()
         for row in rows:
@@ -382,7 +404,11 @@ class Orchestrator:
                     Project, Project.owner_id == User.id
                 ).where(Project.id == project_id))
             if owner and owner.telegram_id and self.telegram_projects.get(owner.id) == project_id:
-                self.background_reply(self.send_team_chat(project_id, owner.id, owner.telegram_id, sender, target, content))
+                self.background_reply(self.send_team_chat(
+                    project_id, owner.id, owner.telegram_id, sender, target, content,
+                    media if sender != "User" else None,
+                ))
+        return rows[0].media_id
 
     async def prompt_history(self, project, config):
         async with async_session_factory() as session:
@@ -394,13 +420,21 @@ class Orchestrator:
         return "\n".join(f"{row.sender_name} → {row.target_name}: {row.content[-4000:]}"
                          for row in reversed(rows))[-16000:]
 
-    async def send_team_chat(self, project_id, owner_id, chat_id, sender, target, content):
+    async def send_team_chat(self, project_id, owner_id, chat_id, sender, target, content, media=None):
         heading = escape(f"{sender} → {target}"[:200])
         async with self.runtime(project_id).telegram_delivery:
             for part in telegram_html(content or "—"):
                 while self.telegram_projects.get(owner_id) == project_id:
                     try:
                         await self.bot.send_message(chat_id, f"<b>{heading}</b>\n{part}", parse_mode="HTML")
+                    except TelegramRetryAfter as exc:
+                        await asyncio.sleep(exc.retry_after)
+                    else:
+                        break
+            if media is not None:
+                while self.telegram_projects.get(owner_id) == project_id:
+                    try:
+                        await self.bot.send_photo(chat_id, BufferedInputFile(media.data, Path(media.filename).name))
                     except TelegramRetryAfter as exc:
                         await asyncio.sleep(exc.retry_after)
                     else:
@@ -449,6 +483,7 @@ class Orchestrator:
         runtime.answer = ""
         runtime.last_agent = 0
         runtime.successful_agents.clear()
+        runtime.plan_step = 0
         runtime.restored = True
         if runtime.gate and not runtime.gate.done():
             runtime.gate.cancel()
@@ -544,7 +579,7 @@ class Orchestrator:
             if not saved or config.traffic_state != "error" or project.status not in {"paused", "running"}:
                 raise ValueError("У агента нет прерванного шага для повтора.")
             digest = self.require_plan(project, configs, approved=True)
-            if saved["plan_digest"] != digest:
+            if saved["plan_digest"] != digest or saved.get("plan_step", runtime.plan_step) != runtime.plan_step:
                 raise ValueError("Прерванный шаг относится к другой версии плана.")
             if runtime.retry_agent is not None or runtime.pending_question is not None:
                 raise ValueError("Сначала завершите текущий повтор или ответьте на вопрос агента.")
@@ -577,7 +612,10 @@ class Orchestrator:
             if action in {"council", "regenerate_plan"} and project.status not in {"draft", "council"}:
                 if not configs:
                     raise ValueError("Добавьте хотя бы одного агента.")
-                selected = self.select_agents(configs, target_agent_ids)
+                selected = [item for item in self.select_agents(configs, target_agent_ids)
+                            if item.agent_role_type != "image_gen"]
+                if not selected:
+                    raise ValueError("Для консилиума выберите хотя бы одну универсальную модель.")
                 workspace = self.workspace(project)
                 if feedback is not None:
                     if not workspace_file(workspace, "PLAN.md").is_file():
@@ -595,7 +633,8 @@ class Orchestrator:
                         try:
                             tokens = await probe_agent(project_id, config)
                         except TimeoutError as exc:
-                            error = "Таймаут проверки агента (15 секунд)."
+                            seconds = 90 if config.agent_role_type == "image_gen" else 15
+                            error = f"Таймаут проверки агента ({seconds} секунд)."
                             await self.traffic(config, "error", error)
                             raise ValueError(f"{config.name}: {error}") from exc
                         except Exception as exc:
@@ -631,6 +670,7 @@ class Orchestrator:
                 if project.commit_mode == "sequential":
                     await bridge.commit("wip: rollback")
                 runtime.meeting_base = None
+                runtime.plan_step = max(0, runtime.plan_step - 1)
                 runtime.handoff = None
                 runtime.answer = ""
                 if project.status == "completed":
@@ -724,6 +764,7 @@ class Orchestrator:
             plan = await starting_council(
                 self.workspace(project), agents, feedback, publish=publish,
                 roster=[item.name for item in configs], synthesize=synthesize, rank=rank_members, ask=ask,
+                artists=[item.name for item in configs if item.agent_role_type == "image_gen"],
             )
             await self.status(project_id, "awaiting_approval", plan_digest=self.plan_digest(project))
             from backend.bot.keyboards import project_keyboard
@@ -740,20 +781,57 @@ class Orchestrator:
             project, configs = await self.load(project_id)
             if project.status in {"draft", "council"}:
                 raise ValueError("Чат недоступен в текущем статусе.")
+            if target_agent_ids is None:
+                mentions = [item for item in configs if re.search(
+                    rf"(?<![\w@])@{re.escape(item.name)}(?![\w-])", question, re.I,
+                )]
+                if any(item.agent_role_type == "image_gen" for item in mentions):
+                    target_agent_ids = [item.id for item in mentions]
             selected = self.select_agents(configs, target_agent_ids)
+            if target_agent_ids is None:
+                selected = [item for item in selected if item.agent_role_type != "image_gen"]
+                if not selected:
+                    raise ValueError("Выберите генератор изображений или обратитесь к нему через @Имя.")
             target = " ".join(f"@{item.name}" for item in selected) if target_agent_ids is not None else "@All"
             addressed = selected[0] if target_agent_ids is not None and len(selected) == 1 else None
             await self.message(project_id, "User", target, "team_chat", question, addressed, media=media)
             context = self.context(self.workspace(project), ("SPEC.md", "PLAN.md", "Project_context.md"))
             async def respond(config):
-                response = await self.ask(project, config, question, context, media)
-                await self.message(project_id, config.name, "@User", "team_chat", response.message, config,
+                if config.agent_role_type == "image_gen":
+                    response, generated = await self.chat_image(project, config, question)
+                else:
+                    response, generated = await self.ask(project, config, question, context, media), None
+                media_id = await self.message(project_id, config.name, "@User", "team_chat", response.message, config,
                                    mirror="direct" if target_agent_ids is not None else None,
-                                   step_title=STEP_TITLES["question"])
-                return {"agent_id": config.id, "status": response.status,
+                                   step_title=STEP_TITLES["question"], media=generated)
+                return {"media_id": media_id, "agent_id": config.id, "status": response.status,
                         "message": response.message, "tokens": response.tokens}
 
             return await asyncio.gather(*(respond(config) for config in selected))
+
+    async def generate_image(self, project, config, prompt, path):
+        await image_agent(config, self.workspace(project)).generate_image(prompt, path)
+        return self.image_media(project, path)
+
+    def image_media(self, project, path):
+        target = workspace_file(self.workspace(project), path)
+        preview = BytesIO()
+        with Image.open(target) as image:
+            thumbnail = image.convert("RGBA")
+            thumbnail.thumbnail((480, 480))
+            thumbnail.save(preview, format="PNG")
+        return ProjectMedia(project_id=project.id, filename=path, mime_type="image/png", data=preview.getvalue())
+
+    async def chat_image(self, project, config, prompt):
+        try:
+            async with asyncio.timeout(project.deadline_minutes * 60):
+                path = f"assets/generated/{uuid4().hex}.png"
+                media = await self.generate_image(project, config, prompt, path)
+                return AgentResult("success", f"Изображение сохранено в `{path}`."), media
+        except TimeoutError:
+            return AgentResult("timeout", "Истёк дедлайн генерации изображения."), None
+        except (OSError, ValueError, RuntimeError) as exc:
+            return AgentResult("error", str(exc)), None
 
     async def ask(self, project, config, question, context, media=None):
         agent = ProjectAgent(self, project, config)
@@ -773,9 +851,10 @@ class Orchestrator:
             presets = await session.scalars(select(UserModelPreset).where(
                 UserModelPreset.owner_id == project.owner_id,
             ).order_by(UserModelPreset.id))
-            names = [f"@{item.name}" for item in agents if media_candidate(item.provider, item.model, audio)]
+            names = [f"@{item.name}" for item in agents if item.agent_role_type != "image_gen"
+                     and media_candidate(item.provider, item.model, audio)]
             names += [item.name for item in presets
-                      if (item.adapter_type.lower(), item.config_json.get("model", "").lower()) !=
+                      if item.agent_role_type != "image_gen" and (item.adapter_type.lower(), item.config_json.get("model", "").lower()) !=
                       (config.provider.lower(), config.model.lower()) and
                       media_candidate(item.adapter_type, item.config_json.get("model", ""), audio)]
         kind = "аудио" if audio else "изображений"
@@ -821,10 +900,13 @@ class Orchestrator:
             was_running = runtime.ready.is_set()
             runtime.ready.clear()
             try:
-                result = await self.ask(project, config, question, context, media)
-                await self.message(project_id, config.name, "@User", "direct", result.message, config,
-                                   mirror="team_chat" if mirror else None, step_title=STEP_TITLES["question"])
-                return {"status": result.status, "message": result.message, "tokens": result.tokens}
+                if config.agent_role_type == "image_gen":
+                    result, generated = await self.chat_image(project, config, question)
+                else:
+                    result, generated = await self.ask(project, config, question, context, media), None
+                media_id = await self.message(project_id, config.name, "@User", "direct", result.message, config,
+                                   mirror="team_chat" if mirror else None, step_title=STEP_TITLES["question"], media=generated)
+                return {"status": result.status, "message": result.message, "tokens": result.tokens, "media_id": media_id}
             finally:
                 if was_running:
                     runtime.ready.set()
@@ -862,31 +944,41 @@ class Orchestrator:
         available = await rank_configs([
             item for item in configs if item.traffic_state != "error" and outside_cooldown(item, now)
         ])
+        workspace = self.workspace(project)
+        artists = {item.name for item in configs if item.agent_role_type == "image_gen"}
+        steps = scheduled_steps(workspace_file(workspace, "PLAN.md").read_text(encoding="utf-8"), artists) if artists else []
+        planned = steps[runtime.plan_step] if steps else None
+        if planned and runtime.handoff is None:
+            intended = next(item for item in configs if item.name == planned[0])
+            runtime.handoff = (intended.id, "")
+        text_agents = [item for item in available if item.agent_role_type != "image_gen"]
         if runtime.handoff:
             intended = next((item for item in configs if item.id == runtime.handoff[0]), None)
             config = next((item for item in available if item.id == runtime.handoff[0]), None)
-            if config is None and intended is not None and available:
-                await self.failover(project, available, runtime, intended,
+            if config is None and intended is not None and text_agents and intended.agent_role_type != "image_gen":
+                await self.failover(project, text_agents, runtime, intended,
                                     "Принять следующий шаг по PLAN.md.", runtime.handoff[1],
                                     intended.last_error or "Агент недоступен.")
                 return
         else:
-            config = available[0] if available else None
+            config = text_agents[0] if text_agents else None
         if config is None:
             runtime.ready.clear()
             await self.status(project.id, "paused", turn_state=runtime.snapshot())
             await self.notify(project.id, "Нет доступного исполнителя. Проверьте агентов перед возобновлением.", critical=True)
             return
-        workspace = self.workspace(project)
+        is_artist = config.agent_role_type == "image_gen"
+        if is_artist and (not planned or planned[0] != config.name):
+            raise ValueError(f"Для @{config.name} нет текущего шага генерации в PLAN.md.")
         bridge = GitBridge(workspace, project.id)
         await bridge.prepare()
         interval = project.meeting_interval_minutes * 60
         if runtime.next_meeting is None:
             runtime.next_meeting = monotonic() + interval
-        if runtime.retry_agent is None and monotonic() >= runtime.next_meeting:
+        if text_agents and runtime.retry_agent is None and monotonic() >= runtime.next_meeting:
             diff = await bridge.diff(runtime.meeting_base) if runtime.meeting_base else ""
             summary = await periodic_meeting(workspace, [
-                (item.name, ProjectAgent(self, project, item)) for item in available
+                (item.name, ProjectAgent(self, project, item)) for item in text_agents
             ], diff, config.name)
             await self.notify(project.id, summary, event_type="meeting")
             runtime.next_meeting = monotonic() + interval
@@ -897,16 +989,17 @@ class Orchestrator:
             available = [item for item in available if item.id in working_ids]
             if config.id not in working_ids:
                 failed = next(item for item in current if item.id == config.id)
-                task = f"Выполни следующий шаг части плана, назначенной агенту {failed.name}."
+                task = planned[2] if planned else f"Выполни следующий шаг части плана, назначенной агенту {failed.name}."
                 handoff = runtime.handoff[1] if runtime.handoff else ""
                 error = failed.last_error or "Сбой на собрании."
                 await self.traffic(failed, "error", error, saved_context={
                     "plan_digest": project.approved_plan_digest, "task": task, "handoff": handoff,
                     "context": self.context(workspace, ("SPEC.md", "PLAN.md", "Project_context.md")),
                     "answer": runtime.answer, "feedback": "", "diagnostic": error,
-                    "partial_diff": "", "receipt_done": False,
+                    "partial_diff": "", "receipt_done": False, "plan_step": runtime.plan_step,
                 })
-                await self.failover(project, available, runtime, failed, task, handoff, error)
+                await self.failover(project, [item for item in text_agents if item.id in working_ids],
+                                    runtime, failed, task, handoff, error)
                 return
         remote = config.settings.get("worker")
         saved = config.saved_context_json if runtime.retry_agent == config.id else None
@@ -917,21 +1010,24 @@ class Orchestrator:
         feedback = saved["feedback"] if saved else ""
         context = saved["context"] if saved else self.context(workspace, ("SPEC.md", "PLAN.md", "Project_context.md"))
         handoff = runtime.handoff[1] if runtime.handoff else ""
-        task = saved["task"] if saved else f"Выполни следующий шаг части плана, назначенной агенту {config.name}."
+        task = saved["task"] if saved else (
+            planned[2] if planned else f"Выполни следующий шаг части плана, назначенной агенту {config.name}."
+        )
         retry_notes = f"\nПродолжи прерванный шаг.\n{saved['diagnostic']}\n{saved['partial_diff']}" if saved else ""
         receipt_done = saved["receipt_done"] if saved else False
         pending_result = saved.get("pending_result") if saved else None
         await self.traffic(config, "working")
         agent = ProjectAgent(self, project, config)
         clarification = ""
-        images = await self.spec_images(project.id)
+        images = () if is_artist else await self.spec_images(project.id)
+        generated = None
         stage = "подтверждение передачи задачи" if handoff and not receipt_done else "исполнение задачи"
         recent = ""
         complete = False
         committed = False
         try:
             async with asyncio.timeout_at(deadline):
-                if handoff and not receipt_done:
+                if handoff and not receipt_done and not is_artist:
                     receipt = await agent.run(
                         "handoff", f"Ты {config.name}. Кратко сообщи команде, какую работу начнёшь. {task}",
                         f"{handoff}\n{runtime.answer}", timeout=max(0.01, deadline - clock.time()),
@@ -947,7 +1043,14 @@ class Orchestrator:
                 while True:
                     stage = "исполнение задачи"
                     correction = f"Исправь ошибки проверки перед передачей хода:\n{feedback[:15000]}" if feedback else ""
-                    if pending_result is not None:
+                    if is_artist:
+                        path = planned[1]
+                        if pending_result is None:
+                            generated = await self.generate_image(project, config, task, path)
+                        else:
+                            generated = self.image_media(project, path)
+                        result = AgentResult("success", f"Изображение сохранено в `{path}`.")
+                    elif pending_result is not None:
                         result = AgentResult("success", pending_result)
                     else:
                         transport_ref = await bridge.open_transport() if remote else None
@@ -957,6 +1060,7 @@ class Orchestrator:
                                 f"{handoff}\n{runtime.answer}\n{correction}{retry_notes}\n"
                                 "В итоговом отчёте опиши результат и инструкции следующему исполнителю. "
                                 "Сохраняй утверждённый PLAN.md. "
+                                + ("Выполни только текущий шаг очереди. " if planned else "")
                                 + ("При неоднозначных требованиях также используй LOOMIS_QUESTION. "
                                    if project.autonomy_mode == "consultative" else "")
                                 + "Если данных не хватает для продолжения, верни только LOOMIS_QUESTION: <вопрос>. "
@@ -980,7 +1084,7 @@ class Orchestrator:
                     self.require_plan(project, configs, approved=True)
                     stage = "проверка результата"
                     pending_result = result.message
-                    feedback = await check_quality(
+                    feedback = None if is_artist else await check_quality(
                         project.test_command, workspace, max(0.01, deadline - clock.time()),
                         lambda command: self.request_approval(project.id, command),
                     )
@@ -988,7 +1092,8 @@ class Orchestrator:
                         stage = "сохранение результата"
                         await bridge.git("add", "-A")
                         changes = await bridge.git("diff", "--name-only", checkpoint, "--", ".")
-                        complete = "LOOMIS_COMPLETE" in result.message.splitlines()
+                        complete = (runtime.plan_step + 1 == len(steps) if planned else
+                                    "LOOMIS_COMPLETE" in result.message.splitlines())
                         if project.commit_mode == "sequential" or complete:
                             label = "Итог проекта" if project.commit_mode == "single_preset" else "Шаг разработки"
                             await bridge.commit(f"{label}: {config.name}", allow_empty=True, author=config.name)
@@ -1008,8 +1113,9 @@ class Orchestrator:
                 "handoff": handoff, "answer": runtime.answer, "feedback": feedback,
                 "diagnostic": diagnostic, "partial_diff": partial_diff,
                 "receipt_done": receipt_done, "pending_result": pending_result, "checkpoint": checkpoint,
+                "plan_step": runtime.plan_step,
             })
-            await self.failover(project, available, runtime, config, task, handoff, error,
+            await self.failover(project, [] if is_artist else text_agents, runtime, config, task, handoff, error,
                                 diagnostic=diagnostic, partial_diff=partial_diff)
             return
         runtime.retry_agent = None
@@ -1038,9 +1144,15 @@ class Orchestrator:
             runtime.successful_agents.remove(config.id)
         runtime.successful_agents.append(config.id)
         await self.traffic(config, "waiting", clear_context=True)
-        ranked = await self.rank_successors(project.id, available, config.id)
-        next_config = next((item for item in ranked if item.id not in runtime.successful_agents),
-                           ranked[0] if ranked else config)
+        if planned:
+            runtime.plan_step += 1
+            next_config = None if complete else next(item for item in configs if item.name == steps[runtime.plan_step][0])
+        elif complete:
+            next_config = None
+        else:
+            ranked = await self.rank_successors(project.id, text_agents, config.id)
+            next_config = next((item for item in ranked if item.id not in runtime.successful_agents),
+                               ranked[0] if ranked else config)
         target = "@All" if complete else f"@{next_config.name}"
         report = (
             f"От: {config.name}\nКому: {target}\n"
@@ -1048,7 +1160,7 @@ class Orchestrator:
             f"Результат и инструкции:\n{result.message}"
         )
         await self.message(project.id, config.name, target, "team_chat", report, config,
-                           step_title=STEP_TITLES["execute"])
+                           step_title=STEP_TITLES["execute"], media=generated)
         await self.notify(project.id, report, event_type="step_log", config=config, in_team_chat=True)
         if not complete:
             runtime.handoff = (next_config.id, report)
@@ -1172,6 +1284,7 @@ class Orchestrator:
             runtime.pending_question = fresh.pending_question
             runtime.pending_failover = fresh.pending_failover
             runtime.retry_agent = fresh.retry_agent
+            runtime.plan_step = fresh.plan_step
             runtime.answer = fresh.answer
             runtime.restored = True
             runtime.meeting_base = None

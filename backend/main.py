@@ -44,7 +44,10 @@ def initialize_schema(connection) -> None:
             "media_id": "INTEGER REFERENCES project_media(id) ON DELETE SET NULL",
         },
         "task_logs": {"sender_name": "VARCHAR(100)", "is_ui_cleared": "BOOLEAN NOT NULL DEFAULT FALSE"},
-        "user_model_presets": {"total_tokens_used": "BIGINT NOT NULL DEFAULT 0"},
+        "user_model_presets": {
+            "total_tokens_used": "BIGINT NOT NULL DEFAULT 0",
+            "agent_role_type": "VARCHAR(20) NOT NULL DEFAULT 'conversational'",
+        },
         "projects": {
             "commit_mode": "VARCHAR(20) NOT NULL DEFAULT 'sequential'",
             "auto_push_mode": "VARCHAR(20) NOT NULL DEFAULT 'after_each'",
@@ -62,6 +65,7 @@ def initialize_schema(connection) -> None:
             "verbosity_level": "VARCHAR(10) NOT NULL DEFAULT 'concise'",
         },
         "agent_configs": {
+            "agent_role_type": "VARCHAR(20) NOT NULL DEFAULT 'conversational'",
             "saved_context_json": "JSON",
             "project_id": "INTEGER REFERENCES projects(id) ON DELETE CASCADE",
             "cooldown_until": "TIMESTAMP",

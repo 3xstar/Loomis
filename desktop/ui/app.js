@@ -330,6 +330,19 @@ function messageNode(event, channel) {
     content = content.replace(/[0-9#*]\uFE0F?\u20E3|(?:\p{Extended_Pictographic}|\p{Emoji_Presentation})\uFE0F?[\u{E0020}-\u{E007F}]*(?:\u200D(?=\p{Extended_Pictographic}))?/gu, "");
   }
   renderMarkdown(body, content, channel === "terminal");
+  if (event.media_id != null && event.sender_name !== "User" && channel !== "terminal") {
+    const thumbnail = element("img", "chat-thumbnail");
+    thumbnail.alt = "Сгенерированное изображение";
+    fetch(`/api/projects/${event.project_id}/media/${event.media_id}`, {
+      headers: {Authorization: "Bearer " + token},
+    }).then(async (response) => {
+      if (!response.ok) return;
+      const src = URL.createObjectURL(await response.blob());
+      thumbnail.onload = thumbnail.onerror = () => URL.revokeObjectURL(src);
+      thumbnail.src = src;
+      body.append(thumbnail);
+    }).catch(() => {});
+  }
   entry.append(head, body);
   return entry;
 }
@@ -962,6 +975,7 @@ async function loadAgents(projectId, current) {
       });
     };
     name.textContent = agent.name;
+    if (agent.agent_role_type === "image_gen") name.append(imageBadge());
     details.textContent = [agent.provider, agent.model].filter(Boolean).join(" · ");
     const description = element("div");
     const light = element("button", "traffic-light");
@@ -1481,6 +1495,21 @@ byId("add-agent-button").onclick = () => openAgentModal();
 const cliProviders = new Set(["codex", "claude", "opencode", "qwen", "cli"]);
 const agentForm = byId("agent-form");
 const agentProvider = byId("agent-provider");
+const agentRole = byId("agent-role");
+
+function imageBadge() {
+  const badge = element("span", "image-agent-badge", "IMG");
+  badge.title = "Генератор изображений";
+  return badge;
+}
+
+function syncRoleProvider(role, provider) {
+  const image = role.value === "image_gen";
+  for (const option of provider.options) {
+    option.disabled = image && cliProviders.has(option.value.toLowerCase());
+  }
+  if (provider.selectedOptions[0]?.disabled) provider.value = "api";
+}
 let agentTarget;
 
 function openAgentModal(target, manual = false, preselected = []) {
@@ -1489,6 +1518,8 @@ function openAgentModal(target, manual = false, preselected = []) {
   const agent = target?.item;
   const settings = agent?.settings || {};
   agentForm.reset();
+  agentRole.disabled = agentProvider.disabled = false;
+  byId("agent-test-status").classList.add("hidden");
   byId("agent-preset-search").value = "";
   agentProvider.querySelector("[data-custom]")?.remove();
   const provider = agent?.provider || "codex";
@@ -1498,6 +1529,7 @@ function openAgentModal(target, manual = false, preselected = []) {
     agentProvider.add(option);
   }
   agentProvider.value = provider;
+  agentRole.value = agent?.agent_role_type || "conversational";
   byId("agent-name").value = agent?.name || "";
   byId("agent-model").value = agent?.model || "";
   byId("agent-base-url").value = settings.base_url || settings.baseUrl || "";
@@ -1518,6 +1550,7 @@ function clearAgentErrors() {
 }
 
 function renderAgentFields() {
+  syncRoleProvider(agentRole, agentProvider);
   const isApi = !cliProviders.has(agentProvider.value.toLowerCase());
   byId("agent-api-fields").inert = !isApi;
   byId("agent-base-url").disabled = byId("agent-api-key").disabled = !isApi;
@@ -1526,7 +1559,7 @@ function renderAgentFields() {
   byId("agent-model").placeholder = isApi ? "" : agentProvider.value;
   clearAgentErrors();
 }
-agentProvider.onchange = renderAgentFields;
+agentProvider.onchange = agentRole.onchange = renderAgentFields;
 agentForm.addEventListener("input", ({target}) => {
   target.removeAttribute("aria-invalid");
   if (!agentForm.querySelector("[aria-invalid]")) byId("agent-error").textContent = "";
@@ -1599,7 +1632,7 @@ agentForm.onsubmit = async (event) => {
   const revision = modalRevision;
   const button = byId("agent-submit");
   const status = byId("agent-test-status");
-  const candidate = {name, provider, model, settings};
+  const candidate = {name, provider, model, settings, agent_role_type: agentRole.value};
   const showError = (error) => {
     const fields = Array.isArray(error.detail)
       ? [...new Set(error.detail.map((item) => item.loc?.at(-1)).filter((field) => Object.hasOwn(agentFields, field)))]
@@ -1609,24 +1642,40 @@ agentForm.onsubmit = async (event) => {
   const fields = [...agentForm.querySelectorAll("input:enabled")];
   fields.forEach((field) => { field.readOnly = true; });
   byId("agent-hub-tab").disabled = byId("agent-manual-tab").disabled = true;
-  agentProvider.disabled = button.disabled = true;
+  agentProvider.disabled = agentRole.disabled = button.disabled = true;
   status.classList.remove("hidden");
   let failure;
   try {
-    await api("projects/" + target.projectId + "/agents/test", {
-      ...candidate, ...(target.item && {agent_id: target.item.id}),
-    });
+    if (candidate.agent_role_type !== "image_gen") {
+      await api("projects/" + target.projectId + "/agents/test", {
+        ...candidate, ...(target.item && {agent_id: target.item.id}),
+      });
+    }
   } catch (error) {
     failure = error;
   } finally {
     status.classList.add("hidden");
     fields.forEach((field) => { field.readOnly = false; });
     byId("agent-hub-tab").disabled = byId("agent-manual-tab").disabled = false;
-    agentProvider.disabled = button.disabled = false;
+    agentProvider.disabled = agentRole.disabled = button.disabled = false;
   }
   if (revision !== modalRevision || target.current !== selection) return;
-  if (failure) showError(failure);
-  else await mutateFromModal(button, target, target.item ? "PATCH" : "POST", candidate, showError);
+  if (failure) {
+    showError(failure);
+    return;
+  }
+  if (candidate.agent_role_type === "image_gen") {
+    status.classList.remove("hidden");
+    agentRole.disabled = agentProvider.disabled = true;
+  }
+  try {
+    await mutateFromModal(button, target, target.item ? "PATCH" : "POST", candidate, showError);
+  } finally {
+    if (revision === modalRevision) {
+      status.classList.add("hidden");
+      agentRole.disabled = agentProvider.disabled = false;
+    }
+  }
 };
 
 function renderTelegramLogs() {
@@ -2185,7 +2234,8 @@ async function loadPresetChoices(id, existingNames = [], preselected = []) {
     if (revision !== modalRevision) return;
     const available = presets.filter(({name}) => !existingNames.includes(name));
     list.replaceChildren(...available.map((preset) => {
-      const label = [preset.name, preset.config_json.model].join(" · ");
+      const label = [preset.name, preset.config_json.model,
+        ...(preset.agent_role_type === "image_gen" ? ["IMG"] : [])].join(" · ");
       const chip = choiceChip(label, preselected.includes(preset.id), sync);
       chip.firstChild.value = preset.id;
       if (importing) {
@@ -2331,7 +2381,10 @@ const hubProvider = byId("hub-provider");
 hubProvider.replaceChildren(...[...agentProvider.options].map((option) => option.cloneNode(true)));
 hubProvider.value = "api";
 
+const hubRole = byId("hub-role");
+
 function renderHubFields() {
+  syncRoleProvider(hubRole, hubProvider);
   const isApi = !cliProviders.has(hubProvider.value);
   byId("hub-api-fields").classList.toggle("hidden", !isApi);
   byId("hub-cli-field").classList.toggle("hidden", isApi);
@@ -2342,7 +2395,7 @@ function renderHubFields() {
   fields.namedItem("command").disabled = isApi;
   fields.namedItem("command").required = !isApi && hubProvider.value !== "codex";
 }
-hubProvider.onchange = renderHubFields;
+hubProvider.onchange = hubRole.onchange = renderHubFields;
 
 let editingPreset;
 let hubPresets = [];
@@ -2370,6 +2423,7 @@ function openHubForm(preset) {
     hubProvider.add(option);
   }
   hubProvider.value = type;
+  hubRole.value = preset?.agent_role_type || "conversational";
   const fields = hubForm.elements;
   fields.namedItem("name").value = preset?.name || "";
   fields.namedItem("model").value = config?.model || "";
@@ -2422,6 +2476,7 @@ function renderHubModels() {
     usage.append(element("strong", "", statsNumber.format(preset.total_tokens_used)),
       element("small", "", "Токенов за всё время"));
     const heading = element("h3", "", preset.name);
+    if (preset.agent_role_type === "image_gen") heading.append(imageBadge());
     heading.append(badge);
     card.append(heading,
       element("small", "hub-model-detail", provider + " / " + preset.config_json.model), usage, actions);
@@ -2487,6 +2542,7 @@ hubForm.onsubmit = async (event) => {
     await api(preset ? "hub/models/" + preset.id : "hub/models", {
       name: data.get("name").trim(),
       adapter_type: type,
+      agent_role_type: data.get("agent_role_type"),
       config_json: config,
     }, session, preset ? "PATCH" : "POST");
     if (revision === modalRevision) showModal();

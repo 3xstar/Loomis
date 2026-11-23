@@ -98,7 +98,11 @@ class ProjectDetail(ProjectView):
     has_plan: bool
 
 
+AgentRole = Literal["conversational", "image_gen"]
+
+
 class AgentCreate(BaseModel):
+    agent_role_type: AgentRole = "conversational"
     name: AgentName
     provider: ProviderName
     model: ProjectName
@@ -107,6 +111,7 @@ class AgentCreate(BaseModel):
 
 
 class AgentPatch(BaseModel):
+    agent_role_type: AgentRole | None = None
     name: AgentName | None = None
     provider: ProviderName | None = None
     model: ProjectName | None = None
@@ -124,6 +129,7 @@ class AgentView(BaseModel):
     provider: str
     model: str
     settings: dict
+    agent_role_type: AgentRole
     enabled: bool
     total_tokens_used: int
     traffic_state: str
@@ -478,7 +484,8 @@ async def test_config(project_id, agent):
     try:
         return await probe_agent(project_id, agent)
     except TimeoutError as exc:
-        raise HTTPException(400, "Таймаут проверки агента (15 секунд).") from exc
+        seconds = 90 if agent.agent_role_type == "image_gen" else 15
+        raise HTTPException(400, f"Таймаут проверки агента ({seconds} секунд).") from exc
     except Exception as exc:
         raise HTTPException(400, str(exc) or type(exc).__name__) from exc
 
@@ -586,6 +593,7 @@ async def update_agent(data, project, agent, session):
     updates["settings"] = merged_agent_settings(provider, model, agent.settings, updates.get("settings", {}))
     candidate = AgentConfig(
         name=updates.get("name", agent.name), provider=provider, model=model, settings=updates["settings"],
+        agent_role_type=updates.get("agent_role_type", agent.agent_role_type),
     )
     same_model = (provider, model) == (agent.provider, agent.model)
     if same_model:
@@ -788,11 +796,14 @@ class PresetConfig(BaseModel):
 
 
 class PresetCreate(BaseModel):
+    agent_role_type: AgentRole = "conversational"
     name: AgentName
     adapter_type: ProviderName
     config_json: PresetConfig
 
     def agent_settings(self):
+        if self.agent_role_type == "image_gen" and self.adapter_type.lower() in CLI_PROVIDERS:
+            invalid_agent_field("agent_role_type", "Генератор изображений требует OpenAI-совместимый API.")
         config = self.config_json.model_dump(exclude_none=True)
         if self.adapter_type.lower() in CLI_PROVIDERS:
             if command := config.pop("command_template", None):
@@ -803,6 +814,7 @@ class PresetCreate(BaseModel):
 
 
 class PresetPatch(BaseModel):
+    agent_role_type: AgentRole | None = None
     name: AgentName | None = None
     adapter_type: ProviderName | None = None
     config_json: dict | None = None
@@ -875,6 +887,7 @@ async def edit_preset(preset_id: int, data: PresetPatch, session: Session, user:
     try:
         candidate = PresetCreate(
             name=data.name or preset.name,
+            agent_role_type=data.agent_role_type or preset.agent_role_type,
             adapter_type=data.adapter_type or preset.adapter_type,
             config_json={**preset.config_json, **(data.config_json or {})},
         )
@@ -882,6 +895,7 @@ async def edit_preset(preset_id: int, data: PresetPatch, session: Session, user:
         raise HTTPException(422, exc.errors(include_context=False, include_input=False)) from exc
     candidate.agent_settings()
     preset.name = candidate.name
+    preset.agent_role_type = candidate.agent_role_type
     preset.adapter_type = candidate.adapter_type
     preset.config_json = candidate.config_json.model_dump()
     await session.commit()
@@ -923,6 +937,7 @@ async def import_presets(data: HubImport, project: OwnedProject, session: Sessio
             agents.append(AgentConfig(
                 project_id=project.id, name=preset.name, provider=preset.adapter_type,
                 model=preset.config_json.model, settings=preset.agent_settings(), preset_id=preset_id,
+                agent_role_type=preset.agent_role_type,
             ))
         for agent in agents:
             agent.total_tokens_used = await test_config(project.id, agent)

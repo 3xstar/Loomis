@@ -1,5 +1,6 @@
 import asyncio
-from base64 import b64encode
+from base64 import b64decode, b64encode
+from io import BytesIO
 from collections import OrderedDict
 from hashlib import sha256
 from ipaddress import ip_address
@@ -7,11 +8,13 @@ import json
 import os
 from pathlib import Path
 from time import monotonic
+from uuid import uuid4
 from urllib.parse import urlsplit
 
 import httpx
 from ddgs import DDGS
 from ddgs.exceptions import DDGSException
+from PIL import Image
 from openai import APITimeoutError, AsyncOpenAI, BadRequestError, OpenAIError
 
 from worker.sandbox import workspace_file
@@ -153,7 +156,8 @@ class ApiAgent(BaseAgent):
         return cls(model, base_url, config.get("api_key_env"), api_key=api_key, **options)
 
     def __init__(self, model: str, base_url: str, api_key_env: str | None = None, *, api_key: str | None = None,
-                 instruction: str = "", images=(), temperature=0.2):
+                 instruction: str = "", images=(), temperature=0.2, workspace_path: Path | None = None):
+        self.workspace_path = workspace_path
         self.model = model
         self.base_url = base_url
         self.api_key_env = api_key_env
@@ -163,6 +167,56 @@ class ApiAgent(BaseAgent):
         self.used_requested_temperature = False
         self.images = images
         self.tokens_used = 0
+
+    async def generate_image(self, prompt: str, save_path: str) -> Path:
+        if self.workspace_path is None:
+            raise ValueError("Для генерации изображения нужна папка проекта.")
+        target = workspace_file(self.workspace_path, save_path)
+        if target.suffix.lower() != ".png":
+            raise ValueError("Путь изображения должен оканчиваться на .png.")
+        if not prompt.strip():
+            raise ValueError("Введите описание изображения.")
+        key = self.api_key or (os.environ[self.api_key_env] if self.api_key_env else "ollama")
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                response = await client.post(
+                    f"{self.base_url.rstrip('/')}/images/generations",
+                    headers={"Authorization": f"Bearer {key}"},
+                    json={"model": self.model, "prompt": prompt, "n": 1, "size": "1024x1024"},
+                )
+                response.raise_for_status()
+                image = response.json()["data"][0]
+                if encoded := image.get("b64_json"):
+                    data = b64decode(encoded, validate=True)
+                else:
+                    url = image["url"]
+                    if urlsplit(url).scheme not in {"http", "https"}:
+                        raise ValueError("Некорректная ссылка на изображение.")
+                    download = await client.get(url, follow_redirects=True)
+                    download.raise_for_status()
+                    data = download.content
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"Запрос изображения завершился с HTTP {exc.response.status_code}.") from exc
+        except httpx.TimeoutException as exc:
+            raise TimeoutError("Истёк таймаут запроса изображения.") from exc
+        except httpx.RequestError as exc:
+            raise RuntimeError("Не удалось подключиться к сервису изображений.") from exc
+        except (IndexError, KeyError, TypeError, AttributeError, ValueError) as exc:
+            raise ValueError("Провайдер вернул некорректный ответ с изображением.") from exc
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        pending = target.with_name(f".{uuid4().hex}.tmp")
+        try:
+            with Image.open(BytesIO(data)) as image:
+                if image.mode not in {"1", "L", "LA", "P", "RGB", "RGBA", "I", "I;16"}:
+                    image = image.convert("RGBA")
+                image.save(pending, format="PNG")
+            pending.replace(target)
+        except Image.DecompressionBombError as exc:
+            raise ValueError("Провайдер вернул слишком большое изображение.") from exc
+        finally:
+            pending.unlink(missing_ok=True)
+        return target
 
     async def _run(self, prompt, timeout, workspace=None):
         self.tokens_used = 0

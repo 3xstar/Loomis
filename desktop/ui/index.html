@@ -359,8 +359,9 @@
       </form>
       <form id="agent-form" class="stack" novalidate>
         <label class="field"><span>Имя</span><input id="agent-name" type="text" placeholder="Codex Core" required maxlength="100"></label>
+        <label class="field"><span>Роль модели</span><select id="agent-role"><option value="conversational">Универсальная (Код / Чат)</option><option value="image_gen">Генератор изображений</option></select></label>
         <div class="field-row">
-          <label class="field"><span>Тип</span><select id="agent-provider"><option value="codex">Codex CLI</option><option value="claude">Claude CLI</option><option value="opencode">OpenCode CLI</option><option value="qwen">Qwen CLI</option><option value="cli">Generic CLI</option><option value="api">OpenAI API</option></select></label>
+          <label class="field"><span>Подключение</span><select id="agent-provider"><option value="codex">Codex CLI</option><option value="claude">Claude CLI</option><option value="opencode">OpenCode CLI</option><option value="qwen">Qwen CLI</option><option value="cli">Generic CLI</option><option value="api">OpenAI API</option></select></label>
           <label class="field"><span>Модель</span><input id="agent-model" type="text" maxlength="255"></label>
         </div>
         <div id="agent-api-fields" class="stack api-fields" inert>
@@ -529,8 +530,9 @@
       <div class="modal-head"><h3 id="hub-modal-title">Добавить модель в Хаб</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <form id="hub-form" class="stack">
         <label class="field"><span>Название</span><input name="name" required minlength="2" maxlength="100"></label>
+        <label class="field"><span>Роль модели</span><select id="hub-role" name="agent_role_type"><option value="conversational">Универсальная (Код / Чат)</option><option value="image_gen">Генератор изображений</option></select></label>
         <div class="field-row">
-          <label class="field"><span>Тип</span><select id="hub-provider" name="provider"></select></label>
+          <label class="field"><span>Подключение</span><select id="hub-provider" name="provider"></select></label>
           <label class="field"><span>Модель</span><input name="model" required maxlength="255"></label>
         </div>
         <div id="hub-api-fields" class="stack">

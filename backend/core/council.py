@@ -1,18 +1,32 @@
 import asyncio
+import re
 from pathlib import Path
 from uuid import uuid4
 
 from worker.sandbox import workspace_file
 
 
+def scheduled_steps(plan, artists):
+    if not artists:
+        return []
+    steps = [tuple(part.strip() for part in match.groups()) for match in re.finditer(
+        r"(?m)^- \[loomis\] @([^|\n]+)\|([^|\n]+)\|([^\n]+)$", plan,
+    )]
+    return steps
+
+
 async def starting_council(workspace: Path, agents, feedback: str | None = None, *,
-                           publish=None, roster=None, synthesize=None, rank=None, ask=None):
+                           publish=None, roster=None, synthesize=None, rank=None, ask=None, artists=()):
     spec = workspace_file(workspace, "SPEC.md").read_text(encoding="utf-8")
     file = workspace_file(workspace, "PLAN.md")
     previous = file.read_text(encoding="utf-8") if file.is_file() else ""
     roster = roster or [name for name, _ in agents]
     order = "\n".join(f"{index}. {name}" for index, name in enumerate(roster, 1))
     context = f"{spec}\n\nОчередь исполнителей:\n{order}"
+    if artists:
+        context += "\n\nГенераторы изображений: " + ", ".join(f"@{name}" for name in artists)
+        context += ("\nОни создают PNG по описанию. Если для проекта нужны иконки, логотипы или "
+                    "иллюстрации, запланируй их создание до шагов, которые используют эти файлы.")
     if previous:
         context += f"\n\nПредыдущий план:\n{previous}"
     if feedback:
@@ -71,6 +85,15 @@ async def starting_council(workspace: Path, agents, feedback: str | None = None,
         "устрани пересечения, придерживайся заданной очереди и укажи критерии проверки. "
         f"Учти правки пользователя. {scope} Верни только Markdown."
     )
+    if artists:
+        plan_prompt += (
+            "\nЕсли план поручает генерацию изображений, добавь упорядоченный список всех исполняемых шагов "
+            "в формате `- [loomis] @Имя | путь | описание`, по одному шагу на строку. "
+            "Для текстового шага укажи `-` вместо пути, для генератора — уникальный относительный путь "
+            "к PNG (например, assets/logo.png) и самостоятельное визуальное описание для промпта. "
+            "Используй точные имена из актуальной очереди и отдельный шаг для каждого изображения. "
+            "Если генерация не нужна, список в этом формате не добавляй."
+        )
     step_title = "Правка плана по замечанию" if feedback else "Формирование файла PLAN.md"
     for name, lead in (await rank(active) if rank else active):
         order = "\n".join(f"{index}. {name}" for index, name in enumerate(
@@ -80,6 +103,21 @@ async def starting_council(workspace: Path, agents, feedback: str | None = None,
         plan = await (synthesize(lead, plan_prompt, plan_context, step_title) if synthesize else
                       lead.ask_question(plan_prompt, plan_context))
         if plan.status == "success" and plan.message.strip():
+            steps = scheduled_steps(plan.message, artists)
+            if steps:
+                if not any(executor in artists for executor, _, _ in steps):
+                    raise ValueError("В исполняемой очереди нет ни одного шага генерации изображений.")
+                paths = set()
+                for executor, path, description in steps:
+                    if executor not in roster or executor in failed or not description:
+                        raise ValueError(f"Некорректный шаг плана для @{executor}.")
+                    if executor in artists:
+                        target = workspace_file(workspace, path)
+                        if target.suffix.lower() != ".png" or target in paths:
+                            raise ValueError(f"Для @{executor} требуется уникальный путь к PNG: {path}")
+                        paths.add(target)
+                    elif path != "-":
+                        raise ValueError(f"Для текстового шага @{executor} укажи «-» вместо пути.")
             break
         failed.add(name)
         if publish:

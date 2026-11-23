@@ -12,7 +12,7 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
+from aiogram.types import BufferedInputFile, CallbackQuery, Message, ReplyKeyboardRemove
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
@@ -31,7 +31,8 @@ from backend.core.github import bind_github
 from backend.core.media import MAX_MEDIA_BYTES, MEDIA_TYPES, make_media
 from backend.core.orchestrator import history_visible, orchestrator
 from backend.core.voice import VoiceTranscriber
-from backend.database.models import AgentConfig, AgentMessage, MagicLoginRequest, Project, SpecItem, User, utc_now
+from backend.database.db import async_session_factory
+from backend.database.models import AgentConfig, AgentMessage, MagicLoginRequest, Project, ProjectMedia, SpecItem, User, utc_now
 from backend.settings import ROOT
 
 from .formatting import telegram_html
@@ -861,6 +862,11 @@ async def agent_chat_question(message: Message, bot: Bot, state: FSMContext,
             if "agent_id" in data:
                 response = await orchestrator.question(project.id, data["agent_id"], question, media=media)
                 await answer_formatted(message, response["message"] or response["status"])
+                if response.get("media_id") is not None:
+                    async with async_session_factory() as media_session:
+                        generated = await media_session.get(ProjectMedia, response["media_id"])
+                    if generated:
+                        await message.answer_photo(BufferedInputFile(generated.data, Path(generated.filename).name))
             else:
                 await orchestrator.chat(project.id, question, targets, media=media)
         except (OSError, ValueError) as exc:
