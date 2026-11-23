@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import time_ns
@@ -69,18 +70,28 @@ class GitBridge:
         except FileNotFoundError:
             pass
 
-    async def commit(self, message="wip: handoff"):
+    async def commit(self, message="wip: handoff", *, allow_empty=False, author="Loomis"):
         await self.clear_stale_index_lock()
         await self.git("add", "-A")
-        if await self.git("status", "--porcelain") or not await self.git("rev-parse", "--verify", "HEAD", allowed=(0, 128)):
+        if allow_empty or await self.git("status", "--porcelain") or not await self.head():
             await self.clear_stale_index_lock()
             await self.git("-c", "user.name=Loomis", "-c", "user.email=loomis@localhost",
-                           "commit", "--allow-empty", "-m", message)
+                           "commit", "--allow-empty", "--author", f"{author} <loomis@localhost>", "-m", message)
+
+    async def head(self):
+        return await self.git("rev-parse", "--verify", "HEAD", allowed=(0, 128))
+
+    async def snapshot(self):
+        await self.clear_stale_index_lock()
+        await self.git("add", "-A")
+        tree = await self.git("write-tree")
+        return await self.git("-c", "user.name=Loomis", "-c", "user.email=loomis@localhost",
+                              "commit-tree", tree, "-m", "Loomis workspace checkpoint")
 
     async def checkpoint(self):
-        await self.commit()
+        source = await self.snapshot()
         tag = f"{self.tags}{time_ns()}-{uuid4().hex}"
-        await self.git("tag", tag)
+        await self.git("tag", tag, source)
         return tag
 
     async def restore(self, source):
@@ -96,22 +107,52 @@ class GitBridge:
             raise ValueError("Нет точки отката.")
         tag = tags[0]
         await self.restore(tag)
-        await self.commit("wip: rollback")
         await self.git("tag", "-d", tag)
+
+    async def commits(self):
+        if not (self.workspace / ".git").exists() or not await self.head():
+            return []
+        output = await self.git("log", "-z", "--format=%H%x00%h%x00%B%x00%an%x00%cI", "HEAD", "--")
+        fields = output.rstrip("\0").split("\0")
+        return [
+            {"hash": full, "short_hash": short, "message": message.rstrip(), "author": author,
+             "created_at": datetime.fromisoformat(date)}
+            for full, short, message, author, date in zip(*(iter(fields),) * 5)
+        ]
+
+    async def reset(self, commit_hash):
+        await self.clear_stale_index_lock()
+        await self.git("reset", "--hard", commit_hash)
 
     async def diff(self, checkpoint):
         return await self.git("diff", "--no-ext-diff", checkpoint, "--", ".")
 
-    async def synchronize(self):
-        remote = await self.git("ls-remote", "--heads", "origin", f"refs/heads/{self.branch}")
-        if remote:
-            await self.pull()
+    async def open_transport(self):
+        ref = f"refs/heads/{self.branch}-work-{uuid4().hex}"
+        source = await self.snapshot()
+        await self.git("push", "origin", f"{source}:{ref}")
+        return ref
+
+    async def fetch_transport(self, ref):
+        pattern = rf"refs/heads/{re.escape(self.branch)}-work-[a-f0-9]{{32}}"
+        if not re.fullmatch(pattern, ref):
+            raise ValueError("Недопустимая ссылка рабочего снимка.")
+        await self.git("fetch", "--no-tags", "origin", ref)
+
+    async def close_transport(self, ref):
+        await self.fetch_transport(ref)
+        await self.restore("FETCH_HEAD")
+        await self.git("push", "origin", "--delete", ref)
 
     async def pull(self):
         await self.git("pull", "--ff-only", "origin", self.branch)
 
     async def push(self):
         await self.git("push", "origin", f"HEAD:refs/heads/{self.branch}")
+
+    async def push_main(self, url):
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        await self.git("push", "--", url, "HEAD:refs/heads/main", env=env)
 
     async def push_github_main(self, url: str, token: str):
         if not is_github_repo(url):

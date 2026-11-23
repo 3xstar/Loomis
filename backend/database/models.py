@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, LargeBinary, String, Text, true
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, LargeBinary, String, Text, false, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.settings import ROOT
@@ -112,6 +112,10 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
+    commit_mode: Mapped[str] = mapped_column(String(20), default="sequential", server_default="sequential")
+    auto_push_mode: Mapped[str] = mapped_column(String(20), default="after_each", server_default="after_each")
+    history_state: Mapped[dict | None] = mapped_column(JSON)
+
     test_command: Mapped[str | None] = mapped_column(Text)
     meeting_interval_minutes: Mapped[int] = mapped_column(Integer, default=15, server_default="15")
     deadline_minutes: Mapped[int] = mapped_column(Integer, default=10, server_default="10")
@@ -172,11 +176,17 @@ class AgentConfig(Base):
     cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     traffic_state: Mapped[str] = mapped_column(String(10), default="waiting", server_default="waiting")
     last_error: Mapped[str | None] = mapped_column(Text)
+    saved_context_json: Mapped[dict | None] = mapped_column(JSON)
     tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    @property
+    def can_retry(self) -> bool:
+        return self.traffic_state == "error" and self.saved_context_json is not None
 
 
 class AgentMessage(Base):
     __tablename__ = "agent_messages"
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
@@ -186,18 +196,31 @@ class AgentMessage(Base):
     target_name: Mapped[str] = mapped_column(Text)
     channel: Mapped[str] = mapped_column(String(10))
     content: Mapped[str] = mapped_column(Text)
+    is_ui_cleared: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    step_title: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class TaskLog(Base):
     __tablename__ = "task_logs"
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     agent_id: Mapped[int | None] = mapped_column(ForeignKey("agent_configs.id", ondelete="CASCADE"), index=True)
     sender_name: Mapped[str | None] = mapped_column(String(100))
+    is_ui_cleared: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     operation: Mapped[str] = mapped_column(String(30))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     duration_seconds: Mapped[float] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String(20))
     tokens: Mapped[int] = mapped_column(Integer, default=0)
+
+
+
+class CommitState(Base):
+    __tablename__ = "commit_states"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    commit_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    state: Mapped[dict] = mapped_column(JSON)

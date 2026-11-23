@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, computed_field, field_serializer
-from sqlalchemy import case, delete, func, or_, select
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile
@@ -22,7 +22,7 @@ from backend.core.doc_parser import parse_document
 from backend.core.github import create_github_repo
 from backend.core.media import MAX_MEDIA_BYTES, make_media, media_spec_content
 from backend.core.model_performance import model_key
-from backend.core.orchestrator import count_tokens, orchestrator, probe_agent
+from backend.core.orchestrator import count_tokens, history_visible, message_event, orchestrator, probe_agent
 from backend.database.models import DEFAULT_PROJECTS_DIR, AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia, SpecItem, TaskLog, User, UserModelPreset, utc_now
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
@@ -38,6 +38,8 @@ AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2
 ProviderName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 AutonomyMode = Literal["autonomous", "consultative", "step_by_step"]
 FailoverMode = Literal["auto", "manual"]
+CommitMode = Literal["sequential", "single_preset"]
+AutoPushMode = Literal["after_each", "manual_finish"]
 VerbosityLevel = Literal["concise", "balanced", "detailed"]
 
 
@@ -53,6 +55,8 @@ class ProjectCreate(BaseModel):
     autonomy_mode: AutonomyMode = "autonomous"
     failover_mode: FailoverMode = "auto"
     verbosity_level: VerbosityLevel = "concise"
+    commit_mode: CommitMode = "sequential"
+    auto_push_mode: AutoPushMode = "after_each"
 
 
 class ProjectCreateRequest(ProjectCreate):
@@ -72,6 +76,8 @@ class ProjectPatch(BaseModel):
     autonomy_mode: AutonomyMode | None = None
     failover_mode: FailoverMode | None = None
     verbosity_level: VerbosityLevel | None = None
+    commit_mode: CommitMode | None = None
+    auto_push_mode: AutoPushMode | None = None
 
 
 class ProjectView(ProjectCreate):
@@ -122,6 +128,7 @@ class AgentView(BaseModel):
     total_tokens_used: int
     traffic_state: str
     last_error: str | None
+    can_retry: bool
 
     @field_serializer("settings")
     def public_settings(self, settings: dict) -> dict:
@@ -337,7 +344,10 @@ async def edit_project(data: ProjectPatch, project: Project, session: AsyncSessi
     visibility = updates.pop("github_visibility", None)
     if visibility and updates.get("git_repo_url"):
         raise HTTPException(422, "Выберите адрес существующего репозитория или автоматическое создание.")
-    required = {"name", "deadline_minutes", "meeting_interval_minutes", "autonomy_mode", "failover_mode", "verbosity_level"}
+    required = {
+        "name", "deadline_minutes", "meeting_interval_minutes", "autonomy_mode", "failover_mode",
+        "verbosity_level", "commit_mode", "auto_push_mode",
+    }
     if any(field in required and value is None for field, value in updates.items()):
         raise HTTPException(422, "Обязательные настройки проекта не могут быть пустыми.")
     configure_workspace = bool(visibility or updates.keys() & {"workspace_path", "git_repo_url"})
@@ -619,6 +629,71 @@ async def delete_agent(project: OwnedProject, agent: OwnedAgent, session: Sessio
 
 
 
+class ClearView(BaseModel):
+    channel: Literal["team_chat", "direct", "terminal"]
+    agent_id: int | None = None
+
+
+@router.get("/{project_id}/history")
+async def project_history(project: OwnedProject, session: Session):
+    messages = (await session.execute(
+        select(AgentMessage, AgentConfig.name).outerjoin(AgentConfig, AgentMessage.agent_id == AgentConfig.id)
+        .where(AgentMessage.project_id == project.id, AgentMessage.is_ui_cleared.is_(False),
+               history_visible(project, AgentMessage)).order_by(AgentMessage.id)
+    )).all()
+    logs = list(await session.scalars(select(TaskLog).where(
+        TaskLog.project_id == project.id, TaskLog.is_ui_cleared.is_(False), history_visible(project, TaskLog)
+    ).order_by(TaskLog.id)))
+    return {"messages": [message_event(row, name) for row, name in messages], "task_logs": logs}
+
+
+@router.post("/{project_id}/clear-view", status_code=204)
+async def clear_view(project: OwnedProject, data: ClearView, session: Session):
+    if data.agent_id is not None:
+        await owned_agent(data.agent_id, project, session)
+    for model in ((AgentMessage, TaskLog) if data.channel == "terminal" else (AgentMessage,)):
+        filters = [model.project_id == project.id, model.is_ui_cleared.is_(False)]
+        if model is AgentMessage:
+            filters.append(model.channel == data.channel)
+        if data.agent_id is not None:
+            filters.append(model.agent_id == data.agent_id)
+        await session.execute(update(model).where(*filters).values(is_ui_cleared=True))
+    await session.commit()
+    await manager.broadcast(project.id, {"type": "history_changed", "project_id": project.id})
+
+
+@router.get("/{project_id}/commits")
+async def project_commits(project: OwnedProject):
+    try:
+        return await orchestrator.commits(project.id)
+    except (ValueError, OSError, RuntimeError, TimeoutError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/{project_id}/commits/{commit_hash}/rollback")
+async def rollback_commit(project: OwnedProject, commit_hash: str):
+    try:
+        return await orchestrator.rollback_commit(project.id, commit_hash)
+    except (ValueError, OSError, RuntimeError, TimeoutError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/{project_id}/push", status_code=204)
+async def push_project(project: OwnedProject):
+    try:
+        await orchestrator.push_project(project.id)
+    except (ValueError, OSError, RuntimeError, TimeoutError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/{project_id}/agents/{agent_id}/retry", status_code=202)
+async def retry_agent(project: OwnedProject, agent: OwnedAgent):
+    try:
+        return {"status": await orchestrator.retry(project.id, agent.id)}
+    except (ValueError, OSError, RuntimeError, TimeoutError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 class ProjectAction(BaseModel):
     action: Literal["build_spec", "council", "regenerate_plan", "approve", "pause", "resume", "rollback"]
 
@@ -857,7 +932,8 @@ async def project_stats(project: OwnedProject, session: Session):
             TaskLog.operation == "completed_step",
             (TaskLog.operation == "execute") & (TaskLog.status == "success"),
         ), 1), else_=0)).label("completed"),
-    ).where(TaskLog.project_id == project.id).group_by(TaskLog.agent_id).subquery())
+    ).where(TaskLog.project_id == project.id, history_visible(project, TaskLog))
+        .group_by(TaskLog.agent_id).subquery())
     logged_tokens = func.coalesce(logs.c.tokens, 0)
     rows = (await session.execute(select(
         AgentConfig.id, AgentConfig.name,

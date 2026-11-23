@@ -17,11 +17,14 @@ from worker.adapters.base import AgentResult
 from worker.git_bridge import GitBridge
 
 
-async def save_worker_changes(bridge):
+async def save_worker_changes(bridge, transport_ref=None):
     async def publish():
         if await bridge.git("status", "--porcelain"):
             await bridge.commit()
-            await bridge.push()
+            if transport_ref:
+                await bridge.git("push", "origin", f"HEAD:{transport_ref}")
+            else:
+                await bridge.push()
 
     pending = asyncio.create_task(publish())
     try:
@@ -70,14 +73,29 @@ async def serve(url, name, config):
                         project_id = request["project_id"]
                         workspace = Path(config["workspaces"][str(project_id)]).resolve(strict=True)
                         bridge = GitBridge(workspace, project_id)
-                        await bridge.prepare()
+                        await bridge.initialize()
                         if await bridge.git("status", "--porcelain"):
                             raise RuntimeError("Worker checkout must be clean")
-                        await bridge.pull()
+                        transport_ref = request.get("transport_ref")
+                        if transport_ref:
+                            head = await bridge.head()
+                            branch = await bridge.git("symbolic-ref", "--short", "-q", "HEAD", allowed=(0, 1))
+                            await bridge.fetch_transport(transport_ref)
+                            await bridge.git("switch", "--detach", "FETCH_HEAD")
+                        else:
+                            await bridge.prepare()
+                            await bridge.pull()
                         try:
                             result = await agent.execute_task(request["prompt"], workspace, request["timeout"])
                         finally:
-                            await save_worker_changes(bridge)
+                            try:
+                                await save_worker_changes(bridge, transport_ref)
+                            finally:
+                                if transport_ref and head:
+                                    if branch:
+                                        await bridge.git("switch", branch)
+                                    else:
+                                        await bridge.git("switch", "--detach", head)
                     elif operation == "meeting":
                         result = await agent.participate_in_meeting(request["context"])
                     elif operation in {"question", "test"}:

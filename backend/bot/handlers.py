@@ -29,7 +29,7 @@ from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
 from backend.core.github import bind_github
 from backend.core.media import MAX_MEDIA_BYTES, MEDIA_TYPES, make_media
-from backend.core.orchestrator import orchestrator
+from backend.core.orchestrator import history_visible, orchestrator
 from backend.core.voice import VoiceTranscriber
 from backend.database.models import AgentConfig, AgentMessage, MagicLoginRequest, Project, SpecItem, User, utc_now
 from backend.settings import ROOT
@@ -890,7 +890,9 @@ async def answer_formatted(message, content):
 
 
 async def show_chat_history(message, project, session, channel, agent_id=None):
-    query = select(AgentMessage).where(AgentMessage.project_id == project.id, AgentMessage.channel == channel)
+    query = select(AgentMessage).where(
+        AgentMessage.project_id == project.id, AgentMessage.channel == channel, history_visible(project, AgentMessage),
+    )
     if agent_id is not None:
         agent = await session.get(AgentConfig, agent_id)
         query = query.where((AgentMessage.agent_id == agent_id) | (

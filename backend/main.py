@@ -15,7 +15,7 @@ from backend.api import auth, projects, ws
 from backend.bot.handlers import router as bot_router
 from backend.core.orchestrator import orchestrator
 from backend.database.db import Base, engine
-from backend.database.models import AgentConfig, Project, TaskLog, UserModelPreset
+from backend.database.models import AgentConfig, AgentMessage, Project, TaskLog, UserModelPreset
 from backend.settings import ROOT, settings
 
 
@@ -38,12 +38,17 @@ def initialize_schema(connection) -> None:
                   "telegram_avatar_url": "VARCHAR",
                   "default_projects_dir": "VARCHAR(1024)"},
         "agent_messages": {
+            "is_ui_cleared": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "step_title": "TEXT",
             "agent_id": "INTEGER REFERENCES agent_configs(id) ON DELETE CASCADE",
             "media_id": "INTEGER REFERENCES project_media(id) ON DELETE SET NULL",
         },
-        "task_logs": {"sender_name": "VARCHAR(100)"},
+        "task_logs": {"sender_name": "VARCHAR(100)", "is_ui_cleared": "BOOLEAN NOT NULL DEFAULT FALSE"},
         "user_model_presets": {"total_tokens_used": "BIGINT NOT NULL DEFAULT 0"},
         "projects": {
+            "commit_mode": "VARCHAR(20) NOT NULL DEFAULT 'sequential'",
+            "auto_push_mode": "VARCHAR(20) NOT NULL DEFAULT 'after_each'",
+            "history_state": "JSON",
             "git_repo_url": "VARCHAR(500)",
             "status": "VARCHAR(50) NOT NULL DEFAULT 'draft'",
             "test_command": "TEXT",
@@ -57,6 +62,7 @@ def initialize_schema(connection) -> None:
             "verbosity_level": "VARCHAR(10) NOT NULL DEFAULT 'concise'",
         },
         "agent_configs": {
+            "saved_context_json": "JSON",
             "project_id": "INTEGER REFERENCES projects(id) ON DELETE CASCADE",
             "cooldown_until": "TIMESTAMP",
             "traffic_state": "VARCHAR(10) NOT NULL DEFAULT 'waiting'",
@@ -129,26 +135,32 @@ def initialize_schema(connection) -> None:
     """)
     foreign_key = next(key for key in inspector.get_foreign_keys("task_logs")
                        if key["constrained_columns"] == ["agent_id"])
-    if foreign_key["options"].get("ondelete") != "CASCADE":
-        if connection.dialect.name == "sqlite":
-            table = TaskLog.__table__
-            ddl = str(CreateTable(table).compile(connection)).replace("CREATE TABLE task_logs (",
-                                                                      "CREATE TABLE task_logs_new (", 1)
+    legacy_task_fk = foreign_key["options"].get("ondelete") != "CASCADE"
+    if connection.dialect.name == "sqlite":
+        for name, model in (("agent_messages", AgentMessage), ("task_logs", TaskLog)):
+            definition = connection.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+            ).scalar_one()
+            if "AUTOINCREMENT" in definition.upper() and not (name == "task_logs" and legacy_task_fk):
+                continue
+            table = model.__table__
+            ddl = str(CreateTable(table).compile(connection)).replace(f"CREATE TABLE {name} (",
+                                                                      f"CREATE TABLE {name}_new (", 1)
             columns = ", ".join(table.columns.keys())
             connection.exec_driver_sql(ddl)
             connection.exec_driver_sql(
-                f"INSERT INTO task_logs_new ({columns}) SELECT {columns} FROM task_logs"
+                f"INSERT INTO {name}_new ({columns}) SELECT {columns} FROM {name}"
             )
-            connection.exec_driver_sql("DROP TABLE task_logs")
-            connection.exec_driver_sql("ALTER TABLE task_logs_new RENAME TO task_logs")
+            connection.exec_driver_sql(f"DROP TABLE {name}")
+            connection.exec_driver_sql(f"ALTER TABLE {name}_new RENAME TO {name}")
             for index in table.indexes:
                 index.create(connection)
-        else:
-            name = connection.dialect.identifier_preparer.quote(foreign_key["name"])
-            connection.exec_driver_sql(f"ALTER TABLE task_logs DROP CONSTRAINT {name}")
-            connection.exec_driver_sql(
-                "ALTER TABLE task_logs ADD FOREIGN KEY (agent_id) REFERENCES agent_configs(id) ON DELETE CASCADE"
-            )
+    elif legacy_task_fk:
+        name = connection.dialect.identifier_preparer.quote(foreign_key["name"])
+        connection.exec_driver_sql(f"ALTER TABLE task_logs DROP CONSTRAINT {name}")
+        connection.exec_driver_sql(
+            "ALTER TABLE task_logs ADD FOREIGN KEY (agent_id) REFERENCES agent_configs(id) ON DELETE CASCADE"
+        )
 
 
 @asynccontextmanager

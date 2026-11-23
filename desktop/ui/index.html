@@ -98,6 +98,7 @@
         <div class="topbar-actions">
           <button id="dashboard-button" class="button secondary hidden" type="button" title="Стартовый дашборд" aria-label="Стартовый дашборд"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3Z"/></svg></button>
           <button id="project-settings-button" class="button secondary hidden" type="button" disabled>Настройки проекта</button>
+          <button id="git-button" class="button secondary hidden" type="button">Git</button>
           <button id="stats-button" class="button secondary hidden" type="button" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg> Статистика</button>
           <button class="button secondary hidden" type="button" data-action="regenerate_plan" disabled>Пересобрать план</button>
           <button id="theme-switch-top" class="theme-switch" type="button" aria-label="Светлая тема"></button>
@@ -196,6 +197,7 @@
             <button class="tab" data-view="direct" type="button" aria-pressed="false">Личный чат</button>
             <button class="tab" data-view="terminal" type="button" aria-pressed="false">Терминал</button>
           </div>
+            <button id="clear-chat" class="text-action" type="button">Очистить чат</button>
             <button id="popout-button" class="icon-button" type="button" title="Открыть в отдельном окне" aria-label="Открыть в отдельном окне" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 5h6v6m0-6-8 8m1-7H6a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6"/></svg></button>
             <button id="return-workspace" class="button secondary hidden" type="button">Вернуть в главное окно</button>
           </div>
@@ -422,6 +424,20 @@
             <option value="detailed">Подробно</option>
           </select>
         </div>
+        <div class="field">
+          <label for="commit-mode">Коммиты</label>
+          <select id="commit-mode" disabled>
+            <option value="sequential">После каждого шага</option>
+            <option value="single_preset">Один в конце проекта</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="auto-push-mode">Отправка в репозиторий</label>
+          <select id="auto-push-mode" disabled>
+            <option value="after_each">После каждого коммита</option>
+            <option value="manual_finish">Вручную по завершении</option>
+          </select>
+        </div>
         <form id="deadline-form" class="stack">
           <div class="field deadline-row">
             <div class="setting-heading">
@@ -507,6 +523,11 @@
     <div id="stats-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="stats-modal-title">
       <div class="modal-head"><h3 id="stats-modal-title">Статистика проекта</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <div id="stats-body" aria-live="polite"></div>
+    </div>
+    <div id="git-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="git-title">
+      <div class="modal-head"><h3 id="git-title">История коммитов</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть">×</button></div>
+      <div id="git-commits" class="stack"></div>
+      <button id="git-push" class="button secondary" type="button">Отправить коммиты</button>
     </div>
     <div id="rollback-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="rollback-title">
       <div class="modal-head">

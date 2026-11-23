@@ -9,18 +9,19 @@ from pathlib import Path
 from time import monotonic
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, true, update
+from sqlalchemy.exc import SQLAlchemyError
 from aiogram.exceptions import TelegramRetryAfter
 
 from backend.api.ws import manager, workers
 from backend.bot.formatting import telegram_html
 from backend.database.db import async_session_factory
-from backend.database.models import AgentConfig, AgentMessage, Project, ProjectMedia, TaskLog, User, UserModelPreset
+from backend.database.models import AgentConfig, AgentMessage, CommitState, Project, ProjectMedia, TaskLog, User, UserModelPreset
 from worker.adapters import CLI_PROVIDERS, build_agent
 from worker.adapters.api_adapter import ApiAgent, api_system_prompt
 from worker.adapters.base import AgentResult, BaseAgent
 from worker.adapters.media import refuses_media
-from worker.git_bridge import GitBridge
+from worker.git_bridge import GitBridge, is_github_repo
 from worker.quality_gate import check_quality
 from worker.sandbox import workspace_file
 
@@ -29,6 +30,35 @@ from .github import github_token
 from .model_performance import cache_response, cached_response, model_key, prompt_digest, rank_configs, record_model_result
 
 logger = logging.getLogger(__name__)
+
+def message_event(row, agent_name):
+    return {
+        "type": row.channel, "channel": row.channel, "project_id": row.project_id, "id": row.id,
+        "sender_name": row.sender_name, "target_name": row.target_name,
+        "content": row.content, "message": row.content, "created_at": row.created_at.isoformat(),
+        "agent_id": row.agent_id, "agent_name": agent_name, "media_id": row.media_id,
+        "step_title": row.step_title,
+    }
+
+
+def history_visible(project, model):
+    ranges = (project.history_state or {}).get(model.__tablename__, [])
+    if not ranges:
+        return true()
+    return ~or_(*(model.id.between(start, end) for start, end in ranges))
+
+
+def merge_ranges(ranges, start, end):
+    merged = []
+    if start <= end:
+        ranges = [*ranges, [start, end]]
+    for left, right in sorted(ranges):
+        if merged and left <= merged[-1][1] + 1:
+            merged[-1][1] = max(right, merged[-1][1])
+        else:
+            merged.append([left, right])
+    return merged
+
 
 STEP_TITLES = {
     "question": "Ответ на вопрос пользователя",
@@ -55,6 +85,7 @@ class Runtime:
     pending_question: int | None = None
     answer: str = ""
     pending_failover: str | None = None
+    retry_agent: int | None = None
     restored: bool = False
 
     def restore(self, project):
@@ -67,13 +98,14 @@ class Runtime:
             self.pending_question = state["pending_question"]
             self.pending_failover = state["pending_failover"]
             self.answer = state["answer"]
+            self.retry_agent = state.get("retry_agent")
         self.restored = True
 
     def snapshot(self):
         return {
             "last_agent": self.last_agent, "handoff": self.handoff,
             "successful_agents": self.successful_agents, "pending_question": self.pending_question,
-            "pending_failover": self.pending_failover, "answer": self.answer,
+            "pending_failover": self.pending_failover, "answer": self.answer, "retry_agent": self.retry_agent,
         }
 
 
@@ -160,12 +192,19 @@ class ProjectAgent(BaseAgent):
         self.project = project
         self.config = config
 
-    async def run(self, operation, prompt, context="", workspace=None, timeout=None, images=(), *, step_title=None):
+    async def run(self, operation, prompt, context="", workspace=None, timeout=None, images=(), *, step_title=None, transport_ref=None):
         project, config = self.project, self.config
         instruction = VERBOSITY[project.verbosity_level or "concise"]
         if operation == "plan":
             instruction += " Для PLAN.md верни полный документ со всеми задачами."
-        manage_traffic = operation in {"question", "meeting"}
+        history = await self.engine.prompt_history(project, config)
+        if history:
+            history = f"\n\nИстория обсуждений:\n{history}"
+            if operation == "execute":
+                prompt += history
+            else:
+                context += history
+        manage_traffic = operation in {"question", "meeting"} and config.saved_context_json is None
         timeout = timeout if timeout is not None else project.deadline_minutes * 60
         started = datetime.now(timezone.utc)
         clock = monotonic()
@@ -215,7 +254,7 @@ class ProjectAgent(BaseAgent):
                         result = await workers.dispatch(node, worker_agent,
                                                         project.id, worker_operation, prompt, context, timeout,
                                                         instruction=instruction, images=images,
-                                                        on_interrupted=record_interruption)
+                                                        on_interrupted=record_interruption, transport_ref=transport_ref)
                     elif operation == "execute":
                         result = await agent.execute_task(prompt, workspace, timeout)
                     elif operation == "meeting":
@@ -228,6 +267,8 @@ class ProjectAgent(BaseAgent):
             cancelled = True
             if agent is not None:
                 result.tokens = getattr(agent, "tokens_used", 0)
+            if result.status == "error":
+                result.status = "timeout"
             raise
         except Exception as exc:
             result = AgentResult("error", str(exc) or type(exc).__name__)
@@ -253,10 +294,10 @@ class ProjectAgent(BaseAgent):
                             minutes=max(1, int(config.settings.get("cooldown_minutes", 5)))
                         )
                 await session.commit()
-        await self.engine.message(
-            project.id, config.name, "@All", "terminal", result.terminal or result.message, config,
-            step_title=step_title or STEP_TITLES[operation],
-        )
+            await self.engine.message(
+                project.id, config.name, "@All", "terminal", result.terminal or result.message, config,
+                step_title=step_title or STEP_TITLES[operation],
+            )
         if manage_traffic:
             await self.engine.traffic(
                 config, "waiting" if result.status in {"success", "unsupported_media"} else "error",
@@ -324,7 +365,7 @@ class Orchestrator:
         agent_id = config.id if config else None
         deliveries = ((channel, target), (mirror, "@User")) if mirror else ((channel, target),)
         rows = [AgentMessage(project_id=project_id, sender_name=sender, target_name=recipient,
-                             channel=destination, content=content, agent_id=agent_id)
+                             channel=destination, content=content, agent_id=agent_id, step_title=step_title)
                 for destination, recipient in deliveries]
         async with async_session_factory() as session:
             if media is not None:
@@ -334,14 +375,7 @@ class Orchestrator:
             session.add_all(rows)
             await session.commit()
         for row in rows:
-            await manager.broadcast(project_id, {
-                "type": row.channel, "channel": row.channel, "project_id": project_id, "id": row.id,
-                "sender_name": sender, "target_name": row.target_name, "content": content, "message": content,
-                "created_at": row.created_at.isoformat(), "agent_id": agent_id,
-                "agent_name": config.name if config else None,
-                "media_id": row.media_id,
-                "step_title": step_title,
-            })
+            await manager.broadcast(project_id, message_event(row, config.name if config else None))
         if self.bot and any(row.channel == "team_chat" for row in rows) and self.telegram_projects:
             async with async_session_factory() as session:
                 owner = await session.scalar(select(User).join(
@@ -349,6 +383,16 @@ class Orchestrator:
                 ).where(Project.id == project_id))
             if owner and owner.telegram_id and self.telegram_projects.get(owner.id) == project_id:
                 self.background_reply(self.send_team_chat(project_id, owner.id, owner.telegram_id, sender, target, content))
+
+    async def prompt_history(self, project, config):
+        async with async_session_factory() as session:
+            rows = list(await session.scalars(select(AgentMessage).where(
+                AgentMessage.project_id == project.id, history_visible(project, AgentMessage),
+                or_(AgentMessage.channel == "team_chat",
+                    (AgentMessage.channel == "direct") & (AgentMessage.agent_id == config.id)),
+            ).order_by(AgentMessage.id.desc()).limit(40)))
+        return "\n".join(f"{row.sender_name} → {row.target_name}: {row.content[-4000:]}"
+                         for row in reversed(rows))[-16000:]
 
     async def send_team_chat(self, project_id, owner_id, chat_id, sender, target, content):
         heading = escape(f"{sender} → {target}"[:200])
@@ -366,17 +410,18 @@ class Orchestrator:
         await manager.broadcast(config.project_id, {
             "type": "traffic_state", "project_id": config.project_id,
             "agent_id": config.id, "agent_name": config.name,
-            "traffic_state": config.traffic_state, "last_error": config.last_error,
+            "traffic_state": config.traffic_state, "last_error": config.last_error, "can_retry": config.can_retry,
         })
 
-    async def traffic(self, config, state, error=None):
+    async def traffic(self, config, state, error=None, *, saved_context=None, clear_context=False):
         async with async_session_factory() as session:
             row = await session.get(AgentConfig, config.id)
-            if row is None or (row.traffic_state == state and (error is None or row.last_error == error)):
+            if row is None:
                 return
             row.traffic_state = state
-            if error is not None:
-                row.last_error = error
+            row.last_error = error
+            if saved_context is not None or clear_context:
+                row.saved_context_json = saved_context
             await session.commit()
         await self.publish_traffic(row)
 
@@ -400,6 +445,7 @@ class Orchestrator:
             await self.traffic(config, "waiting")
         runtime.pending_question = None
         runtime.pending_failover = None
+        runtime.retry_agent = None
         runtime.answer = ""
         runtime.last_agent = 0
         runtime.successful_agents.clear()
@@ -432,6 +478,10 @@ class Orchestrator:
         event = {"type": event_type, "project_id": project_id, "message": message}
         if config is not None:
             event.update(agent_id=config.id, agent_name=config.name)
+        if event_type == "meeting":
+            await self.message(project_id, "Loomis", "@All", "team_chat", message,
+                               step_title=STEP_TITLES["meeting"])
+            in_team_chat = True
         if event_type != "step_log":
             await manager.broadcast(project_id, event)
         if self.bot:
@@ -470,12 +520,54 @@ class Orchestrator:
             return False
         finally:
             self.approvals.pop(key, None)
+            await manager.broadcast(project_id, {"type": "approval_closed", "project_id": project_id, "id": key})
 
     def decide(self, project_id, key, approved):
         item = self.approvals.get(key)
         if item is None or item[0] != project_id or item[1].done():
             raise ValueError("Запрос подтверждения уже закрыт.")
         item[1].set_result(approved)
+
+    async def cancel_gate(self, runtime):
+        if runtime.gate and not runtime.gate.done():
+            runtime.gate.cancel()
+            await asyncio.gather(runtime.gate, return_exceptions=True)
+        runtime.gate = None
+
+    async def retry(self, project_id, agent_id):
+        runtime = self.runtime(project_id)
+        async with runtime.boundary:
+            project, configs = await self.load(project_id)
+            runtime.restore(project)
+            config = next((item for item in configs if item.id == agent_id), None)
+            saved = config.saved_context_json if config else None
+            if not saved or config.traffic_state != "error" or project.status not in {"paused", "running"}:
+                raise ValueError("У агента нет прерванного шага для повтора.")
+            digest = self.require_plan(project, configs, approved=True)
+            if saved["plan_digest"] != digest:
+                raise ValueError("Прерванный шаг относится к другой версии плана.")
+            if runtime.retry_agent is not None or runtime.pending_question is not None:
+                raise ValueError("Сначала завершите текущий повтор или ответьте на вопрос агента.")
+            if any(item.tested_at is None for item in configs):
+                raise ValueError("Проверьте всех активных агентов.")
+            await self.cancel_gate(runtime)
+            runtime.pending_failover = None
+            runtime.handoff = (agent_id, saved["handoff"])
+            runtime.answer = saved["answer"]
+            runtime.retry_agent = agent_id
+            async with async_session_factory() as session:
+                row = await session.get(AgentConfig, agent_id)
+                row.cooldown_until = None
+                row.traffic_state = "waiting"
+                row.last_error = None
+                project_row = await session.get(Project, project_id)
+                project_row.status = "running"
+                project_row.turn_state = runtime.snapshot()
+                await session.commit()
+            self.wake(project_id, runtime)
+            await self.publish_traffic(row)
+            await manager.publish_status(project_id, "running")
+            return "running"
 
     async def action(self, project_id, action, *, feedback=None, target_agent_ids=None):
         runtime = self.runtime(project_id)
@@ -536,8 +628,8 @@ class Orchestrator:
                 bridge = GitBridge(self.workspace(project), project_id)
                 await bridge.prepare()
                 await bridge.rollback_last_step()
-                if any(item.settings.get('worker') for item in configs):
-                    await bridge.push()
+                if project.commit_mode == "sequential":
+                    await bridge.commit("wip: rollback")
                 runtime.meeting_base = None
                 runtime.handoff = None
                 runtime.answer = ""
@@ -561,10 +653,13 @@ class Orchestrator:
 
     async def start_running(self, project_id, runtime, digest):
         await self.status(project_id, "running", approved_plan_digest=digest, turn_state=runtime.snapshot())
+        self.wake(project_id, runtime)
+        return "running"
+
+    def wake(self, project_id, runtime):
         runtime.ready.set()
         if runtime.task is None or runtime.task.done():
             runtime.task = asyncio.create_task(self.loop(project_id, runtime))
-        return "running"
 
     async def pause_for_approval(self, project, runtime, prompt, kind, config=None, *, digest=None):
         runtime.ready.clear()
@@ -647,7 +742,8 @@ class Orchestrator:
                 raise ValueError("Чат недоступен в текущем статусе.")
             selected = self.select_agents(configs, target_agent_ids)
             target = " ".join(f"@{item.name}" for item in selected) if target_agent_ids is not None else "@All"
-            await self.message(project_id, "User", target, "team_chat", question, media=media)
+            addressed = selected[0] if target_agent_ids is not None and len(selected) == 1 else None
+            await self.message(project_id, "User", target, "team_chat", question, addressed, media=media)
             context = self.context(self.workspace(project), ("SPEC.md", "PLAN.md", "Project_context.md"))
             async def respond(config):
                 response = await self.ask(project, config, question, context, media)
@@ -757,8 +853,9 @@ class Orchestrator:
                 await asyncio.sleep(0.1)
         except Exception as exc:
             runtime.ready.clear()
-            await self.status(project_id, "paused")
-            await self.notify(project_id, f"Разработка приостановлена. {exc}", critical=True)
+            await self.status(project_id, "paused", turn_state=runtime.snapshot())
+            await self.message(project_id, "Loomis", "@All", "team_chat", f"Разработка приостановлена. {exc}")
+            await self.notify(project_id, f"Разработка приостановлена. {exc}", critical=True, in_team_chat=True)
 
     async def turn(self, project, configs, runtime):
         now = datetime.now(timezone.utc)
@@ -786,7 +883,7 @@ class Orchestrator:
         interval = project.meeting_interval_minutes * 60
         if runtime.next_meeting is None:
             runtime.next_meeting = monotonic() + interval
-        if monotonic() >= runtime.next_meeting:
+        if runtime.retry_agent is None and monotonic() >= runtime.next_meeting:
             diff = await bridge.diff(runtime.meeting_base) if runtime.meeting_base else ""
             summary = await periodic_meeting(workspace, [
                 (item.name, ProjectAgent(self, project, item)) for item in available
@@ -800,38 +897,41 @@ class Orchestrator:
             available = [item for item in available if item.id in working_ids]
             if config.id not in working_ids:
                 failed = next(item for item in current if item.id == config.id)
-                await self.failover(project, available, runtime, failed,
-                                    "Выполнить свою часть PLAN.md.", runtime.handoff[1] if runtime.handoff else "",
-                                    failed.last_error or "Сбой на собрании.")
+                task = f"Выполни следующий шаг части плана, назначенной агенту {failed.name}."
+                handoff = runtime.handoff[1] if runtime.handoff else ""
+                error = failed.last_error or "Сбой на собрании."
+                await self.traffic(failed, "error", error, saved_context={
+                    "plan_digest": project.approved_plan_digest, "task": task, "handoff": handoff,
+                    "context": self.context(workspace, ("SPEC.md", "PLAN.md", "Project_context.md")),
+                    "answer": runtime.answer, "feedback": "", "diagnostic": error,
+                    "partial_diff": "", "receipt_done": False,
+                })
+                await self.failover(project, available, runtime, failed, task, handoff, error)
                 return
         remote = config.settings.get("worker")
-        if remote:
-            try:
-                await bridge.synchronize()
-            except (TimeoutError, OSError, RuntimeError) as exc:
-                error = str(exc) or "Истёк таймаут синхронизации воркера."
-                await self.traffic(config, "error", error)
-                await self.failover(project, available, runtime, config, "Выполнить свою часть PLAN.md.",
-                                    runtime.handoff[1] if runtime.handoff else "", error,
-                                    diagnostic="Этап: синхронизация рабочего репозитория.")
-                return
-        checkpoint = await bridge.checkpoint()
+        saved = config.saved_context_json if runtime.retry_agent == config.id else None
+        checkpoint = (saved or {}).get("checkpoint") or await bridge.checkpoint()
         runtime.meeting_base = runtime.meeting_base or checkpoint
         clock = asyncio.get_running_loop()
         deadline = clock.time() + project.deadline_minutes * 60
-        feedback = ""
-        context = self.context(workspace, ("SPEC.md", "PLAN.md", "Project_context.md"))
+        feedback = saved["feedback"] if saved else ""
+        context = saved["context"] if saved else self.context(workspace, ("SPEC.md", "PLAN.md", "Project_context.md"))
         handoff = runtime.handoff[1] if runtime.handoff else ""
-        task = f"Выполни следующий шаг части плана, назначенной агенту {config.name}."
+        task = saved["task"] if saved else f"Выполни следующий шаг части плана, назначенной агенту {config.name}."
+        retry_notes = f"\nПродолжи прерванный шаг.\n{saved['diagnostic']}\n{saved['partial_diff']}" if saved else ""
+        receipt_done = saved["receipt_done"] if saved else False
+        pending_result = saved.get("pending_result") if saved else None
         await self.traffic(config, "working")
         agent = ProjectAgent(self, project, config)
         clarification = ""
         images = await self.spec_images(project.id)
-        stage = "подтверждение передачи задачи" if handoff else "исполнение задачи"
+        stage = "подтверждение передачи задачи" if handoff and not receipt_done else "исполнение задачи"
         recent = ""
+        complete = False
+        committed = False
         try:
             async with asyncio.timeout_at(deadline):
-                if handoff:
+                if handoff and not receipt_done:
                     receipt = await agent.run(
                         "handoff", f"Ты {config.name}. Кратко сообщи команде, какую работу начнёшь. {task}",
                         f"{handoff}\n{runtime.answer}", timeout=max(0.01, deadline - clock.time()),
@@ -843,30 +943,35 @@ class Orchestrator:
                     await self.message(project.id, config.name, "@All", "team_chat",
                                        f"Принял передачу.\n{receipt.message}", config,
                                        step_title=STEP_TITLES["handoff"])
+                    receipt_done = True
                 while True:
                     stage = "исполнение задачи"
-                    if remote:
-                        await bridge.push()
                     correction = f"Исправь ошибки проверки перед передачей хода:\n{feedback[:15000]}" if feedback else ""
-                    result = await agent.run_with_spec_images(
-                        "execute", f"{context}\n\nТы {config.name}. {task}\n"
-                        f"{handoff}\n{runtime.answer}\n{correction}\n"
-                        "В итоговом отчёте опиши результат и инструкции следующему исполнителю. "
-                        "Сохраняй утверждённый PLAN.md. "
-                        + ("При неоднозначных требованиях также используй LOOMIS_QUESTION. "
-                           if project.autonomy_mode == "consultative" else "")
-                        + "Если данных не хватает для продолжения, верни только LOOMIS_QUESTION: <вопрос>. "
-                        "Если все задачи плана завершены, верни отдельную строку LOOMIS_COMPLETE.",
-                        workspace=workspace, timeout=max(0.01, deadline - clock.time()), images=images,
-                        step_title="Исправление ошибок проверки" if feedback else None,
-                    )
+                    if pending_result is not None:
+                        result = AgentResult("success", pending_result)
+                    else:
+                        transport_ref = await bridge.open_transport() if remote else None
+                        try:
+                            result = await agent.run_with_spec_images(
+                                "execute", f"{context}\n\nТы {config.name}. {task}\n"
+                                f"{handoff}\n{runtime.answer}\n{correction}{retry_notes}\n"
+                                "В итоговом отчёте опиши результат и инструкции следующему исполнителю. "
+                                "Сохраняй утверждённый PLAN.md. "
+                                + ("При неоднозначных требованиях также используй LOOMIS_QUESTION. "
+                                   if project.autonomy_mode == "consultative" else "")
+                                + "Если данных не хватает для продолжения, верни только LOOMIS_QUESTION: <вопрос>. "
+                                "Если все задачи плана завершены, верни отдельную строку LOOMIS_COMPLETE.",
+                                workspace=workspace, timeout=max(0.01, deadline - clock.time()), images=images,
+                                transport_ref=transport_ref, step_title="Исправление ошибок проверки" if feedback else None,
+                            )
+                        finally:
+                            if transport_ref:
+                                await bridge.close_transport(transport_ref)
                     recent = result.message
                     if result.status == "timeout":
                         raise TimeoutError(result.message)
                     if result.status != "success":
                         raise RuntimeError(result.message or result.status)
-                    if remote:
-                        await bridge.pull()
                     response = result.message.strip()
                     if response.startswith("LOOMIS_QUESTION:"):
                         clarification = response.removeprefix("LOOMIS_QUESTION:").strip()
@@ -874,36 +979,50 @@ class Orchestrator:
                             break
                     self.require_plan(project, configs, approved=True)
                     stage = "проверка результата"
+                    pending_result = result.message
                     feedback = await check_quality(
                         project.test_command, workspace, max(0.01, deadline - clock.time()),
                         lambda command: self.request_approval(project.id, command),
                     )
                     if feedback is None:
                         stage = "сохранение результата"
-                        await bridge.commit()
+                        await bridge.git("add", "-A")
+                        changes = await bridge.git("diff", "--name-only", checkpoint, "--", ".")
+                        complete = "LOOMIS_COMPLETE" in result.message.splitlines()
+                        if project.commit_mode == "sequential" or complete:
+                            label = "Итог проекта" if project.commit_mode == "single_preset" else "Шаг разработки"
+                            await bridge.commit(f"{label}: {config.name}", allow_empty=True, author=config.name)
+                            committed = True
                         break
+                    pending_result = None
                     await self.message(project.id, config.name, "@All", "terminal", feedback, config,
                                        step_title="Результат проверки проекта")
         except (TimeoutError, OSError, ValueError, RuntimeError) as exc:
             error = str(exc) or f"Истёк дедлайн задачи ({project.deadline_minutes} мин.)."
-            await self.traffic(config, "error", error)
             diagnostic, partial_diff = await self.diagnose_failure(
-                bridge, checkpoint, config, stage, feedback or recent, remote,
+                bridge, checkpoint, config, stage, feedback or recent,
             )
+            runtime.retry_agent = None
+            await self.traffic(config, "error", error, saved_context={
+                "plan_digest": project.approved_plan_digest, "task": task, "context": context,
+                "handoff": handoff, "answer": runtime.answer, "feedback": feedback,
+                "diagnostic": diagnostic, "partial_diff": partial_diff,
+                "receipt_done": receipt_done, "pending_result": pending_result, "checkpoint": checkpoint,
+            })
             await self.failover(project, available, runtime, config, task, handoff, error,
                                 diagnostic=diagnostic, partial_diff=partial_diff)
             return
+        runtime.retry_agent = None
         if clarification:
-            await bridge.rollback_last_step()
-            if remote:
-                await bridge.push()
+            await bridge.restore(checkpoint)
+            await bridge.git("tag", "-d", checkpoint)
             if runtime.meeting_base == checkpoint:
                 runtime.meeting_base = None
             runtime.handoff = (config.id, handoff)
             runtime.pending_question = config.id
             runtime.ready.clear()
             await self.status(project.id, "paused", turn_state=runtime.snapshot())
-            await self.traffic(config, "asking")
+            await self.traffic(config, "asking", clear_context=True)
             await self.message(project.id, config.name, "@User", "direct", clarification, config)
             await self.notify(project.id, f"{config.name} спрашивает: {clarification}",
                               event_type="question", config=config, critical=True)
@@ -912,15 +1031,13 @@ class Orchestrator:
             session.add(TaskLog(project_id=project.id, agent_id=config.id, sender_name=config.name,
                                 operation="completed_step", duration_seconds=0, status="success"))
             await session.commit()
-        changes = await bridge.git("diff", "--name-only", checkpoint, "HEAD")
         runtime.answer = ""
         runtime.handoff = None
         runtime.last_agent = config.id
         if config.id in runtime.successful_agents:
             runtime.successful_agents.remove(config.id)
         runtime.successful_agents.append(config.id)
-        await self.traffic(config, "waiting")
-        complete = "LOOMIS_COMPLETE" in result.message.splitlines()
+        await self.traffic(config, "waiting", clear_context=True)
         ranked = await self.rank_successors(project.id, available, config.id)
         next_config = next((item for item in ranked if item.id not in runtime.successful_agents),
                            ranked[0] if ranked else config)
@@ -933,40 +1050,179 @@ class Orchestrator:
         await self.message(project.id, config.name, target, "team_chat", report, config,
                            step_title=STEP_TITLES["execute"])
         await self.notify(project.id, report, event_type="step_log", config=config, in_team_chat=True)
-        await self.publish_github_step(project, bridge, complete)
+        if not complete:
+            runtime.handoff = (next_config.id, report)
+        if committed:
+            await self.save_commit_state(project, bridge, runtime, complete)
+            if project.auto_push_mode == "after_each":
+                await self.publish_github_step(project, bridge, complete)
         if complete:
             runtime.ready.clear()
             await self.status(project.id, "completed", turn_state=runtime.snapshot())
             return
-        runtime.handoff = (next_config.id, report)
         if project.autonomy_mode == "step_by_step":
             await self.pause_for_approval(project, runtime, f"Следующий шаг: @{next_config.name}.", "step", next_config)
         else:
             await self.save_turn(project.id, runtime)
 
-    async def publish_github_step(self, project, bridge, complete):
+    async def history_bounds(self, session, project_id):
+        return {
+            model.__tablename__: await session.scalar(select(func.coalesce(func.max(model.id), 0))
+                                                       .where(model.project_id == project_id))
+            for model in (AgentMessage, TaskLog)
+        }
+
+    async def save_commit_state(self, project, bridge, runtime, complete):
+        head = await bridge.head()
+        async with async_session_factory() as session:
+            agents = await session.scalars(select(AgentConfig).where(AgentConfig.project_id == project.id))
+            state = {
+                "turn": runtime.snapshot(), "status": "completed" if complete else "paused",
+                "plan_digest": project.plan_digest, "approved_plan_digest": project.approved_plan_digest,
+                "history_state": project.history_state, "bounds": await self.history_bounds(session, project.id),
+                "agents": {str(agent.id): {
+                    "created_at": agent.created_at.isoformat(),
+                    "traffic_state": agent.traffic_state, "last_error": agent.last_error,
+                    "saved_context_json": agent.saved_context_json,
+                    "cooldown_until": agent.cooldown_until.isoformat() if agent.cooldown_until else None,
+                } for agent in agents},
+            }
+            row = await session.get(Project, project.id)
+            row.turn_state = state["turn"]
+            if complete:
+                row.status = "completed"
+            await session.merge(CommitState(project_id=project.id, commit_hash=head, state=state))
+            await session.commit()
+
+    async def commits(self, project_id):
+        project, _ = await self.load(project_id)
+        return await GitBridge(self.workspace(project), project.id).commits()
+
+    async def rollback_commit(self, project_id, commit_hash):
+        if not re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_hash):
+            raise ValueError("Некорректный хэш коммита.")
+        runtime = self.runtime(project_id)
+        async with runtime.boundary:
+            project, _ = await self.load(project_id)
+            if project.status in {"running", "council"}:
+                raise ValueError("Сначала приостановите проект.")
+            bridge = GitBridge(self.workspace(project), project.id)
+            matches = [entry for entry in await bridge.commits() if entry["hash"].startswith(commit_hash.lower())]
+            if len(matches) != 1:
+                raise ValueError("Коммит отсутствует в истории проекта или хэш неоднозначен.")
+            entry = matches[0]
+            target = entry["hash"]
+            await self.cancel_gate(runtime)
+            runtime.ready.clear()
+            async with async_session_factory() as session:
+                row = await session.get(Project, project.id)
+                snapshot = await session.get(CommitState, (project.id, target))
+                agents = list(await session.scalars(select(AgentConfig).where(AgentConfig.project_id == project.id)))
+                bounds = await self.history_bounds(session, project.id)
+                if snapshot is None:
+                    # Imported commits predate Loomis snapshots. Recover history using the Git timestamp.
+                    state = {"bounds": {}, "agents": {}}
+                    for model, date in ((AgentMessage, AgentMessage.created_at), (TaskLog, TaskLog.started_at)):
+                        state["bounds"][model.__tablename__] = await session.scalar(
+                            select(func.coalesce(func.max(model.id), 0)).where(
+                                model.project_id == project.id,
+                                date <= entry["created_at"].astimezone(timezone.utc),
+                            )
+                        )
+                else:
+                    state = snapshot.state
+                row.history_state = {
+                    name: merge_ranges((state.get("history_state") or {}).get(name, []),
+                                       state["bounds"][name] + 1, end)
+                    for name, end in bounds.items()
+                }
+                row.turn_state = state.get("turn")
+                row.plan_digest = state.get("plan_digest")
+                row.approved_plan_digest = state.get("approved_plan_digest")
+                row.status = state.get("status") or ("planning" if project.status != "draft" else "draft")
+                for agent in agents:
+                    saved = state["agents"].get(str(agent.id), {})
+                    if saved.get("created_at") != agent.created_at.isoformat():
+                        saved = {}
+                    agent.traffic_state = saved.get("traffic_state", "waiting")
+                    agent.last_error = saved.get("last_error")
+                    agent.saved_context_json = saved.get("saved_context_json")
+                    until = saved.get("cooldown_until")
+                    agent.cooldown_until = datetime.fromisoformat(until) if until else None
+                notification = AgentMessage(project_id=project.id, sender_name="Loomis", target_name="@All",
+                                            channel="team_chat", content=f"Проект откачен к коммиту {target[:12]}.",
+                                            step_title="Git")
+                session.add(notification)
+                await session.flush()
+                previous_head = await bridge.head()
+                workspace_state = await bridge.snapshot()
+                try:
+                    await bridge.reset(target)
+                    await session.commit()
+                except (OSError, RuntimeError, TimeoutError, SQLAlchemyError, asyncio.CancelledError):
+                    await bridge.reset(previous_head)
+                    await bridge.restore(workspace_state)
+                    raise
+            fresh = Runtime()
+            fresh.restore(row)
+            runtime.last_agent = fresh.last_agent
+            runtime.handoff = fresh.handoff
+            runtime.successful_agents = fresh.successful_agents
+            runtime.pending_question = fresh.pending_question
+            runtime.pending_failover = fresh.pending_failover
+            runtime.retry_agent = fresh.retry_agent
+            runtime.answer = fresh.answer
+            runtime.restored = True
+            runtime.meeting_base = None
+            runtime.next_meeting = None
+            await manager.broadcast(project_id, {"type": "history_changed", "project_id": project_id})
+            await manager.broadcast(project_id, message_event(notification, None))
+            await manager.publish_status(project_id, row.status)
+            for agent in agents:
+                await self.publish_traffic(agent)
+            return {"status": row.status, "commit_hash": target, "context_restored": snapshot is not None}
+
+    async def push_project(self, project_id):
+        async with self.runtime(project_id).boundary:
+            project, _ = await self.load(project_id)
+            if project.status in {"running", "council"}:
+                raise ValueError("Сначала приостановите проект.")
+            finish_only = project.auto_push_mode == "manual_finish" or project.commit_mode == "single_preset"
+            if finish_only and project.status != "completed":
+                raise ValueError("Сначала завершите проект.")
+            bridge = GitBridge(self.workspace(project), project.id)
+            await self.push_linked_repo(project, bridge)
+            await self.message(project_id, "Loomis", "@All", "team_chat", "Git · коммит отправлен.",
+                               step_title="Git")
+
+    async def push_linked_repo(self, project, bridge):
         if not project.git_repo_url:
+            raise ValueError("Привяжите удалённый репозиторий.")
+        if not await bridge.head():
+            raise ValueError("В проекте пока нет коммитов.")
+        if not is_github_repo(project.git_repo_url):
+            await bridge.push_main(project.git_repo_url)
             return
         async with async_session_factory() as session:
             encrypted_token = await session.scalar(select(User.github_token).where(User.id == project.owner_id))
         if not encrypted_token:
+            raise ValueError("Подключите GitHub.")
+        await bridge.push_github_main(project.git_repo_url, github_token(encrypted_token))
+
+    async def publish_github_step(self, project, bridge, complete):
+        if not project.git_repo_url:
             return
         try:
-            await bridge.push_github_main(project.git_repo_url, github_token(encrypted_token))
-        except (RuntimeError, ValueError) as exc:
-            status = f"GitHub · ошибка отправки в main. {exc}"
+            await self.push_linked_repo(project, bridge)
+        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+            status = f"Git · ошибка отправки в main. {exc}"
         else:
-            status = "GitHub · итоговый коммит отправлен в main." if complete else "GitHub · коммит шага отправлен в main."
-        await self.message(project.id, "Loomis", "@All", "team_chat", status, step_title="GitHub")
+            status = "Git · итоговый коммит отправлен в main." if complete else "Git · коммит шага отправлен в main."
+        await self.message(project.id, "Loomis", "@All", "team_chat", status, step_title="Git")
         await self.notify(project.id, status, event_type="step_log", critical=True, in_team_chat=True)
 
-    async def diagnose_failure(self, bridge, checkpoint, config, stage, last_output, remote):
+    async def diagnose_failure(self, bridge, checkpoint, config, stage, last_output):
         notes = [f"Этап: {stage}."]
-        if remote:
-            try:
-                await bridge.pull()
-            except (RuntimeError, OSError, TimeoutError):
-                notes.append("Не удалось получить последние изменения с воркера.")
         diff = ""
         try:
             status = await bridge.git("status", "--short", "--untracked-files=all")

@@ -26,7 +26,7 @@ let integrationsTimer;
 let integrationUpdatePending = false;
 let integrationsRevision = 0;
 let unlinkProvider;
-const teamHistory = new Map();
+let historyRequest;
 const teamTargets = new Set();
 const deletedAgents = new Set();
 const agentSelector = byId("agent-selector");
@@ -343,6 +343,7 @@ function refreshStream(reset = false) {
     item.node ??= messageNode(item.event, view);
     if (item.node.parentNode !== pane) pane.append(item.node);
   }
+  byId("clear-chat").disabled = !entries.length;
   if (view === "terminal") {
     byId("terminal-count").textContent = entries.length + " записей";
     byId("clear-terminal").disabled = !entries.length;
@@ -351,16 +352,15 @@ function refreshStream(reset = false) {
   if (atBottom) pane.scrollTop = pane.scrollHeight;
 }
 
-function receiveMessage(event, channel) {
+function receiveMessage(event, channel, replay = false) {
   const key = channel === "team" ? 0 : event.agent_id;
   if (key == null || deletedAgents.has(event.agent_id)) return;
   const bucket = streams[channel];
   if (!bucket.has(key)) bucket.set(key, []);
   const entries = bucket.get(key);
-  if (event.id != null && entries.some((item) => item.event.id === event.id)) return;
+  if (!replay && event.id != null && entries.some((item) => item.event.id === event.id)) return;
   entries.push({event});
-  if (entries.length > 500) entries.shift();
-  if (view === channel) frame ??= requestAnimationFrame(() => {
+  if (!replay && view === channel) frame ??= requestAnimationFrame(() => {
     frame = undefined;
     refreshStream();
   });
@@ -382,10 +382,21 @@ function renderTerminalTabs() {
   if (view === "terminal") refreshStream(true);
 }
 
-byId("clear-terminal").onclick = () => {
-  streams.terminal.delete(terminalAgent);
-  refreshStream(true);
-};
+async function clearView(channel, agentId) {
+  if (!project) return;
+  const current = selection;
+  const id = project.id;
+  try {
+    await api("projects/" + id + "/clear-view", {channel, agent_id: agentId});
+    await loadHistory(id, current);
+  } catch (error) {
+    if (current === selection) notify(error.message);
+  }
+}
+byId("clear-terminal").onclick = () => clearView("terminal", terminalAgent);
+byId("clear-chat").onclick = () => view === "team"
+  ? clearView("team_chat")
+  : clearView("direct", selectedAgent?.id);
 
 const terminalFontKey = "loomis-terminal-font";
 let terminalFont = Number(localStorage.getItem(terminalFontKey)) || 13;
@@ -478,6 +489,7 @@ function selectView(next) {
   });
   for (const channel of Object.keys(streams)) byId(channel).classList.toggle("hidden", channel !== view);
   byId("terminal-controls").classList.toggle("hidden", view !== "terminal");
+  byId("clear-chat").classList.toggle("hidden", view === "terminal");
   byId("message-form").classList.toggle("hidden", view === "terminal");
   byId("direct-controls").classList.toggle("hidden", view !== "direct");
   byId("team-controls").classList.toggle("hidden", view !== "team");
@@ -786,6 +798,7 @@ function showCommandApproval({id, command, kind}, projectId) {
   const text = document.createElement("p");
   const buttons = document.createElement("div");
   panel.className = "command-approval glass-panel stack";
+  panel.dataset.approvalId = id;
   buttons.className = "spec-buttons";
   heading.textContent = ({failover: "Подтвердите передачу задачи", step: "Подтвердите шаг"})[kind]
     || "Подтвердите команду";
@@ -811,10 +824,40 @@ function showCommandApproval({id, command, kind}, projectId) {
   byId("command-approvals").append(panel);
 }
 
+function receiveHistoryEvent(event, replay = false) {
+  const channel = event.channel || event.type;
+  receiveMessage(event, channel === "team_chat" ? "team" : channel, replay);
+}
+
+async function loadHistory(projectId, current) {
+  if (current !== selection) return;
+  const request = {live: []};
+  historyRequest = request;
+  try {
+    const {messages} = await api("projects/" + projectId + "/history");
+    if (current !== selection || historyRequest !== request) return;
+    Object.values(streams).forEach((stream) => stream.clear());
+    const events = new Map([...messages, ...request.live].map((event) => [event.id, event]));
+    for (const event of [...events.values()].sort((left, right) => left.id - right.id)) {
+      receiveHistoryEvent(event, true);
+    }
+    refreshStream(true);
+  } finally {
+    if (historyRequest === request) historyRequest = undefined;
+  }
+}
+
+function refreshHistory(projectId, current) {
+  loadHistory(projectId, current).catch((error) => {
+    if (current === selection) notify(error.message);
+  });
+}
+
 function connect(projectId, current) {
   if (current !== selection) return;
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   socket = new WebSocket(scheme + "//" + location.host + "/ws/" + projectId, ["loomis", token]);
+  socket.onopen = () => refreshHistory(projectId, current);
   socket.onmessage = ({data}) => {
     if (current !== selection) return;
     const event = JSON.parse(data);
@@ -823,8 +866,15 @@ function connect(projectId, current) {
       setStatus(event.status);
       if (event.status === "deleted") loadProjects().catch((error) => notify(error.message));
     }
-    if (event.type === "team_chat") receiveMessage(event, "team");
-    if (event.type === "direct" || event.type === "terminal") receiveMessage(event, event.type);
+    if (["team_chat", "direct", "terminal"].includes(event.type)) {
+      historyRequest?.live.push(event);
+      receiveHistoryEvent(event);
+    }
+    if (event.type === "history_changed") refreshHistory(projectId, current);
+    if (event.type === "approval_closed") {
+      Array.from(byId("command-approvals").children)
+        .find((panel) => panel.dataset.approvalId === event.id)?.remove();
+    }
     if (event.type === "traffic_state") {
       traffic.set(event.agent_id, event);
       updateLight(event.agent_id);
@@ -839,9 +889,8 @@ function connect(projectId, current) {
 
 async function selectProject(item) {
   if (item?.id !== project?.id) dockWorkspace();
-  const previousMessages = streams.team.get(0);
-  if (project && project.status !== "deleted" && previousMessages?.length) teamHistory.set(project.id, previousMessages);
   const current = ++selection;
+  historyRequest = undefined;
   discardRecording();
   setAttachment();
   teamTargets.clear();
@@ -857,7 +906,6 @@ async function selectProject(item) {
   socket?.close();
   socket = undefined;
   Object.values(streams).forEach((stream) => stream.clear());
-  if (item && teamHistory.has(item.id)) streams.team.set(0, teamHistory.get(item.id));
   Object.keys(streams).forEach((channel) => byId(channel).replaceChildren());
   traffic.clear();
   lights.clear();
@@ -879,7 +927,7 @@ async function selectProject(item) {
   renderDeadline();
   if (!item) return;
   connect(item.id, current);
-  await loadAgents(item.id, current);
+  await Promise.all([loadAgents(item.id, current), loadHistory(item.id, current)]);
 }
 
 async function loadAgents(projectId, current) {
@@ -913,8 +961,22 @@ async function loadAgents(projectId, current) {
       byId("message-input").focus();
     };
     description.append(name, details);
+    const retry = element("button", "button secondary small", "Повторить шаг");
+    retry.type = "button";
+    retry.onclick = async () => {
+      const current = selection;
+      retry.disabled = true;
+      try {
+        await api("projects/" + projectId + "/agents/" + agent.id + "/retry", {});
+      } catch (error) {
+        if (current === selection) notify(error.message);
+      } finally {
+        retry.disabled = false;
+      }
+    };
+    description.append(retry);
     card.append(description, light);
-    lights.set(agent.id, {light, agent});
+    lights.set(agent.id, {light, agent, retry});
     updateLight(agent.id);
     return card;
   });
@@ -928,11 +990,12 @@ async function loadAgents(projectId, current) {
 function updateLight(id) {
   const card = lights.get(id);
   if (!card) return;
-  const {light, agent} = card;
+  const {light, agent, retry} = card;
   const state = traffic.get(id) || agent;
   const status = agent.enabled ? state.traffic_state : "error";
   const labels = {working: "Работает", asking: "Ждёт ответа в личном чате", waiting: "Ждёт своей очереди",
     error: state.last_error || "Агент недоступен"};
+  retry.hidden = !agent.enabled || status !== "error" || !(state.can_retry ?? agent.can_retry);
   light.dataset.state = status;
   light.title = labels[status] || "Состояние неизвестно";
   light.setAttribute("aria-label", agent.name + " · " + light.title);
@@ -945,6 +1008,8 @@ const projectModes = [
   ["autonomy-mode", "autonomy_mode", "autonomous"],
   ["failover-mode", "failover_mode", "auto"],
   ["verbosity-mode", "verbosity_level", "concise"],
+  ["commit-mode", "commit_mode", "sequential"],
+  ["auto-push-mode", "auto_push_mode", "after_each"],
 ];
 function renderProjectModes() {
   for (const [id, field, fallback] of projectModes) {
@@ -1029,8 +1094,6 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
   if (!token || token !== session) return;
   byId("welcome-projects").textContent = projects.length;
   byId("welcome-dashboard").dataset.projectCount = projects.length;
-  const projectIds = new Set(projects.map((item) => item.id));
-  for (const id of teamHistory.keys()) if (!projectIds.has(id)) teamHistory.delete(id);
   const buttons = projects.map((item) => {
     const button = document.createElement("button");
     button.className = "project-button";
@@ -1530,7 +1593,7 @@ function renderTelegramLogs() {
 
 function renderProjectTitle() {
   for (const id of ["project-heading", "project-status", "dashboard-button", "project-settings-button",
-    "stats-button", "project-stepper", "project-work-area"]) {
+    "stats-button", "git-button", "project-stepper", "project-work-area"]) {
     byId(id).classList.toggle("hidden", !project);
   }
   document.querySelector('[data-action="regenerate_plan"]').classList.toggle("hidden", !project);
@@ -1542,6 +1605,67 @@ function renderProjectTitle() {
 }
 
 byId("dashboard-button").onclick = () => selectProject();
+
+byId("git-button").onclick = async () => {
+  if (!project) return;
+  const current = selection;
+  const path = "projects/" + project.id;
+  const list = byId("git-commits");
+  const pending = element("p", "", "Загрузка истории…");
+  list.replaceChildren(pending);
+  const push = byId("git-push");
+  push.disabled = !project.git_repo_url || project.status === "running" || project.status === "council"
+    || ((project.commit_mode === "single_preset" || project.auto_push_mode === "manual_finish")
+      && project.status !== "completed");
+  push.onclick = async () => {
+    push.disabled = true;
+    try {
+      await api(path + "/push", {});
+      if (current === selection) notify("Коммит отправлен.");
+    } catch (error) {
+      if (current === selection) notify(error.message);
+    } finally {
+      if (current === selection) push.disabled = false;
+    }
+  };
+  showModal("git-modal");
+  const revision = modalRevision;
+  try {
+    const commits = await api(path + "/commits");
+    if (current !== selection || revision !== modalRevision) return;
+    if (!commits.length) {
+      pending.textContent = "Коммитов пока нет.";
+      return;
+    }
+    list.replaceChildren(...commits.map((commit) => {
+      const row = element("div", "stack");
+      const title = element("strong", "", commit.short_hash + " · " + commit.message.split("\n", 1)[0]);
+      const details = element("small", "", commit.author + " · " + new Date(commit.created_at).toLocaleString());
+      const rollback = element("button", "button danger small", "Откатить к этому коммиту");
+      rollback.disabled = ["running", "council"].includes(project.status);
+      rollback.onclick = async () => {
+        if (current !== selection || !confirm("Откатить файлы и состояние проекта к " + commit.short_hash + "?")) return;
+        rollback.disabled = true;
+        try {
+          const result = await api(path + "/commits/" + commit.hash + "/rollback", {});
+          if (current !== selection) return;
+          setStatus(result.status);
+          if (revision === modalRevision) showModal();
+          await loadHistory(project.id, current);
+          if (!result.context_restored) notify("Для этого коммита история восстановлена по дате. План нужно утвердить заново.");
+        } catch (error) {
+          if (current === selection) notify(error.message);
+        } finally {
+          rollback.disabled = false;
+        }
+      };
+      row.append(title, details, rollback);
+      return row;
+    }));
+  } catch (error) {
+    if (current === selection && revision === modalRevision) pending.textContent = error.message;
+  }
+};
 
 for (const button of all("[data-folder-input]")) {
   button.onclick = async (event) => {
@@ -2338,7 +2462,6 @@ byId("logout-button").onclick = () => {
   sessionStorage.removeItem("loomis-token");
   stopMagic();
   selectProject(undefined);
-  teamHistory.clear();
   byId("welcome-models").textContent = byId("welcome-projects").textContent = "—";
   delete byId("welcome-dashboard").dataset.projectCount;
   showWorkspace(false);
