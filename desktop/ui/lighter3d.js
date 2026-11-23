@@ -1,8 +1,11 @@
 const dashboard = document.querySelector("#welcome-dashboard");
 const content = document.querySelector("#welcome-widgets");
+const scroll = content.querySelector(".welcome-scroll");
 const stage = document.querySelector(".lighter-stage");
 const canvas = document.querySelector("#welcome-lighter");
 const toggle = document.querySelector("#lighter-toggle");
+const smoke = document.querySelector("#welcome-smoke");
+const smokeContext = smoke.getContext("2d");
 const ash = document.querySelector("#welcome-ash");
 const ashContext = ash.getContext("2d");
 const widgets = [...content.querySelectorAll(".welcome-hero, .dashboard-stat, .quick-start-heading, .quick-card, #welcome-create")];
@@ -16,33 +19,78 @@ let model;
 let loading = false;
 let pointer;
 let ashes = [];
-let animations = [];
+let puffs = [];
+let smokeTimer = 0;
+const smokeSprites = new Map();
 
-function stopAnimations() {
-  animations.forEach(animation => animation.cancel());
-  animations = [];
+function smokeSprite(light) {
+  if (smokeSprites.has(light)) return smokeSprites.get(light);
+  const sprite = document.createElement("canvas");
+  sprite.width = sprite.height = 96;
+  const context = sprite.getContext("2d");
+  const shade = light ? "75, 82, 101" : "178, 185, 203";
+  for (const [x, y, radius] of [[43, 48, 34], [62, 40, 27], [37, 31, 23], [55, 60, 25]]) {
+    const falloff = context.createRadialGradient(x, y, 0, x, y, radius);
+    falloff.addColorStop(0, `rgba(${shade}, .45)`);
+    falloff.addColorStop(.55, `rgba(${shade}, .17)`);
+    falloff.addColorStop(1, `rgba(${shade}, 0)`);
+    context.fillStyle = falloff;
+    context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  }
+  smokeSprites.set(light, sprite);
+  return sprite;
 }
 
-function showWidgets(origin) {
-  content.inert = false;
-  content.classList.add("revealed");
-  if (reducedMotion.matches) return;
-  animations = widgets.map((widget, index) => {
-    const rect = widget.getBoundingClientRect();
-    const x = origin.x - rect.left - rect.width / 2;
-    const y = origin.y - rect.top - rect.height / 2;
-    return widget.animate([
-      { transform: `translate(${x}px, ${y}px) scale(.04)`, opacity: 0, filter: "blur(15px)" },
-      { transform: "translateY(-9px) scale(1.025)", opacity: 1, filter: "blur(0)", offset: .72 },
-      { transform: "translateY(3px) scale(.994)", offset: .87 },
-      { transform: "none", opacity: 1, filter: "blur(0)" },
-    ], { duration: 620, delay: index * 16, easing: "cubic-bezier(.18,.67,.34,1)", fill: "backwards" });
-  });
+function drawSmoke(dt, lit, tip) {
+  if (!smokeContext || (!lit && !puffs.length)) return false;
+  const bounds = smoke.getBoundingClientRect();
+  const ratio = Math.min(devicePixelRatio, 2);
+  const width = Math.round(bounds.width * ratio);
+  const height = Math.round(bounds.height * ratio);
+  if (smoke.width !== width || smoke.height !== height) {
+    smoke.width = width;
+    smoke.height = height;
+  }
+  smokeContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+  smokeContext.clearRect(0, 0, bounds.width, bounds.height);
+  if (reducedMotion.matches) {
+    puffs = [];
+    smokeTimer = 0;
+    return false;
+  }
+  smokeTimer -= dt;
+  if (lit && tip && smokeTimer <= 0) {
+    const y = tip.y - bounds.top;
+    const life = 4 + Math.random() * 2;
+    puffs.push({
+      x: tip.x - bounds.left, y, age: 0, life,
+      speed: Math.max(40, (y + 50) / life),
+      phase: Math.random() * Math.PI * 2, drift: (Math.random() - .5) * 30,
+    });
+    smokeTimer = .17 + Math.random() * .12;
+  }
+  const sprite = smokeSprite(document.documentElement.dataset.theme === "light");
+  puffs = puffs.filter(puff => puff.age < puff.life);
+  for (const puff of puffs) {
+    puff.age += dt;
+    const progress = Math.min(1, puff.age / puff.life);
+    const size = 10 + progress * 142;
+    const x = puff.x + (puff.drift + 36 * Math.sin(puff.phase + puff.age * 2)) * progress;
+    const y = puff.y - puff.speed * puff.age;
+    smokeContext.globalAlpha = .28 * Math.min(1, puff.age * 4) * (1 - progress);
+    smokeContext.save();
+    smokeContext.translate(x, y);
+    smokeContext.rotate(puff.phase + puff.age * .55);
+    smokeContext.drawImage(sprite, -size / 2, -size / 2, size, size);
+    smokeContext.restore();
+  }
+  smokeContext.globalAlpha = 1;
+  return lit || puffs.length > 0;
 }
 
 function disperseWidgets() {
   const bounds = dashboard.getBoundingClientRect();
-  const viewport = content.getBoundingClientRect();
+  const viewport = scroll.getBoundingClientRect();
   const light = document.documentElement.dataset.theme === "light";
   const ratio = Math.min(devicePixelRatio, 2);
   ash.width = Math.max(1, Math.round(bounds.width * ratio));
@@ -85,10 +133,9 @@ function drawAsh(dt) {
   }
 }
 
-function flameOrigin() {
-  if (model) return model.origin();
-  const bounds = stage.getBoundingClientRect();
-  return { x: bounds.left + bounds.width / 2, y: bounds.bottom - 103 };
+function fallbackTip() {
+  const bounds = stage.querySelector(".lighter-fallback").getBoundingClientRect();
+  return { x: bounds.left + bounds.width / 2, y: bounds.top - 66 };
 }
 
 function animate(now) {
@@ -97,13 +144,13 @@ function animate(now) {
   previousTime = now;
   if (ignition && now >= ignition) {
     ignition = 0;
-    stage.toggleAttribute("data-burning", true);
-    showWidgets(flameOrigin());
+    stage.setAttribute("data-burning", "");
   }
   const lit = burning && !ignition;
   const moving = model?.draw(now / 1000, dt, burning, lit);
+  const smoking = drawSmoke(dt, lit, lit ? model?.flameTip() ?? fallbackTip() : undefined);
   if (ashes.length) drawAsh(dt);
-  if (moving || ignition || ashes.length) frame = requestAnimationFrame(animate);
+  if (moving || ignition || ashes.length || smoking) frame = requestAnimationFrame(animate);
 }
 
 function scheduleFrame() {
@@ -113,49 +160,41 @@ function scheduleFrame() {
   }
 }
 
-toggle.addEventListener("click", () => {
+toggle.addEventListener("click", event => {
+  if (event.detail && model && !model.hitTest({ x: event.clientX, y: event.clientY }, burning)) return;
   burning = !burning;
   toggle.setAttribute("aria-expanded", String(burning));
+  stage.toggleAttribute("data-open", burning);
   if (burning) {
-    stopAnimations();
-    content.classList.remove("revealed");
+    scroll.scrollTop = 0;
     ignition = performance.now() + (reducedMotion.matches ? 0 : 190);
   } else {
     ignition = 0;
+    smokeTimer = 0;
     stage.removeAttribute("data-burning");
-    const dissolve = !content.inert && !reducedMotion.matches && ashContext;
-    if (dissolve) disperseWidgets();
-    stopAnimations();
-    content.inert = true;
-    if (dissolve) {
-      animations = widgets.map(widget => widget.animate([
-        { opacity: 1, filter: "blur(0)" },
-        { opacity: 0, transform: "translateY(-8px) scale(.98)", filter: "blur(4px)" },
-      ], { duration: 160, easing: "ease-out", fill: "forwards" }));
-      animations[0].finished.then(() => {
-        content.classList.remove("revealed");
-        stopAnimations();
-      }, () => {});
-    } else {
-      content.classList.remove("revealed");
-    }
+    if (!content.inert && !reducedMotion.matches && ashContext) disperseWidgets();
   }
-  stage.toggleAttribute("data-open", burning);
+  content.classList.toggle("revealed", burning);
+  content.inert = !burning;
   scheduleFrame();
 });
 
 window.addEventListener("pointermove", event => {
-  if (!active || !burning || event.pointerType === "touch") return;
-  pointer = { x: event.clientX, y: event.clientY };
-  if (!model) {
-    const origin = flameOrigin();
-    const distance = Math.hypot(pointer.x - origin.x, pointer.y - origin.y);
-    stage.style.setProperty("--lighter-bend", `${-(pointer.x - origin.x) * .3 * Math.max(0, 1 - distance / 100)}deg`);
+  if (!active || event.pointerType === "touch") return;
+  const onToggle = event.target === toggle;
+  if (!burning && !onToggle && !pointer) return;
+  pointer = burning || onToggle ? { x: event.clientX, y: event.clientY, onToggle } : undefined;
+  if (!model && burning) {
+    const { x, y } = fallbackTip();
+    const distance = Math.hypot(pointer.x - x, pointer.y - y);
+    stage.style.setProperty("--lighter-bend", `${-(pointer.x - x) * .3 * Math.max(0, 1 - distance / 100)}deg`);
   }
+  scheduleFrame();
 }, { passive: true });
 document.documentElement.addEventListener("pointerleave", () => {
   pointer = undefined;
   stage.style.removeProperty("--lighter-bend");
+  scheduleFrame();
 });
 
 function syncVisibility() {
@@ -181,13 +220,17 @@ function syncVisibility() {
   ignition = 0;
   pointer = undefined;
   ashes = [];
+  puffs = [];
+  smokeTimer = 0;
+  smokeContext?.clearRect(0, 0, smoke.width, smoke.height);
   ashContext?.clearRect(0, 0, ash.width, ash.height);
   toggle.setAttribute("aria-expanded", "false");
   stage.removeAttribute("data-open");
   stage.removeAttribute("data-burning");
   content.inert = true;
   content.classList.remove("revealed");
-  stopAnimations();
+  stage.removeAttribute("data-hit");
+  stage.style.removeProperty("--lighter-bend");
   model?.reset();
 }
 
@@ -215,6 +258,8 @@ function createLighter(THREE) {
   const viewHeight = 3.85;
   const target = new THREE.Vector3();
   const projection = new THREE.Vector3();
+  const raycaster = new THREE.Raycaster();
+  const rayPoint = new THREE.Vector2();
   let width = 0;
   let height = 0;
   let floorOffset = 0;
@@ -342,7 +387,7 @@ function createLighter(THREE) {
   mark.width = 256;
   mark.height = 64;
   const markContext = mark.getContext("2d");
-  markContext.font = "600 33px Segoe UI, sans-serif";
+  markContext.font = "700 38px Segoe UI, sans-serif";
   markContext.textAlign = "center";
   markContext.fillStyle = "white";
   markContext.fillText("L O O M I S", 128, 43);
@@ -446,15 +491,36 @@ function createLighter(THREE) {
     scene.add(mesh);
   }
 
-  function origin() {
+  const hitMeshes = [body, lid, hinge, chimney, wheel, wick];
+
+  // Keep the closed lid's silhouette during the peek so the lid cannot move out from under the pointer.
+  const closedLid = lid.clone();
+  closedLid.position.add(pivot.position);
+  closedLid.updateMatrixWorld();
+  const peekMeshes = [...hitMeshes, closedLid];
+
+  function hitTest(point, open) {
     const rect = canvas.getBoundingClientRect();
-    projection.copy(flame.position);
-    projection.y += .29;
-    projection.project(camera);
+    rayPoint.set((point.x - rect.left) * 2 / rect.width - 1, 1 - (point.y - rect.top) * 2 / rect.height);
+    raycaster.setFromCamera(rayPoint, camera);
+    return raycaster.intersectObjects(open ? hitMeshes : peekMeshes, false).length > 0;
+  }
+
+  function projectPoint(x, y, z) {
+    const rect = canvas.getBoundingClientRect();
+    projection.set(flame.position.x + x, flame.position.y + y, flame.position.z + z).project(camera);
     return {
       x: rect.left + (projection.x + 1) * rect.width / 2,
       y: rect.top + (1 - projection.y) * rect.height / 2,
     };
+  }
+
+  function flameTip() {
+    const time = flameUniforms.time.value;
+    const wobble = Math.sin(time * 9 + 13) + .42 * Math.sin(time * 17 - 19);
+    const scale = flame.scale.y;
+    return projectPoint((flameUniforms.bend.value + wobble * .038) * scale,
+      .84 * (1 + .10 * Math.sin(time * 9)) * scale, flameUniforms.depth.value * scale);
   }
 
   function reset() {
@@ -469,6 +535,7 @@ function createLighter(THREE) {
     event.preventDefault();
     stage.removeAttribute("data-webgl");
     model = undefined;
+    scheduleFrame();
   });
   canvas.addEventListener("webglcontextrestored", () => {
     stage.setAttribute("data-webgl", "");
@@ -479,7 +546,7 @@ function createLighter(THREE) {
   stage.setAttribute("data-webgl", "");
 
   const lighter = {
-    origin, reset,
+    hitTest, flameTip, reset,
     draw(time, dt, open, lit) {
       resize();
       const light = document.documentElement.dataset.theme === "light";
@@ -492,13 +559,20 @@ function createLighter(THREE) {
         floor.material.uniforms.tint.value.setHex(light ? 0x747986 : 0xa2a9b8);
       }
       const still = reducedMotion.matches;
-      const goal = open ? THREE.MathUtils.degToRad(105) : 0;
+      scene.updateMatrixWorld();
+      const hit = Boolean(pointer?.onToggle && hitTest(pointer, open));
+      stage.toggleAttribute("data-hit", hit);
+      const goal = THREE.MathUtils.degToRad(open ? 105 : hit ? 15 : 0);
       velocity += ((goal - angle) * 130 - velocity * 17) * dt;
       angle += velocity * dt;
-      pivot.rotation.z = still ? goal : Math.max(-.008, angle);
+      if (still) {
+        angle = goal;
+        velocity = 0;
+      }
+      pivot.rotation.z = THREE.MathUtils.clamp(angle, 0, THREE.MathUtils.degToRad(105));
       fire = still ? Number(lit) : THREE.MathUtils.damp(fire, Number(lit), lit ? 10 : 20, dt);
 
-      const source = origin();
+      const source = projectPoint(0, .29, 0);
       const dx = pointer ? pointer.x - source.x : 0;
       const dy = pointer ? pointer.y - source.y : 0;
       const distance = pointer ? Math.hypot(dx, dy) : Infinity;
