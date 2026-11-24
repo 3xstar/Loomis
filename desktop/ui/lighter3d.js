@@ -257,11 +257,10 @@ function createLighter(THREE) {
   renderer.setClearColor(0x000000, 0);
   const scene = new THREE.Scene();
   const lighterGroup = new THREE.Group();
-  lighterGroup.rotation.set(.03, 0, 0, "YXZ");
+  lighterGroup.rotation.set(0, 0, 0, "YXZ");
   lighterGroup.position.set(0, .12, 0);
   scene.add(lighterGroup);
   const camera = new THREE.OrthographicCamera();
-  const target = new THREE.Vector3();
   const projection = new THREE.Vector3();
   const raycaster = new THREE.Raycaster();
   const rayPoint = new THREE.Vector2();
@@ -289,10 +288,11 @@ function createLighter(THREE) {
     floorOffset = nextOffset;
     const viewHeight = Math.min(3.85, Math.max(3.2, height * 3.85 / 326));
     const halfWidth = viewHeight * width / height / 2;
-    Object.assign(camera, { left: -halfWidth, right: halfWidth, top: viewHeight / 2, bottom: -viewHeight / 2, near: .1, far: 30 });
-    target.y = viewHeight * (.5 - floorOffset / height) / .981;
-    camera.position.copy(target).add(new THREE.Vector3(0, 1.45, 7));
-    camera.lookAt(target);
+    const verticalOffset = viewHeight * (.5 - floorOffset / height) - lighterGroup.position.y;
+    Object.assign(camera, { left: -halfWidth, right: halfWidth, top: verticalOffset + viewHeight / 2, bottom: verticalOffset - viewHeight / 2, near: .1, far: 30 });
+    camera.position.z = 7;
+    camera.position.y = lighterGroup.position.y;
+    camera.lookAt(lighterGroup.position);
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
     renderer.setSize(width, height, false);
