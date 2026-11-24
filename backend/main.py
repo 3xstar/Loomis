@@ -14,8 +14,9 @@ from sqlalchemy.schema import CreateTable
 from backend.api import auth, projects, ws
 from backend.bot.i18n import LocalizeTelegram
 from backend.bot.handlers import router as bot_router
+from backend.core.context_manager import migrate_project_metadata
 from backend.core.orchestrator import orchestrator
-from backend.database.db import Base, engine
+from backend.database.db import Base, async_session_factory, engine
 from backend.database.models import AgentConfig, AgentMessage, Project, TaskLog, UserModelPreset
 from backend.settings import ROOT, settings
 
@@ -62,6 +63,9 @@ def initialize_schema(connection) -> None:
             "deadline_minutes": "INTEGER NOT NULL DEFAULT 10",
             "autonomy_mode": "VARCHAR(20) NOT NULL DEFAULT 'autonomous'",
             "failover_mode": "VARCHAR(10) NOT NULL DEFAULT 'auto'",
+            "spec_content": "TEXT",
+            "plan_content": "TEXT",
+            "context_content": "TEXT",
             "plan_digest": "VARCHAR(64)",
             "approved_plan_digest": "VARCHAR(64)",
             "turn_state": "JSON",
@@ -182,6 +186,8 @@ async def lifespan(app: FastAPI):
             await connection.exec_driver_sql(
                 "UPDATE agent_configs SET traffic_state='waiting' WHERE traffic_state='working'"
             )
+        async with async_session_factory() as session:
+            await migrate_project_metadata(session)
         if settings.bot_token:
             bot = Bot(token=settings.bot_token)
             bot.session.middleware(LocalizeTelegram())

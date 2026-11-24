@@ -19,8 +19,7 @@ from worker.git_bridge import GitBridge
 
 async def save_worker_changes(bridge, transport_ref=None):
     async def publish():
-        if await bridge.git("status", "--porcelain"):
-            await bridge.commit()
+        if await bridge.commit():
             if transport_ref:
                 await bridge.git("push", "origin", f"HEAD:{transport_ref}")
             else:
@@ -65,7 +64,7 @@ async def serve(url, name, config):
                 operation = request["operation"]
                 agent = build_agent(
                     **agents[request["agent"]], approval=None if operation == "test" else approve,
-                    instruction=request.get("instruction", ""),
+                    instruction=request.get("instruction", ""), max_tokens=request.get("max_tokens"),
                     images=[(mime, b64decode(data)) for mime, data in request.get("images", [])],
                 )
                 async with asyncio.timeout(request["timeout"]):
@@ -98,7 +97,9 @@ async def serve(url, name, config):
                                         await bridge.git("switch", "--detach", head)
                     elif operation == "meeting":
                         result = await agent.participate_in_meeting(request["context"])
-                    elif operation in {"question", "test"}:
+                    elif operation == "plan" and isinstance(agent, ApiAgent):
+                        result = await agent.draft_plan(request["prompt"], request["context"], request["timeout"])
+                    elif operation in {"question", "test", "plan"}:
                         result = await agent.ask_question(request["prompt"], request["context"])
                     else:
                         raise ValueError("Unknown worker operation")

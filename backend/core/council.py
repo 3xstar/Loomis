@@ -1,7 +1,6 @@
 import asyncio
 import re
 from pathlib import Path
-from uuid import uuid4
 
 from worker.sandbox import workspace_file
 
@@ -16,10 +15,7 @@ def scheduled_steps(plan, artists):
 
 
 async def starting_council(workspace: Path, agents, feedback: str | None = None, *,
-                           publish=None, roster=None, synthesize=None, rank=None, ask=None, artists=()):
-    spec = workspace_file(workspace, "SPEC.md").read_text(encoding="utf-8")
-    file = workspace_file(workspace, "PLAN.md")
-    previous = file.read_text(encoding="utf-8") if file.is_file() else ""
+                           spec, previous="", publish=None, roster=None, synthesize=None, rank=None, ask=None, artists=()):
     roster = roster or [name for name, _ in agents]
     order = "\n".join(f"{index}. {name}" for index, name in enumerate(roster, 1))
     context = f"{spec}\n\nОчередь исполнителей:\n{order}"
@@ -35,14 +31,14 @@ async def starting_council(workspace: Path, agents, feedback: str | None = None,
     async def discuss(name, agent, number, history, step_title):
         peers = ", ".join(f"@{peer}" for peer, _ in agents if peer != name)
         if number == 1:
-            request = ("Представься, спроси коллег об их сильных сторонах применительно к SPEC.md "
-                       "и предложи порядок работ и свою роль.")
+            request = ("Предложи порядок работ и свою зону ответственности по техническому заданию.")
         else:
             request = ("Ответь на адресованные тебе вопросы из первого раунда. Поимённо согласуй "
                        "строгую очередность, участки ответственности и условия передачи работы.")
         prompt = (
             f"Раунд {number}. Ты {name}. Участники для обращения: {peers or 'ты один'}. "
-            f"Обращайся через @Имя. {request}"
+            f"Обращайся через @Имя. {request} "
+            "Максимум 3 коротких пункта: Сделано, Файлы, Следующий шаг."
         )
         round_context = f"{context}\n\n{history}"
         result = await (ask(agent, prompt, round_context, step_title) if ask else
@@ -81,7 +77,7 @@ async def starting_council(workspace: Path, agents, feedback: str | None = None,
         history += f"\n\n# Раунд {number}\n" + "\n\n".join(replies)
     scope = "Сохрани не затронутые правками задачи и зоны ответственности остальных агентов." if previous else ""
     plan_prompt = (
-        "Собери полный PLAN.md на основе двух раундов. Распредели задачи и файлы по именам агентов, "
+        "Собери полный план на основе двух раундов. Распредели задачи и файлы по именам агентов, "
         "устрани пересечения, придерживайся заданной очереди и укажи критерии проверки. "
         f"Учти правки пользователя. {scope} Верни только Markdown."
     )
@@ -94,7 +90,7 @@ async def starting_council(workspace: Path, agents, feedback: str | None = None,
             "Используй точные имена из актуальной очереди и отдельный шаг для каждого изображения. "
             "Если генерация не нужна, список в этом формате не добавляй."
         )
-    step_title = "Правка плана по замечанию" if feedback else "Формирование файла PLAN.md"
+    step_title = "Правка плана по замечанию" if feedback else "Формирование плана"
     for name, lead in (await rank(active) if rank else active):
         order = "\n".join(f"{index}. {name}" for index, name in enumerate(
             (member for member in roster if member not in failed), 1,
@@ -121,28 +117,18 @@ async def starting_council(workspace: Path, agents, feedback: str | None = None,
             break
         failed.add(name)
         if publish:
-            await publish(lead, f"Не удалось собрать PLAN.md. {plan.message}", step_title)
+            await publish(lead, f"Не удалось собрать план. {plan.message}", step_title)
     else:
-        raise ValueError("Не удалось собрать единый PLAN.md.")
+        raise ValueError("Не удалось собрать единый план.")
     if publish:
         await publish(lead, plan.message, step_title)
-    content = f"# Очередь исполнителей\n\n{order}\n\n{plan.message}"
-    pending = file.with_name(f".PLAN.{uuid4().hex}.tmp")
-    try:
-        pending.write_text(content, encoding="utf-8")
-        pending.replace(file)
-    finally:
-        pending.unlink(missing_ok=True)
-    return content
+    return f"# Очередь исполнителей\n\n{order}\n\n{plan.message}"
 
 
-async def periodic_meeting(workspace: Path, agents, diff: str, next_agent: str):
-    file = workspace_file(workspace, "Project_context.md")
-    previous = file.read_text(encoding="utf-8") if file.exists() else ""
+async def periodic_meeting(previous: str, agents, diff: str, next_agent: str):
     history = f"{previous[-16000:]}\n\nGit diff:\n{diff[:50000]}"
     reports = await asyncio.gather(*(agent.participate_in_meeting(history) for _, agent in agents))
     summary = "\n\n".join(f"## {name} ({result.status})\n{result.message}"
                           for (name, _), result in zip(agents, reports))
     summary = f"# Собрание\n\nСледующий исполнитель — {next_agent}.\n\n{summary}"
-    file.write_text(summary, encoding="utf-8")
     return summary

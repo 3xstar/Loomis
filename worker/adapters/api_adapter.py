@@ -156,7 +156,8 @@ class ApiAgent(BaseAgent):
         return cls(model, base_url, config.get("api_key_env"), api_key=api_key, **options)
 
     def __init__(self, model: str, base_url: str, api_key_env: str | None = None, *, api_key: str | None = None,
-                 instruction: str = "", images=(), temperature=0.2, workspace_path: Path | None = None):
+                 instruction: str = "", images=(), temperature=0.2, workspace_path: Path | None = None,
+                 max_tokens: int | None = None):
         self.workspace_path = workspace_path
         self.model = model
         self.base_url = base_url
@@ -164,6 +165,7 @@ class ApiAgent(BaseAgent):
         self.api_key = api_key
         self.instruction = api_system_prompt(instruction)
         self.temperature = temperature
+        self.max_tokens = max_tokens
         self.used_requested_temperature = False
         self.images = images
         self.tokens_used = 0
@@ -218,7 +220,7 @@ class ApiAgent(BaseAgent):
             pending.unlink(missing_ok=True)
         return target
 
-    async def _run(self, prompt, timeout, workspace=None):
+    async def _run(self, prompt, timeout, workspace=None, *, continue_plan=False):
         self.tokens_used = 0
         tokens = 0
         content = prompt
@@ -239,6 +241,8 @@ class ApiAgent(BaseAgent):
         messages = [{"role": "user", "content": content}]
         messages.insert(0, {"role": "system", "content": self.instruction})
         options = {"tools": [*WEB_TOOLS, *(file_tools() if workspace is not None else ())]}
+        if self.max_tokens is not None:
+            options["max_tokens"] = self.max_tokens
         if workspace is None and self.temperature is not None:
             options["temperature"] = self.temperature
         self.used_requested_temperature = "temperature" in options
@@ -247,6 +251,7 @@ class ApiAgent(BaseAgent):
             async with asyncio.timeout(timeout), AsyncOpenAI(
                 base_url=self.base_url, api_key=key, max_retries=0
             ) as client:
+                fragments = []
                 for _ in range(32):
                     try:
                         response = await client.chat.completions.create(model=self.model, messages=messages, **options)
@@ -259,9 +264,20 @@ class ApiAgent(BaseAgent):
                     if response.usage:
                         tokens += response.usage.total_tokens
                         self.tokens_used = tokens
-                    message = response.choices[0].message
+                    choice = response.choices[0]
+                    message = choice.message
                     if not message.tool_calls:
                         answer = message.content or ""
+                        if continue_plan and choice.finish_reason == "length":
+                            if not answer or len(fragments) >= 7:
+                                return AgentResult("error", "Не удалось завершить план в пределах лимита.", tokens)
+                            fragments.append(answer)
+                            messages.extend((
+                                {"role": "assistant", "content": answer},
+                                {"role": "user", "content": "Продолжи план с места обрыва. Не повторяй предыдущий текст."},
+                            ))
+                            continue
+                        answer = "".join((*fragments, answer))
                         status = "unsupported_media" if self.images and refuses_media(answer) else "success"
                         return AgentResult(status, answer, tokens)
                     messages.append(message.model_dump(exclude_none=True, include={"role", "content", "tool_calls"}))
@@ -302,6 +318,9 @@ class ApiAgent(BaseAgent):
 
     async def execute_task(self, prompt: str, work_dir: Path, timeout: float):
         return await self._run(prompt, timeout, work_dir)
+
+    async def draft_plan(self, question, context, timeout):
+        return await self._run(f"{context}\n\n{question}", timeout, continue_plan=True)
 
     async def ask_question(self, question, context):
         return await self._run(f"{context}\n\n{question}", 120)

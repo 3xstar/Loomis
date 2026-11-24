@@ -8,6 +8,9 @@ from time import time_ns
 from uuid import uuid4
 
 
+PROJECT_METADATA = ("SPEC.md", "PLAN.md", "Project_context.md")
+
+
 def is_github_repo(url: str) -> bool:
     return bool(re.fullmatch(r"https://github\.com/[A-Za-z0-9-]+/[A-Za-z0-9_.-]+", url, re.IGNORECASE)
                 and url.rsplit("/", 1)[-1] not in {".", ".."})
@@ -58,6 +61,7 @@ class GitBridge:
                 await self.git("switch", self.branch)
             else:
                 await self.git("switch", "-c", self.branch)
+        await self.clean_project_metadata()
 
     async def clear_stale_index_lock(self):
         git_dir = self.workspace / ".git"
@@ -70,26 +74,90 @@ class GitBridge:
         except FileNotFoundError:
             pass
 
-    async def commit(self, message="wip: handoff", *, allow_empty=False, author="Loomis"):
+    async def clean_project_metadata(self):
+        if not self.workspace.is_dir():
+            return
+        if (self.workspace / ".git").exists():
+            await self.initialize()
+            exclude = self.workspace / await self.git("rev-parse", "--git-path", "info/exclude")
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            current = exclude.read_bytes() if exclude.exists() else b""
+            rules = [f"/{name}".encode("ascii") for name in PROJECT_METADATA]
+            missing = [rule for rule in rules if rule not in current.splitlines()]
+            if missing:
+                with exclude.open("ab") as stream:
+                    stream.write((b"\n" if current and not current.endswith(b"\n") else b"")
+                                 + b"\n".join(missing) + b"\n")
+        reserved = {name.casefold() for name in PROJECT_METADATA}
+        for path in self.workspace.iterdir():
+            if path.name.casefold() in reserved and (path.is_symlink() or path.is_file()):
+                path.unlink(missing_ok=True)
+
+    async def commit_metadata_cleanup(self):
+        if not (self.workspace / ".git").exists() or not await self.head():
+            return False
+        reserved = {name.casefold() for name in PROJECT_METADATA}
+        tracked = (await self.git("ls-tree", "--name-only", "HEAD")).splitlines()
+        paths = [name for name in tracked if name.casefold() in reserved]
+        if not paths or not await self.git("status", "--porcelain", "--", *paths):
+            return False
         await self.clear_stale_index_lock()
+        await self.git("-c", "user.name=Project Maintainer", "-c", "user.email=maintainer@localhost",
+                       "commit", "--only", "-m", "chore: удалить служебные документы проекта", "--", *paths)
+        return True
+
+    async def commit(self):
+        await self.clear_stale_index_lock()
+        await self.clean_project_metadata()
+        if not await self.git("status", "--porcelain", "--untracked-files=all"):
+            return False
         await self.git("add", "-A")
-        if allow_empty or await self.git("status", "--porcelain") or not await self.head():
-            await self.clear_stale_index_lock()
-            await self.git("-c", "user.name=Loomis", "-c", "user.email=loomis@localhost",
-                           "commit", "--allow-empty", "--author", f"{author} <loomis@localhost>", "-m", message)
+        staged = await self.git("diff", "--cached", "--name-status", "--no-renames")
+        if not staged:
+            return False
+        groups = {"A": [], "M": [], "D": [], "T": []}
+        for line in staged.splitlines():
+            status, _, path = line.partition("\t")
+            if path:
+                groups.setdefault(status, []).append(path)
+        labels = {"A": "Добавить", "M": "Обновить", "D": "Удалить", "T": "Изменить тип"}
+        parts = []
+        for status, paths in groups.items():
+            if not paths:
+                continue
+            suffixes = {Path(path.strip('"')).suffix.lower() for path in paths}
+            if suffixes <= {".md", ".rst", ".txt"}:
+                scope = "документацию"
+            elif suffixes <= {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico"}:
+                scope = "графические ресурсы"
+            else:
+                scope = "файлы проекта"
+            parts.append(f"{labels.get(status, 'Обновить')} {scope} ({len(paths)})")
+        kind = "feat" if groups["A"] else "chore"
+        message = f"{kind}: {', '.join(parts)}"
+        await self.git("-c", "user.name=Project Maintainer", "-c", "user.email=maintainer@localhost",
+                       "commit", "-m", message)
+        return True
 
     async def head(self):
         return await self.git("rev-parse", "--verify", "HEAD", allowed=(0, 128))
 
     async def snapshot(self):
+        await self.clean_project_metadata()
         await self.clear_stale_index_lock()
         await self.git("add", "-A")
         tree = await self.git("write-tree")
-        return await self.git("-c", "user.name=Loomis", "-c", "user.email=loomis@localhost",
+        head = await self.head()
+        if head and tree == await self.git("rev-parse", "HEAD^{tree}"):
+            return head
+        return await self.git("-c", "user.name=Project Maintainer", "-c", "user.email=maintainer@localhost",
                               "commit-tree", tree, "-m", "Loomis workspace checkpoint")
 
     async def checkpoint(self):
-        source = await self.snapshot()
+        await self.clean_project_metadata()
+        await self.clear_stale_index_lock()
+        await self.git("add", "-A")
+        source = await self.git("write-tree")
         tag = f"{self.tags}{time_ns()}-{uuid4().hex}"
         await self.git("tag", tag, source)
         return tag
@@ -99,6 +167,7 @@ class GitBridge:
         await self.git("add", "-A")
         if await self.git("status", "--porcelain") or source != "HEAD":
             await self.git("restore", f"--source={source}", "--staged", "--worktree", "--", ".")
+        await self.clean_project_metadata()
 
     async def rollback_last_step(self):
         await self.clear_stale_index_lock()
@@ -123,6 +192,7 @@ class GitBridge:
     async def reset(self, commit_hash):
         await self.clear_stale_index_lock()
         await self.git("reset", "--hard", commit_hash)
+        await self.clean_project_metadata()
 
     async def diff(self, checkpoint):
         return await self.git("diff", "--no-ext-diff", checkpoint, "--", ".")

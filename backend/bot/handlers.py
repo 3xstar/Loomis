@@ -588,12 +588,10 @@ async def view_spec(callback: CallbackQuery, session: AsyncSession, account: Use
     if project is None:
         await callback.message.answer("Проект не найден.")
         return
-    path = Path(project.workspace_path or default_workspace(project)) / "SPEC.md"
-    if not path.is_file():
+    if not project.spec_content:
         await callback.message.answer("SPEC.md пока не собран.")
     else:
-        content = path.read_text(encoding="utf-8")
-        for part in telegram_html(content.strip() or "SPEC.md пуст."):
+        for part in telegram_html(project.spec_content):
             await callback.message.answer(part, parse_mode="HTML")
 
 
@@ -1220,14 +1218,13 @@ async def team_target(callback: CallbackQuery, state: FSMContext, session: Async
 
 
 async def show_plan(message, project):
-    plan = Path(project.workspace_path or default_workspace(project)) / "PLAN.md"
-    if plan.is_file():
-        await answer_formatted(message, plan.read_text(encoding="utf-8").strip() or "План пуст.")
+    if project.plan_content:
+        await answer_formatted(message, project.plan_content.strip() or "План пуст.")
     rows = []
     action = f"project_action:{project.id}:"
     if project.status not in {"draft", "council"}:
         rows.append([("Перегенерировать план", action + "regenerate_plan")])
-        if plan.is_file():
+        if project.plan_content:
             rows.append([("Отправить правки к плану", f"plan_feedback:{project.id}")])
     if project.status == "awaiting_approval":
         rows.append([("Утвердить план и запустить", action + "approve")])

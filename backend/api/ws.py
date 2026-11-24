@@ -88,7 +88,7 @@ class WorkerPool:
         self.nodes = {}
 
     async def dispatch(self, node, agent, project_id, operation, prompt, context, timeout, *,
-                       instruction="", images=(), on_interrupted=None, transport_ref=None):
+                       instruction="", images=(), on_interrupted=None, transport_ref=None, max_tokens=None):
         from base64 import b64encode
         from uuid import uuid4
 
@@ -109,7 +109,7 @@ class WorkerPool:
                 await peer["socket"].send_json({
                     "id": key, "project_id": project_id, "agent": agent,
                     "operation": operation, "prompt": prompt, "context": context, "timeout": timeout,
-                    "instruction": instruction, "transport_ref": transport_ref,
+                    "instruction": instruction, "transport_ref": transport_ref, "max_tokens": max_tokens,
                     "images": [(mime, b64encode(data).decode("ascii")) for mime, data in images],
                 })
                 return await asyncio.shield(future)

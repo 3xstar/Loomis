@@ -27,7 +27,6 @@ from backend.database.models import DEFAULT_PROJECTS_DIR, AgentConfig, AgentMess
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
 from worker.git_bridge import GitBridge
-from worker.sandbox import workspace_file
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 hub_router = APIRouter(prefix="/api/hub", tags=["hub"])
@@ -286,11 +285,7 @@ async def dashboard_usage(session: Session, user: CurrentUser):
 
 @router.get("/{project_id}", response_model=ProjectDetail)
 async def get_project(project: OwnedProject):
-    try:
-        has_plan = workspace_file(orchestrator.workspace(project), "PLAN.md").is_file()
-    except (OSError, ValueError, RuntimeError):
-        has_plan = False
-    return ProjectDetail(**ProjectView.model_validate(project).model_dump(), has_plan=has_plan)
+    return ProjectDetail(**ProjectView.model_validate(project).model_dump(), has_plan=bool(project.plan_content))
 
 
 @router.get("/{project_id}/spec-items", response_model=list[SpecItemView])
@@ -1039,7 +1034,7 @@ async def upload_media(request: Request, project: OwnedProject, session: Session
     prompt = f"{caption.strip() or 'Проанализируй вложение.'}\n\nФайл: {media.filename}"
     try:
         if channel == "direct" and targets and len(targets) == 1:
-            result = await orchestrator.question(project.id, targets[0], prompt, media=media, mirror=True)
+            result = await orchestrator.question(project.id, targets[0], prompt, media=media)
         else:
             result = {"responses": await orchestrator.chat(project.id, prompt, targets, media=media)}
     except (ValueError, OSError) as exc:
