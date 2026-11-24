@@ -6,6 +6,8 @@ PROJECT_ROWS = (
     ("Агенты проекта", "План и Консилиум"),
     ("▶️ Старт / Пауза", "⚙️ Настройки проекта"),
     ("Статистика", "Все проекты"),
+    ("История коммитов", "Push в Git"),
+    ("Очистить экран чата",),
 )
 PROJECT_BUTTONS = {label for row in PROJECT_ROWS for label in row}
 
@@ -32,13 +34,16 @@ def main_menu(account_exists: bool) -> InlineKeyboardMarkup:
         rows = [[InlineKeyboardButton(text="➕ Новый проект", callback_data="new_project")],
                 [InlineKeyboardButton(text="Мои проекты", callback_data="projects")],
                 [InlineKeyboardButton(text="Хаб нейросетей", callback_data="hub")],
-                [InlineKeyboardButton(text="Мой профиль / Код привязки", callback_data="profile")]]
+                [InlineKeyboardButton(text="⚙️ Настройки аккаунта", callback_data="profile")]]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def profile_keyboard() -> InlineKeyboardMarkup:
+def profile_keyboard(github_linked: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Подключить GitHub", callback_data="profile:github")],
+        [InlineKeyboardButton(text="Отвязать GitHub" if github_linked else "Войти через GitHub",
+                              callback_data="profile:unlink" if github_linked else "profile:github")],
+        [InlineKeyboardButton(text="Изменить общую папку для проектов", callback_data="profile:folder")],
+        [InlineKeyboardButton(text="Переключить рабочие логи в Telegram", callback_data="profile:logs")],
         [InlineKeyboardButton(text="🔑 Сгенерировать новый пароль", callback_data="profile:new_password")],
         [InlineKeyboardButton(text="Мои проекты", callback_data="projects")],
     ])

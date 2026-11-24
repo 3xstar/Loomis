@@ -671,14 +671,16 @@ async def project_history(project: OwnedProject, session: Session):
 
 @router.post("/{project_id}/clear-view", status_code=204)
 async def clear_view(project: OwnedProject, data: ClearView, session: Session):
-    if data.agent_id is not None:
-        await owned_agent(data.agent_id, project, session)
+    agent = await owned_agent(data.agent_id, project, session) if data.agent_id is not None else None
     for model in ((AgentMessage, TaskLog) if data.channel == "terminal" else (AgentMessage,)):
         filters = [model.project_id == project.id, model.is_ui_cleared.is_(False)]
         if model is AgentMessage:
             filters.append(model.channel == data.channel)
-        if data.agent_id is not None:
-            filters.append(model.agent_id == data.agent_id)
+        if agent is not None:
+            belongs_to_agent = model.agent_id == agent.id
+            if model is AgentMessage and data.channel == "direct":
+                belongs_to_agent = or_(belongs_to_agent, model.agent_id.is_(None) & (model.target_name == f"@{agent.name}"))
+            filters.append(belongs_to_agent)
         await session.execute(update(model).where(*filters).values(is_ui_cleared=True))
     await session.commit()
     await manager.broadcast(project.id, {"type": "history_changed", "project_id": project.id})
