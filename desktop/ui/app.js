@@ -2,7 +2,25 @@ let workspaceWindow;
 const byId = (id) => document.getElementById(id) || workspaceWindow?.document.getElementById(id);
 const all = (selector) => document.querySelectorAll(selector);
 
-let token = sessionStorage.getItem("loomis-token");
+const sessionKey = "loomis-token";
+const desktopSessionAPI = window.pywebview?.api?.load_session
+  ? Promise.resolve(window.pywebview.api)
+  : new URLSearchParams(location.search).get("desktop") === "1"
+    ? new Promise(resolve => {
+      window.addEventListener("pywebviewready", () => resolve(window.pywebview.api), {once: true});
+    })
+    : Promise.resolve();
+let sessionWrite = Promise.resolve();
+let token = null;
+
+function writeDesktopSession(accessToken) {
+  sessionWrite = sessionWrite.then(async () => {
+    const bridge = await desktopSessionAPI;
+    if (accessToken) await bridge?.save_session(accessToken);
+    else await bridge?.clear_session();
+  }).catch(error => notify(error.message));
+  return sessionWrite;
+}
 let project, socket, magicTimer;
 let selection = 0;
 let magicAttempt = 0;
@@ -145,7 +163,8 @@ async function signIn(accessToken, isCurrent = () => true) {
   renderIntegrations(user);
   defaultProjectsDir = user.default_projects_dir;
   renderTelegramLogs();
-  sessionStorage.setItem("loomis-token", token);
+  localStorage.setItem(sessionKey, token);
+  const saved = writeDesktopSession(token);
   byId("user-name").dataset.userContent = "";
   byId("user-name").textContent = user.username || "Loomis";
   byId("user-avatar").textContent = byId("user-name").textContent[0].toUpperCase();
@@ -156,6 +175,7 @@ async function signIn(accessToken, isCurrent = () => true) {
   } catch (error) {
     if (token === accessToken) notify(error.message);
   }
+  await saved;
 }
 
 let registering = false;
@@ -2660,7 +2680,8 @@ byId("stats-button").onclick = async () => {
   }
 };
 
-byId("logout-button").onclick = () => {
+byId("logout-button").onclick = async () => {
+  if (!token) return;
   token = null;
   applyLanguage("ru");
   githubUsername = null;
@@ -2673,20 +2694,29 @@ byId("logout-button").onclick = () => {
   hubSearch.value = "";
   renderHubModels();
   showHubPage(false);
-  sessionStorage.removeItem("loomis-token");
+  localStorage.removeItem(sessionKey);
+  const cleared = writeDesktopSession(null);
   stopMagic();
   selectProject(undefined);
   for (const metric of ["models", "projects", "tokens", "cache"]) byId("welcome-" + metric).textContent = "—";
   delete byId("welcome-dashboard").dataset.projectCount;
   showWorkspace(false);
+  await cleared;
 };
 
-const savedToken = token;
-if (savedToken) {
-  signIn(savedToken, () => token === savedToken).catch((error) => {
-    if (token !== savedToken) return;
-    token = null;
-    sessionStorage.removeItem("loomis-token");
-    if (error.status !== 401) notify(error.message);
-  });
+async function restoreSession() {
+  try {
+    const savedToken = localStorage.getItem(sessionKey) || await (await desktopSessionAPI)?.load_session();
+    if (savedToken) await signIn(savedToken);
+  } catch (error) {
+    if (error.status === 401) {
+      localStorage.removeItem(sessionKey);
+      await writeDesktopSession(null);
+    } else {
+      notify(error.message);
+    }
+  } finally {
+    byId("auth-screen").dataset.sessionChecked = "";
+  }
 }
+restoreSession();

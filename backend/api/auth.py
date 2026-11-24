@@ -4,7 +4,10 @@ import hmac
 import os
 import secrets
 import time
+from contextlib import suppress
 from datetime import timedelta
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Annotated, Literal
 
 import httpx
@@ -30,6 +33,31 @@ Username = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
                                           max_length=255, pattern=r"^[\w.@-]+$")]
 bearer = HTTPBearer(auto_error=False)
 load_dotenv(ROOT / ".env")
+
+
+def _load_secret_key() -> str:
+    if settings.secret_key.strip():
+        return settings.secret_key
+    path = ROOT / ".secret_key"
+    try:
+        return path.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        with NamedTemporaryFile(dir=ROOT, delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                stream.write(secrets.token_hex(32).encode("ascii"))
+                stream.close()
+                with suppress(FileExistsError):
+                    os.link(temporary, path)
+            finally:
+                stream.close()
+                temporary.unlink(missing_ok=True)
+        return path.read_text(encoding="ascii").strip()
+
+
+SECRET_KEY = _load_secret_key()
+if not SECRET_KEY:
+    raise RuntimeError("Loomis .secret_key is empty")
 
 
 class Credentials(BaseModel):
@@ -91,7 +119,7 @@ async def create_account(
 
 
 def _sign(payload: str) -> str:
-    return hmac.digest(settings.secret_key.encode(), payload.encode(), "sha256").hex()
+    return hmac.digest(SECRET_KEY.encode(), payload.encode(), "sha256").hex()
 
 
 def _access_token(user_id: int) -> str:

@@ -72,6 +72,7 @@ button, select {
 button:not(:disabled):active, select:not(:disabled):active { transform: scale(0.97); }
 .screen { position: fixed; inset: 0; }
 .auth-screen { display: grid; place-items: center; overflow: auto; padding: 20px; }
+.auth-screen:not([data-session-checked]) { visibility: hidden; }
 .auth-brand .theme-switch { margin-left: auto; }
 .auth-card, .modal { width: min(100%, 460px); padding: 30px; }
 .auth-brand, .brand-row, .sidebar-head, .user-card, .section-label,
@@ -179,13 +180,22 @@ option { background: var(--base); }
   background:transparent !important; border:none !important; box-shadow:none !important; outline:none !important;
 }
 #welcome-lighter, #welcome-ash { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+#welcome-lighter {
+  opacity: 0;
+  transform: translate3d(0, 14px, 0);
+  transition: opacity 0.75s cubic-bezier(0.22, 1, 0.36, 1), transform 0.75s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.lighter-stage[data-webgl] #welcome-lighter { opacity: 1; transform: translate3d(0, 0, 0); }
+@media (prefers-reduced-motion: reduce) {
+  #welcome-lighter { transition: none; }
+}
 #welcome-ash { z-index:2; }
 #lighter-toggle,
 #lighter-toggle:is(:hover, :active, :focus) {
   position:absolute; pointer-events:auto; cursor:pointer; left:50%; bottom:calc(var(--lighter-floor) - 8px);
   translate:-50% 0; width:110px; height:166px; border:0; outline:0; box-shadow:none; background:transparent;
 }
-.lighter-stage[data-webgl] #lighter-toggle { width:240px; height:calc(48% + 8px); cursor:default; }
+.lighter-stage[data-webgl] #lighter-toggle { width:240px; height:calc(57% + 8px); cursor:default; }
 .lighter-stage[data-webgl][data-hit] #lighter-toggle { cursor:pointer; }
 .lighter-stage:has(#lighter-toggle:focus-visible) :is(#welcome-lighter, .lighter-fallback) {
   filter:drop-shadow(0 0 4px var(--accent));
@@ -213,7 +223,7 @@ option { background: var(--base); }
   border-radius:80% 25% 60% 50%; background:radial-gradient(ellipse at 48% 75%,var(--flame-core, #ffedce) 6%,var(--flame-inner, #ffb703) 42%,var(--flame-outer, #ff7b00) 70%,transparent 73%);
   transform-origin:50% 100%; animation:lighter-flicker 470ms ease-in-out infinite alternate;
 }
-.lighter-stage[data-webgl] .lighter-fallback { display:none; }
+.lighter-stage:not([data-webgl-fallback]) .lighter-fallback { display:none; }
 @keyframes lighter-flicker { to { transform:skewX(var(--lighter-bend, 8deg)) scale(.84,1.12); } }
 @media (prefers-reduced-motion: reduce) {
   .lighter-fallback i, .welcome-content { transition:none; }

@@ -1,4 +1,3 @@
-import secrets
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,5 +18,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-if not settings.secret_key:
-    settings.secret_key = secrets.token_urlsafe(32)

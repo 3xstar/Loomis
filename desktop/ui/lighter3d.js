@@ -147,10 +147,15 @@ function syncVisibility() {
     if (!loading) {
       loading = true;
       import("./vendor/three.module.min.js").then(THREE => {
-        if (active) model = createLighter(THREE);
-        else loading = false;
+        if (active) {
+          model = createLighter(THREE);
+          stage.toggleAttribute("data-webgl-fallback", !model);
+        } else loading = false;
         scheduleFrame();
-      }).catch(error => console.warn("Loomis lighter:", error));
+      }).catch(error => {
+        stage.setAttribute("data-webgl-fallback", "");
+        console.warn("Loomis lighter:", error);
+      });
     }
     scheduleFrame();
     return;
@@ -198,6 +203,10 @@ function createLighter(THREE) {
   }
   renderer.setClearColor(0x000000, 0);
   const scene = new THREE.Scene();
+  const lighterGroup = new THREE.Group();
+  lighterGroup.rotation.set(-.08, .12, -.10);
+  lighterGroup.position.set(0, .12, 0);
+  scene.add(lighterGroup);
   const camera = new THREE.OrthographicCamera();
   const target = new THREE.Vector3();
   const projection = new THREE.Vector3();
@@ -206,7 +215,7 @@ function createLighter(THREE) {
   let width = 0;
   let height = 0;
   let floorOffset = 0;
-  let angle = 0;
+  let angle = burning ? THREE.MathUtils.degToRad(105) : 0;
   let velocity = 0;
   let fire = 0;
   let bend = 0;
@@ -270,7 +279,7 @@ function createLighter(THREE) {
   const dark = new THREE.MeshStandardMaterial({ color: 0x18191e, roughness: .85 });
   const fireLight = new THREE.PointLight(palettes[projectCount][3], 0, 3);
   fireLight.position.set(0, 1.93, .29);
-  scene.add(fireLight);
+  lighterGroup.add(fireLight);
 
   function roundedBox(w, h, d, radius, bevel, material) {
     const shape = new THREE.Shape();
@@ -295,21 +304,22 @@ function createLighter(THREE) {
 
   const body = roundedBox(1.10, 1.32, .43, .095, .04, metal);
   body.position.y = .67;
-  scene.add(body);
+  lighterGroup.add(body);
   const pivot = new THREE.Group();
   pivot.position.set(-.54, 1.36, 0);
   const lid = roundedBox(1.10, .50, .43, .09, .04, metal);
   lid.position.set(.54, .255, 0);
   pivot.add(lid);
-  scene.add(pivot);
+  pivot.rotation.z = angle;
+  lighterGroup.add(pivot);
 
   const hinge = new THREE.Mesh(new THREE.CylinderGeometry(.067, .067, .36, 20), steel);
   hinge.rotation.x = Math.PI / 2;
   hinge.position.copy(pivot.position);
-  scene.add(hinge);
+  lighterGroup.add(hinge);
   const chimney = roundedBox(.52, .35, .32, .03, .025, steel);
   chimney.position.set(.10, 1.49, 0);
-  scene.add(chimney);
+  lighterGroup.add(chimney);
   const hole = new THREE.CircleGeometry(.032, 12);
   for (const z of [-.161, .161]) {
     for (const x of [-.06, .10, .26]) {
@@ -317,17 +327,17 @@ function createLighter(THREE) {
         const vent = new THREE.Mesh(hole, dark);
         vent.position.set(x, y, z);
         if (z < 0) vent.rotation.y = Math.PI;
-        scene.add(vent);
+        lighterGroup.add(vent);
       }
     }
   }
   const wheel = new THREE.Mesh(new THREE.CylinderGeometry(.09, .09, .21, 14), dark);
   wheel.rotation.x = Math.PI / 2;
   wheel.position.set(-.30, 1.43, 0);
-  scene.add(wheel);
+  lighterGroup.add(wheel);
   const wick = new THREE.Mesh(new THREE.CylinderGeometry(.032, .039, .10, 12), dark);
   wick.position.set(.10, 1.70, 0);
-  scene.add(wick);
+  lighterGroup.add(wick);
 
   const mark = document.createElement("canvas");
   mark.width = 256;
@@ -342,7 +352,7 @@ function createLighter(THREE) {
   const badge = new THREE.Mesh(new THREE.PlaneGeometry(.78, .195),
     new THREE.MeshBasicMaterial({ map: markTexture, transparent: true, opacity: .82, depthWrite: false }));
   badge.position.set(0, .40, .217);
-  scene.add(badge);
+  lighterGroup.add(badge);
 
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(5, 3.2), new THREE.ShaderMaterial({
     transparent: true, depthWrite: false,
@@ -376,7 +386,7 @@ function createLighter(THREE) {
 
   const flame = new THREE.Group();
   flame.position.set(.10, 1.73, 0);
-  scene.add(flame);
+  lighterGroup.add(flame);
   const flameGeometry = new THREE.SphereGeometry(1, 32, 32);
   const layers = [];
   const flameUniforms = {
@@ -436,7 +446,7 @@ function createLighter(THREE) {
   }));
   for (const { mesh } of sparks) {
     mesh.visible = false;
-    scene.add(mesh);
+    lighterGroup.add(mesh);
   }
 
   const hitMeshes = [body, lid, hinge, chimney, wheel, wick];
@@ -444,7 +454,8 @@ function createLighter(THREE) {
   // Keep the closed lid's silhouette during the peek so the lid cannot move out from under the pointer.
   const closedLid = lid.clone();
   closedLid.position.add(pivot.position);
-  closedLid.updateMatrixWorld();
+  closedLid.visible = false;
+  lighterGroup.add(closedLid);
   const peekMeshes = [...hitMeshes, closedLid];
 
   function hitTest(point, open) {
@@ -456,7 +467,8 @@ function createLighter(THREE) {
 
   function projectPoint(x, y, z) {
     const rect = canvas.getBoundingClientRect();
-    projection.set(flame.position.x + x, flame.position.y + y, flame.position.z + z).project(camera);
+    projection.set(flame.position.x + x, flame.position.y + y, flame.position.z + z)
+      .applyMatrix4(lighterGroup.matrixWorld).project(camera);
     return {
       x: rect.left + (projection.x + 1) * rect.width / 2,
       y: rect.top + (1 - projection.y) * rect.height / 2,
@@ -465,6 +477,7 @@ function createLighter(THREE) {
 
   function reset() {
     angle = velocity = fire = bend = depth = sparkTimer = 0;
+    pivot.rotation.z = 0;
     for (const spark of sparks) {
       spark.life = 0;
       spark.mesh.visible = false;
@@ -474,17 +487,14 @@ function createLighter(THREE) {
   canvas.addEventListener("webglcontextlost", event => {
     event.preventDefault();
     stage.removeAttribute("data-webgl");
+    stage.setAttribute("data-webgl-fallback", "");
     model = undefined;
     scheduleFrame();
   });
   canvas.addEventListener("webglcontextrestored", () => {
-    stage.setAttribute("data-webgl", "");
     model = lighter;
     scheduleFrame();
   });
-  resize();
-  stage.setAttribute("data-webgl", "");
-
   const lighter = {
     hitTest, reset,
     draw(time, dt, open, lit) {
@@ -557,6 +567,10 @@ function createLighter(THREE) {
         spark.mesh.material.opacity = Math.min(1, spark.life * 3);
       }
       renderer.render(scene, camera);
+      if (!stage.hasAttribute("data-webgl")) {
+        stage.removeAttribute("data-webgl-fallback");
+        stage.setAttribute("data-webgl", "");
+      }
       return !still && (lit || fire > .002 || Math.abs(angle - goal) > .0005 ||
         Math.abs(velocity) > .001 || Math.abs(temperature - projectCount) > .001 ||
         sparks.some(spark => spark.life > 0));

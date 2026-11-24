@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from time import monotonic, sleep, time
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlsplit
@@ -12,6 +13,7 @@ import webview
 
 ROOT = Path(__file__).resolve().parents[1]
 ICON_PATH = Path(__file__).with_name("ui") / "logo.ico"
+SESSION_PATH = Path.home() / ".loomis" / "desktop_session.json"
 if __package__ in (None, ""):
     sys.path.insert(0, str(ROOT))
 
@@ -19,6 +21,29 @@ from backend.settings import settings
 
 
 class DesktopAPI:
+    def save_session(self, token: str) -> None:
+        SESSION_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with NamedTemporaryFile(dir=SESSION_PATH.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                stream.write(json.dumps({"access_token": token}).encode("utf-8"))
+                stream.close()
+                temporary.replace(SESSION_PATH)
+            finally:
+                stream.close()
+                temporary.unlink(missing_ok=True)
+
+    def load_session(self) -> str | None:
+        try:
+            data = json.loads(SESSION_PATH.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            return None
+        token = data.get("access_token") if isinstance(data, dict) else None
+        return token if isinstance(token, str) and token else None
+
+    def clear_session(self) -> None:
+        SESSION_PATH.unlink(missing_ok=True)
+
     def select_folder(self) -> str | None:
         folders = self._window.create_file_dialog(webview.FOLDER_DIALOG)
         if isinstance(folders, str):
@@ -106,7 +131,8 @@ def main() -> None:
         # Load the FastAPI-mounted UI on the same origin as the API and WebSocket.
         api = DesktopAPI()
         window = webview.create_window(
-            "Loomis", f"{url}/?v={int(time())}", width=1280, height=820, background_color="#09090b", js_api=api,
+            "Loomis", f"{url}/?v={int(time())}&desktop=1", width=1280, height=820,
+            background_color="#09090b", js_api=api,
         )
         api._window = window
         if sys.platform == "win32":
