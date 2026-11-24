@@ -105,6 +105,7 @@
           <button id="git-push" class="button secondary hidden" type="button">Push в Git</button>
           <button id="stats-button" class="button secondary hidden" type="button" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg> Статистика</button>
           <button class="button secondary hidden" type="button" data-action="regenerate_plan" disabled>Пересобрать план</button>
+        <button id="open-direct" class="button secondary hidden" type="button" aria-controls="direct-panel" aria-expanded="false">Личные чаты</button>
           <button id="theme-switch-top" class="theme-switch" type="button" aria-label="Светлая тема"></button>
         </div>
       </header>
@@ -161,50 +162,54 @@
         <li><span>4</span>Финал / Git</li>
       </ol>
       <div id="project-work-area" class="workspace hidden">
-        <section id="spec-panel" class="spec-panel glass-panel stack hidden" aria-labelledby="spec-heading">
-          <h3 id="spec-heading">Буфер ТЗ</h3>
-          <form id="spec-form" class="stack">
-            <label class="field"><span>Текст ТЗ</span><textarea id="spec-text" rows="4" required></textarea></label>
-            <div class="spec-buttons">
-              <button id="spec-add" class="button secondary" type="submit">Добавить текст</button>
-              <button id="spec-attach" class="button secondary" type="button">Прикрепить документ</button>
-              <button id="spec-image-button" class="button secondary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg> Изображение</button>
-              <input id="spec-image" class="hidden" type="file" accept=".png,.jpg,.jpeg,.webp">
-              <input id="spec-file" class="hidden" type="file" accept=".pdf,.docx,.txt,.md">
-            </div>
-          </form>
-          <p id="spec-empty" aria-live="polite">Буфер пока пуст.</p>
-          <ul id="spec-items" class="spec-items" aria-label="Элементы ТЗ"></ul>
-          <button class="button primary wide" type="button" data-action="build_spec"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg> Собрать SPEC.md и перейти к планированию</button>
-        </section>
+        <details id="workspace-controls" class="glass-panel">
+          <summary>Управление проектом</summary>
+          <div class="workspace-controls-body">
+            <section id="spec-panel" class="spec-panel glass-panel stack hidden" aria-labelledby="spec-heading">
+              <h3 id="spec-heading">Буфер ТЗ</h3>
+              <form id="spec-form" class="stack">
+                <label class="field"><span>Текст ТЗ</span><textarea id="spec-text" rows="4" required></textarea></label>
+                <div class="spec-buttons">
+                  <button id="spec-add" class="button secondary" type="submit">Добавить текст</button>
+                  <button id="spec-attach" class="button secondary" type="button">Прикрепить документ</button>
+                  <button id="spec-image-button" class="button secondary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg> Изображение</button>
+                  <input id="spec-image" class="hidden" type="file" accept=".png,.jpg,.jpeg,.webp">
+                  <input id="spec-file" class="hidden" type="file" accept=".pdf,.docx,.txt,.md">
+                </div>
+              </form>
+              <p id="spec-empty" aria-live="polite">Буфер пока пуст.</p>
+              <ul id="spec-items" class="spec-items" aria-label="Элементы ТЗ"></ul>
+              <button class="button primary wide" type="button" data-action="build_spec"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg> Собрать SPEC.md и перейти к планированию</button>
+            </section>
 
-        <section class="agents-section">
-          <div class="section-head"><div><h3>ИИ-агенты</h3></div><button id="add-agent-button" class="button secondary small">Добавить агента</button></div>
-          <div id="agent-grid" class="agent-grid"></div>
-        </section>
+            <section class="agents-section">
+              <div class="section-head"><div><h3>ИИ-агенты</h3></div><button id="add-agent-button" class="button secondary small">Добавить агента</button></div>
+              <div id="agent-grid" class="agent-grid"></div>
+            </section>
 
-        <section id="project-controls" class="controls-panel glass-panel hidden">
-          <div class="controls-copy"><h3>Цикл проекта</h3></div>
-          <div class="controls-grid">
-            <button class="control-button" data-action="council"><svg class="control-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/></svg><span><strong>Запустить консилиум</strong><small>стартовый план</small></span></button>
-            <button class="control-button" data-action="approve"><svg class="control-icon" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg><span><strong>Утвердить план</strong><small>начать исполнение</small></span></button>
-            <button class="control-button" data-action="pause"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg><span><strong>Пауза</strong></span></button>
-            <button class="control-button danger" data-action="rollback"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h10a6 6 0 0 1 6 6"/></svg><span><strong>Откатить Git-шаг</strong><small>безопасная точка</small></span></button>
+            <section id="project-controls" class="controls-panel glass-panel hidden">
+              <div class="controls-copy"><h3>Цикл проекта</h3></div>
+              <div class="controls-grid">
+                <button class="control-button" data-action="council"><svg class="control-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/></svg><span><strong>Запустить консилиум</strong><small>стартовый план</small></span></button>
+                <button class="control-button" data-action="approve"><svg class="control-icon" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg><span><strong>Утвердить план</strong><small>начать исполнение</small></span></button>
+                <button class="control-button" data-action="pause"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg><span><strong>Пауза</strong></span></button>
+                <button class="control-button danger" data-action="rollback"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h10a6 6 0 0 1 6 6"/></svg><span><strong>Откатить Git-шаг</strong><small>безопасная точка</small></span></button>
+              </div>
+            </section>
+
+            <details id="git-panel" class="glass-panel">
+              <summary>Коммиты Git</summary>
+              <div id="git-commits" class="stack" aria-live="polite"></div>
+            </details>
+
           </div>
-        </section>
-
-        <details id="git-panel" class="glass-panel">
-          <summary>Коммиты Git</summary>
-          <div id="git-commits" class="stack" aria-live="polite"></div>
         </details>
-
         <div id="command-approvals" aria-live="polite"></div>
 
         <section id="work-center" class="work-center glass-panel">
           <div class="work-header">
           <div class="work-switch" role="group" aria-label="Режим рабочего центра">
             <button class="tab active" data-view="team" type="button" aria-pressed="true">Общий чат ИИ</button>
-            <button class="tab" data-view="direct" type="button" aria-pressed="false">Личный чат</button>
             <button class="tab" data-view="terminal" type="button" aria-pressed="false">Терминал</button>
           </div>
             <button id="clear-chat" class="text-action" type="button">Очистить экран</button>
@@ -225,23 +230,10 @@
                 <button id="team-empty-action" class="button secondary" type="button"></button>
               </div>
             </div>
-            <div id="direct" class="chat-stream hidden" role="log" aria-label="Личный чат"></div>
             <div id="terminal" class="terminal hidden" role="log" aria-label="Вывод агента"></div>
           </div>
-          <div id="work-resizer" role="separator" tabindex="0" aria-label="Высота вывода" aria-controls="work-output" aria-orientation="horizontal"></div>
           <form id="message-form" class="composer">
-            <div id="direct-controls" class="composer-top">
-              <label for="message-input">Сообщение агенту</label>
-              <div class="agent-picker">
-                <button id="agent-selector" class="agent-selector" type="button" aria-controls="agent-menu" aria-expanded="false" title="Сначала подключите хотя бы одного ИИ-агента" disabled>
-                  <span id="agent-selector-label">Нет агентов</span>
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-                </button>
-                <div id="agent-menu" class="agent-menu" role="group" aria-label="Выбор агента" hidden></div>
-              </div>
-            </div>
             <div id="team-controls" class="composer-top">
-              <div id="team-targets" class="choice-list" role="group" aria-label="Адресаты"></div>
               <button id="plan-mode" class="choice-chip" type="button" aria-pressed="false">Режим: Обсуждение</button>
             </div>
             <div id="chat-attachment" class="composer-top hidden">
@@ -262,6 +254,29 @@
           <button id="focus-workspace" class="button secondary" type="button">Перейти к отдельному окну</button>
         </div>
       </div>
+      <aside id="direct-panel" class="glass-panel hidden" aria-labelledby="direct-heading">
+        <header class="direct-header">
+          <h3 id="direct-heading">Личные чаты</h3>
+          <button id="close-direct" class="button secondary small" type="button" aria-controls="direct-panel" aria-expanded="true">Свернуть</button>
+        </header>
+        <div id="direct-tabs" role="group" aria-label="Агенты личного чата"></div>
+        <button id="clear-direct" class="text-action" type="button">Очистить экран</button>
+        <p id="direct-empty">Нет активных агентов</p>
+        <div id="direct" class="chat-stream" role="log" aria-label="Личный чат"></div>
+        <form id="direct-message-form" class="composer">
+          <div id="direct-chat-attachment" class="composer-top hidden">
+            <span id="direct-attachment-name"></span>
+            <button id="direct-remove-attachment" class="text-action" type="button">Убрать вложение</button>
+          </div>
+          <div class="composer-row">
+            <input id="direct-chat-file" class="hidden" type="file" accept=".png,.jpg,.jpeg,.webp">
+            <button id="direct-chat-attach" class="icon-button" type="button" title="Прикрепить изображение" aria-label="Прикрепить изображение"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg></button>
+            <button id="direct-chat-record" class="icon-button" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение" aria-pressed="false"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1m-7 8v3m-4 0h8"/></svg></button>
+            <textarea id="direct-message-input" rows="1" placeholder="Напишите агенту…" maxlength="32000" disabled></textarea>
+            <button id="direct-send-button" class="send-button" type="submit" title="Отправить" aria-label="Отправить" disabled><svg viewBox="0 0 24 24"><path d="m5 12 14-7-3 14-4-6-7-1Z"/><path d="m12 13 4-5"/></svg></button>
+          </div>
+        </form>
+      </aside>
     </main>
     <section id="hub-page" class="main-area hidden" aria-labelledby="hub-heading">
       <header class="hub-toolbar glass-panel">

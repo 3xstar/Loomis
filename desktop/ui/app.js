@@ -27,10 +27,11 @@ let magicAttempt = 0;
 let statusRevision = 0;
 let specBusy = false;
 let actionBusy = false;
-let messageBusy = false;
+
 let planMode = false;
 let selectedAgent;
-let attachment, recording, microphonePending;
+const composers = {team: {}, direct: {}};
+const composerNode = (channel, id) => byId(channel === "direct" ? "direct-" + id : id);
 let telegramLogsEnabled = false;
 let githubUsername = null;
 let defaultProjectsDir = "";
@@ -46,10 +47,7 @@ let integrationsRevision = 0;
 let unlinkProvider;
 let historyRequest;
 let activeProjectKey;
-const teamTargets = new Set();
 const deletedAgents = new Set();
-const agentSelector = byId("agent-selector");
-const agentMenu = byId("agent-menu");
 
 const icon = (paths) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
 
@@ -296,12 +294,82 @@ function codeCard(language, source) {
   return card;
 }
 
+function tableCells(line) {
+  const cells = [""];
+  let separators = 0;
+  const parts = line.trim().match(/\\.|\||[^\\|]+|\\/g) || [];
+  for (const part of parts) {
+    if (part === "|") {
+      separators++;
+      cells.push("");
+    } else {
+      cells[cells.length - 1] += part === "\\|" ? "|" : part;
+    }
+  }
+  if (parts[0] === "|") cells.shift();
+  if (parts.at(-1) === "|") cells.pop();
+  return {cells: cells.map((cell) => cell.trim()), separators};
+}
+
+function markdownTable(header, divider) {
+  const {cells: headings, separators} = tableCells(header);
+  const {cells: markers, separators: dividerPipes} = tableCells(divider);
+  if ((!separators && !dividerPipes) || !headings.length || headings.length !== markers.length
+      || !markers.every((marker) => /^:?-+:?$/.test(marker))) return;
+
+  const wrap = element("div", "markdown-table");
+  wrap.dataset.userContent = "";
+  wrap.tabIndex = 0;
+  const table = element("table");
+  const appendRow = (row, cells, tag) => {
+    markers.forEach((marker, column) => {
+      const cell = element(tag);
+      if (tag === "th") cell.scope = "col";
+      if (marker.endsWith(":")) cell.style.textAlign = marker.startsWith(":") ? "center" : "right";
+      else if (marker.startsWith(":")) cell.style.textAlign = "left";
+      inlineMarkdown(cell, cells[column] || "");
+      row.append(cell);
+    });
+  };
+  appendRow(table.createTHead().insertRow(), headings, "th");
+  const rows = table.createTBody();
+  wrap.append(table);
+  return {wrap, append: (cells) => appendRow(rows.insertRow(), cells, "td")};
+}
+
 function renderMarkdown(body, text, terminal) {
   const lines = text.split(/\r?\n/);
   let list;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    const fence = line.match(/^\s*(`{3,}|~{3,})\s*([\w+#.-]*)\s*$/);
+    if (fence) {
+      list = undefined;
+      const code = [];
+      const closing = new RegExp("^\\s*" + fence[1][0] + "{" + fence[1].length + ",}\\s*$");
+      while (++i < lines.length && !closing.test(lines[i])) code.push(lines[i]);
+      body.append(codeCard(fence[2], code.join("\n")));
+      continue;
+    }
     const item = line.match(/^\s*(?:[-+*]|\d+[.)])\s+(.+)/);
+    const heading = line.match(/^(#{1,6})\s+(.+)/);
+    const divider = lines[i + 1];
+    const table = !terminal && !item && !heading && line.trim() && divider
+      && (line.includes("|") || divider.includes("|")) && markdownTable(line, divider);
+    if (table) {
+      list = undefined;
+      body.append(table.wrap);
+      i++;
+      while (lines[i + 1]?.includes("|")) {
+        const next = lines[i + 1];
+        if (/^\s*(?:#{1,6}\s|>|`{3,}|~{3,}|(?:[-+*]|\d+[.)])\s)/.test(next)) break;
+        const row = tableCells(next);
+        if (!row.separators) break;
+        table.append(row.cells);
+        i++;
+      }
+      continue;
+    }
     if (item) {
       const tag = /^\s*\d/.test(line) ? "ol" : "ul";
       if (list?.localName !== tag) {
@@ -316,17 +384,11 @@ function renderMarkdown(body, text, terminal) {
       continue;
     }
     list = undefined;
-    const fence = line.match(/^\s*\x60{3,}\s*([\w+#.-]*)\s*$/);
-    if (fence) {
-      const code = [];
-      while (++i < lines.length && !/^\s*\x60{3,}\s*$/.test(lines[i])) code.push(lines[i]);
-      body.append(codeCard(fence[1], code.join("\n")));
-    } else if (terminal) {
+    if (terminal) {
       const output = element("span", "", line + (i + 1 < lines.length ? "\n" : ""));
       output.dataset.userContent = "";
       body.append(output);
     } else if (line.trim()) {
-      const heading = line.match(/^(#{1,6})\s+(.+)/);
       const block = element(heading ? "h" + heading[1].length : "p");
       block.dataset.userContent = "";
       inlineMarkdown(block, heading ? heading[2] : line);
@@ -374,23 +436,24 @@ function messageNode(event, channel) {
   return entry;
 }
 
-function refreshStream(reset = false) {
-  const pane = byId(view);
-  const key = {team: 0, direct: selectedAgent?.id, terminal: terminalAgent}[view];
-  const entries = streams[view].get(key) || [];
+function refreshStream(channel, reset = false) {
+  const pane = byId(channel);
+  const key = {team: 0, direct: selectedAgent?.id, terminal: terminalAgent}[channel];
+  const entries = streams[channel].get(key) || [];
   const atBottom = reset || pane.scrollHeight - pane.scrollTop - pane.clientHeight < 20;
   if (reset) pane.replaceChildren();
   while (pane.firstChild && pane.firstChild !== entries[0]?.node) pane.firstChild.remove();
   for (const item of entries) {
-    item.node ??= messageNode(item.event, view);
+    item.node ??= messageNode(item.event, channel);
     if (item.node.parentNode !== pane) pane.append(item.node);
   }
-  byId("clear-chat").disabled = !entries.length;
-  if (view === "terminal") {
+  if (channel === "team") byId("clear-chat").disabled = !entries.length;
+  if (channel === "direct") byId("clear-direct").disabled = !entries.length;
+  if (channel === "terminal") {
     byId("terminal-count").textContent = entries.length + " записей";
     byId("clear-terminal").disabled = !entries.length;
   }
-  renderTeamEmpty();
+  if (channel === "team") renderTeamEmpty();
   if (atBottom) pane.scrollTop = pane.scrollHeight;
 }
 
@@ -402,9 +465,10 @@ function receiveMessage(event, channel, replay = false) {
   const entries = bucket.get(key);
   if (!replay && event.id != null && entries.some((item) => item.event.id === event.id)) return;
   entries.push({event});
-  if (!replay && view === channel) frame ??= requestAnimationFrame(() => {
+  if (!replay) frame ??= requestAnimationFrame(() => {
     frame = undefined;
-    refreshStream();
+    refreshStream(view);
+    refreshStream("direct");
   });
 }
 
@@ -418,11 +482,11 @@ function renderTerminalTabs() {
     tab.onclick = () => {
       terminalAgent = agent.id;
       for (const button of tab.parentElement.children) button.setAttribute("aria-pressed", String(button === tab));
-      refreshStream(true);
+      refreshStream(view, true);
     };
     return tab;
   }));
-  if (view === "terminal") refreshStream(true);
+  if (view === "terminal") refreshStream(view, true);
 }
 
 async function clearView(channel, agentId) {
@@ -437,9 +501,8 @@ async function clearView(channel, agentId) {
   }
 }
 byId("clear-terminal").onclick = () => clearView("terminal", terminalAgent);
-byId("clear-chat").onclick = () => view === "team"
-  ? clearView("team_chat")
-  : clearView("direct", selectedAgent?.id);
+byId("clear-chat").onclick = () => clearView("team_chat");
+byId("clear-direct").onclick = () => clearView("direct", selectedAgent?.id);
 
 const terminalFontKey = "loomis-terminal-font";
 let terminalFont = Number(localStorage.getItem(terminalFontKey)) || 13;
@@ -464,81 +527,56 @@ function choiceChip(label, checked, onChange) {
   return chip;
 }
 
-function renderTeamTargets() {
-  const enabled = agentsInProject.filter((agent) => agent.enabled);
-  const list = byId("team-targets");
-  const focused = list.ownerDocument.activeElement?.closest(".choice-chip");
-  const pick = (id, label, checked, change) => {
-    const chip = choiceChip(label, checked, () => {
-      change();
-      renderTeamTargets();
-    });
-    chip.dataset.target = id;
-    return chip;
-  };
-  const eligible = new Set(enabled.map((agent) => agent.id));
-  for (const id of teamTargets) if (!eligible.has(id)) teamTargets.delete(id);
-  list.replaceChildren(pick("all", "Все", !teamTargets.size, () => teamTargets.clear()),
-    ...enabled.map(({id, name}) => pick(id, name, teamTargets.has(id), () => {
-      if (teamTargets.has(id)) teamTargets.delete(id);
-      else teamTargets.add(id);
-    })));
-  if (focused && !focused.isConnected) {
-    [...list.children].find((chip) => chip.dataset.target === focused.dataset.target)?.firstChild.focus();
-  }
-}
-
-function setAttachment(file) {
-  attachment = file;
-  byId("chat-attachment").classList.toggle("hidden", !file);
-  byId("attachment-name").dataset.userContent = "";
-  byId("attachment-name").textContent = file?.name || "";
+function setAttachment(channel, file) {
+  composers[channel].attachment = file;
+  composerNode(channel, "chat-attachment").classList.toggle("hidden", !file);
+  const name = composerNode(channel, "attachment-name");
+  name.dataset.userContent = "";
+  name.textContent = file?.name || "";
 }
 
 function syncComposer() {
-  const team = view === "team";
-  const available = project && !["draft", "council", "deleted"].includes(project.status)
-    && (team ? agentsInProject.some((agent) => agent.enabled) : selectedAgent);
-  const input = byId("message-input");
-  const modeChip = byId("plan-mode");
-  const hasPlan = Boolean(project?.has_plan);
-  const editingPlan = team && planMode && hasPlan;
-  modeChip.textContent = editingPlan ? "Режим: Правка PLAN.md" : "Режим: Обсуждение";
-  modeChip.setAttribute("aria-pressed", editingPlan);
-  modeChip.disabled = !available || !hasPlan || messageBusy || Boolean(recording) || microphonePending;
-  modeChip.title = hasPlan ? "Переключить режим отправки" : "Правка доступна после создания плана";
-  input.disabled = !available || messageBusy;
-  byId("chat-attach").disabled = input.disabled || editingPlan;
-  byId("send-button").disabled = input.disabled || Boolean(recording);
-  byId("send-button").classList.toggle("plan-send", editingPlan);
-  byId("send-button").title = editingPlan ? "Отправить замечания к PLAN.md" : "Отправить";
-  byId("send-button").setAttribute("aria-label", byId("send-button").title);
-  byId("chat-record").disabled = !recording && (input.disabled || editingPlan || microphonePending);
-  input.placeholder = editingPlan ? "Напишите замечания к PLAN.md…"
-    : team ? "Напишите выбранным агентам…" : "Напишите агенту…";
-  input.setAttribute("aria-label", team ? "Сообщение команде" : "Сообщение агенту");
+  for (const channel of Object.keys(composers)) {
+    const team = channel === "team";
+    const {busy, recording, microphonePending} = composers[channel];
+    const available = project && !["draft", "council", "deleted"].includes(project.status)
+      && (team ? agentsInProject.some((agent) => agent.enabled && agent.agent_role_type !== "image_gen") : selectedAgent);
+    const input = composerNode(channel, "message-input");
+    const hasPlan = Boolean(project?.has_plan);
+    const editingPlan = team && planMode && hasPlan;
+    if (team) {
+      const modeChip = byId("plan-mode");
+      modeChip.textContent = editingPlan ? "Режим: Правка PLAN.md" : "Режим: Обсуждение";
+      modeChip.setAttribute("aria-pressed", editingPlan);
+      modeChip.disabled = !available || !hasPlan || busy || Boolean(recording) || Boolean(microphonePending);
+      modeChip.title = hasPlan ? "Переключить режим отправки" : "Правка доступна после создания плана";
+    }
+    input.disabled = !available || Boolean(busy);
+    composerNode(channel, "chat-attach").disabled = input.disabled || editingPlan;
+    const send = composerNode(channel, "send-button");
+    send.disabled = input.disabled || Boolean(recording);
+    send.classList.toggle("plan-send", editingPlan);
+    send.title = editingPlan ? "Отправить замечания к PLAN.md" : "Отправить";
+    send.setAttribute("aria-label", send.title);
+    composerNode(channel, "chat-record").disabled = !recording && (input.disabled || editingPlan || Boolean(microphonePending));
+    input.placeholder = editingPlan ? "Напишите замечания к PLAN.md…"
+      : team ? "Напишите в общий чат…" : "Напишите агенту…";
+    input.setAttribute("aria-label", team ? "Сообщение команде" : "Сообщение агенту");
+  }
 }
 
 function selectView(next) {
-  if (view !== next) {
-    byId("message-input").value = "";
-    discardRecording();
-    setAttachment();
-  }
   view = next;
   workCenter.querySelectorAll("[data-view]").forEach((button) => {
     const active = button.dataset.view === view;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
-  for (const channel of Object.keys(streams)) byId(channel).classList.toggle("hidden", channel !== view);
+  for (const channel of ["team", "terminal"]) byId(channel).classList.toggle("hidden", channel !== view);
   byId("terminal-controls").classList.toggle("hidden", view !== "terminal");
-  byId("clear-chat").classList.toggle("hidden", view === "terminal");
-  byId("message-form").classList.toggle("hidden", view === "terminal");
-  byId("direct-controls").classList.toggle("hidden", view !== "direct");
-  byId("team-controls").classList.toggle("hidden", view !== "team");
-  syncComposer();
-  refreshStream(true);
+  byId("clear-chat").classList.toggle("hidden", view !== "team");
+  byId("message-form").classList.toggle("hidden", view !== "team");
+  refreshStream(view, true);
 }
 const workCenter = byId("work-center");
 workCenter.querySelectorAll("[data-view]").forEach((button) => button.onclick = () => selectView(button.dataset.view));
@@ -577,7 +615,6 @@ window.loomisMountWorkspace = (child, projectId) => {
   workspacePlaceholder.classList.remove("hidden");
   popoutButton.classList.add("hidden");
   returnWorkspace.classList.remove("hidden");
-  child.document.addEventListener("focusin", dismissAgentMenu);
   child.addEventListener("pagehide", () => {
     if (child === workspaceWindow) dockWorkspace();
   }, {once: true});
@@ -610,37 +647,6 @@ returnWorkspace.onclick = () => {
 };
 byId("focus-workspace").onclick = () => workspaceWindow?.focus();
 window.addEventListener("pagehide", dockWorkspace);
-
-const resizer = byId("work-resizer"), output = byId("work-output");
-const heightKey = "loomis-output-height";
-function resizeOutput(height, save = false) {
-  const size = Math.max(140, Math.min(2400, Math.round(height)));
-  output.style.height = size + "px";
-  resizer.setAttribute("aria-valuenow", String(size));
-  if (save) localStorage.setItem(heightKey, String(size));
-}
-resizeOutput(Number(localStorage.getItem(heightKey)) || 320);
-resizer.setAttribute("aria-valuemin", "140");
-resizer.setAttribute("aria-valuemax", "2400");
-let drag;
-resizer.onpointerdown = (event) => {
-  if (event.button !== 0 || drag) return;
-  drag = {id: event.pointerId, y: event.clientY, height: output.offsetHeight};
-  resizer.setPointerCapture(drag.id);
-};
-resizer.onpointermove = (event) => {
-  if (drag?.id === event.pointerId) resizeOutput(drag.height + event.clientY - drag.y);
-};
-resizer.onlostpointercapture = (event) => {
-  if (drag?.id !== event.pointerId) return;
-  drag = undefined;
-  resizeOutput(output.offsetHeight, true);
-};
-resizer.onkeydown = (event) => {
-  if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
-  event.preventDefault();
-  resizeOutput(output.offsetHeight + (event.key === "ArrowDown" ? 24 : -24), true);
-};
 
 function setStatus(status) {
   const enteringDraft = status === "draft" && byId("spec-panel").classList.contains("hidden");
@@ -721,7 +727,10 @@ function renderTeamEmpty() {
   } else if (status === "draft") {
     copy = "Добавьте материалы в буфер и соберите ТЗ, чтобы открыть консилиум.";
     label = "Перейти к ТЗ";
-    action = () => byId("spec-text").focus();
+    action = () => {
+      byId("workspace-controls").open = true;
+      byId("spec-text").focus();
+    };
   } else if (status === "planning") {
     copy = "Запустите консилиум, чтобы агенты обсудили ТЗ и подготовили план.";
     label = "Запустить консилиум";
@@ -888,7 +897,8 @@ async function loadHistory(projectId, current) {
     for (const event of [...events.values()].sort((left, right) => left.id - right.id)) {
       receiveHistoryEvent(event, true);
     }
-    refreshStream(true);
+    refreshStream(view, true);
+    refreshStream("direct", true);
   } finally {
     if (historyRequest === request) historyRequest = undefined;
   }
@@ -947,9 +957,13 @@ async function selectProject(item) {
   if (item) localStorage.setItem(activeProjectKey, item.id);
   else if (token) localStorage.removeItem(activeProjectKey);
   historyRequest = undefined;
-  discardRecording();
-  setAttachment();
-  teamTargets.clear();
+  for (const channel of Object.keys(composers)) {
+    discardRecording(channel);
+    setAttachment(channel);
+    composerNode(channel, "message-input").value = "";
+    composers[channel].busy = false;
+  }
+  byId("workspace-controls").open = false;
   planMode = false;
   deletedAgents.clear();
   project = item;
@@ -968,12 +982,9 @@ async function selectProject(item) {
   agentsInProject = [];
   terminalAgent = undefined;
   renderTerminalTabs();
-  byId("message-input").value = "";
   byId("agent-grid").replaceChildren();
   selectedAgent = undefined;
-  messageBusy = false;
-  renderAgentSelector([]);
-  renderTeamTargets();
+  renderDirectTabs([]);
   renderProjectTitle();
   renderProjectModes();
   selectView("team");
@@ -1013,10 +1024,10 @@ async function loadAgents(projectId, current) {
     light.type = "button";
     light.onclick = () => {
       if (!agent.enabled) return;
-      selectView("direct");
       selectAgent(agent);
-      renderAgentSelector(agentsInProject);
-      byId("message-input").focus();
+      renderDirectTabs(agentsInProject);
+      setDirectOpen(true);
+      byId("direct-message-input").focus();
     };
     description.append(name, details);
     const retry = element("button", "icon-button retry-agent");
@@ -1045,8 +1056,7 @@ async function loadAgents(projectId, current) {
     return card;
   });
   byId("agent-grid").replaceChildren(...(cards.length ? cards : ["В проекте пока нет агентов."]));
-  renderAgentSelector(agents);
-  renderTeamTargets();
+  renderDirectTabs(agents);
   renderTerminalTabs();
   renderProjectControls();
 }
@@ -1103,57 +1113,58 @@ for (const [id, field] of projectModes) {
   };
 }
 
-function setAgentMenu(open, restoreFocus = false) {
-  agentMenu.hidden = !open;
-  agentSelector.setAttribute("aria-expanded", String(open));
-  if (open) agentMenu.querySelector('[aria-pressed="true"]')?.focus();
-  if (restoreFocus) agentSelector.focus();
+let directOpen = !matchMedia("(max-width: 900px)").matches;
+
+function setDirectOpen(open) {
+  directOpen = open;
+  const panel = byId("direct-panel");
+  const wasHidden = panel.classList.contains("hidden");
+  panel.classList.toggle("hidden", !project || !open);
+  const button = byId("open-direct");
+  button.classList.toggle("hidden", !project || open);
+  button.setAttribute("aria-expanded", String(Boolean(project && open)));
+  if (project && open && wasHidden) refreshStream("direct", true);
 }
+
+byId("open-direct").onclick = () => {
+  setDirectOpen(true);
+  byId("close-direct").focus();
+};
+byId("close-direct").onclick = () => {
+  setDirectOpen(false);
+  byId("open-direct").focus();
+};
 
 function selectAgent(agent) {
-  if (selectedAgent?.id !== agent?.id && view === "direct") {
-    byId("message-input").value = "";
-    discardRecording();
-    setAttachment();
+  if (selectedAgent?.id !== agent?.id) {
+    byId("direct-message-input").value = "";
+    discardRecording("direct");
+    setAttachment("direct");
   }
   selectedAgent = agent;
-  byId("agent-selector-label").toggleAttribute("data-user-content", Boolean(agent));
-  if (agent) byId("agent-selector-label").textContent = agent.name;
   syncComposer();
-  if (view === "direct") refreshStream(true);
+  refreshStream("direct", true);
 }
 
-function renderAgentSelector(agents) {
+function renderDirectTabs(agents) {
   const enabled = agents.filter((agent) => agent.enabled);
   const next = enabled.find((agent) => agent.id === selectedAgent?.id) || enabled[0];
-  setAgentMenu(false);
-  agentSelector.disabled = !next;
-  agentSelector.title = next ? "" : agents.length ? "Нет активных агентов" : "Сначала подключите хотя бы одного ИИ-агента";
   selectAgent(next);
-  if (!next) byId("agent-selector-label").textContent = agents.length ? "Нет активных агентов" : "Нет агентов";
-  agentMenu.replaceChildren(...enabled.map((agent) => {
-    const button = document.createElement("button");
+  byId("direct-empty").classList.toggle("hidden", Boolean(next));
+  const tabs = byId("direct-tabs");
+  tabs.replaceChildren(...enabled.map((agent) => {
+    const button = element("button", "tab", agent.name);
     button.type = "button";
     button.dataset.userContent = "";
-    button.textContent = agent.name;
     button.setAttribute("aria-pressed", String(agent === next));
     button.onclick = () => {
-      agentMenu.querySelector('[aria-pressed="true"]')?.setAttribute("aria-pressed", "false");
+      tabs.querySelector('[aria-pressed="true"]')?.setAttribute("aria-pressed", "false");
       button.setAttribute("aria-pressed", "true");
       selectAgent(agent);
-      setAgentMenu(false, true);
     };
     return button;
   }));
 }
-
-agentSelector.onclick = () => {
-  if (!agentSelector.disabled) setAgentMenu(agentMenu.hidden);
-};
-function dismissAgentMenu(event) {
-  if (!agentSelector.parentElement.contains(event.target)) setAgentMenu(false);
-}
-document.addEventListener("focusin", dismissAgentMenu);
 
 let dashboardUsageRequest = 0;
 async function loadDashboardUsage() {
@@ -1250,38 +1261,50 @@ all("[data-action]").forEach((button) => button.onclick = () => {
   };
 });
 
-byId("message-input").onkeydown = (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+for (const channel of Object.keys(composers)) {
+  const control = (id) => composerNode(channel, id);
+  control("message-input").onkeydown = (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      if (!control("send-button").disabled) control("message-form").requestSubmit();
+    }
+  };
+  control("chat-attach").onclick = () => control("chat-file").click();
+  control("chat-file").onchange = ({target}) => {
+    const file = target.files[0];
+    target.value = "";
+    if (file && !control("chat-attach").disabled) setAttachment(channel, file);
+  };
+  control("remove-attachment").onclick = () => setAttachment(channel);
+  control("chat-record").onclick = () => recordMessage(channel);
+  control("message-form").onsubmit = (event) => {
     event.preventDefault();
-    if (!byId("send-button").disabled) byId("message-form").requestSubmit();
-  }
-};
-byId("chat-attach").onclick = () => byId("chat-file").click();
-byId("chat-file").onchange = ({target}) => {
-  const file = target.files[0];
-  target.value = "";
-  if (file && !byId("chat-attach").disabled) setAttachment(file);
-};
-byId("remove-attachment").onclick = () => setAttachment();
-
-function discardRecording() {
-  microphonePending = undefined;
-  if (!recording) return;
-  const {recorder} = recording;
-  recording = undefined;
-  if (recorder.state !== "inactive") recorder.stop();
-  recorder.stream.getTracks().forEach((track) => track.stop());
-  byId("chat-record").setAttribute("aria-pressed", "false");
-  byId("chat-record").title = "Записать голосовое сообщение";
+    sendMessage(channel, event);
+  };
 }
 
-byId("chat-record").onclick = async () => {
-  if (recording) {
-    if (recording.recorder.state !== "inactive") recording.recorder.stop();
+function discardRecording(channel) {
+  const state = composers[channel];
+  state.microphonePending = undefined;
+  if (!state.recording) return;
+  const {recorder} = state.recording;
+  state.recording = undefined;
+  if (recorder.state !== "inactive") recorder.stop();
+  recorder.stream.getTracks().forEach((track) => track.stop());
+  const button = composerNode(channel, "chat-record");
+  button.setAttribute("aria-pressed", "false");
+  button.title = "Записать голосовое сообщение";
+}
+
+async function recordMessage(channel) {
+  const state = composers[channel];
+  const button = composerNode(channel, "chat-record");
+  if (state.recording) {
+    if (state.recording.recorder.state !== "inactive") state.recording.recorder.stop();
     return;
   }
   const request = Symbol();
-  microphonePending = request;
+  state.microphonePending = request;
   syncComposer();
   let stream;
   try {
@@ -1292,7 +1315,7 @@ byId("chat-record").onclick = async () => {
     const format = formats.find(([mime]) => MediaRecorder.isTypeSupported(mime));
     if (!format) throw new Error("Браузер не поддерживает форматы аудиозаписи Loomis.");
     stream = await navigator.mediaDevices.getUserMedia({audio: true});
-    if (microphonePending !== request || byId("message-input").disabled) return;
+    if (state.microphonePending !== request || composerNode(channel, "message-input").disabled) return;
     const [mimeType, extension] = format;
     const recorder = new MediaRecorder(stream, {mimeType});
     const parts = [];
@@ -1304,38 +1327,38 @@ byId("chat-record").onclick = async () => {
     };
     recorder.onstop = () => {
       stream.getTracks().forEach((track) => track.stop());
-      if (recording?.recorder !== recorder) return;
-      discardRecording();
-      if (bytes) setAttachment(new File(parts, "Голосовое сообщение." + extension, {type: mimeType}));
+      if (state.recording?.recorder !== recorder) return;
+      discardRecording(channel);
+      if (bytes) setAttachment(channel, new File(parts, "Голосовое сообщение." + extension, {type: mimeType}));
       syncComposer();
     };
     recorder.onerror = () => {
-      if (recording?.recorder !== recorder) return;
-      discardRecording();
+      if (state.recording?.recorder !== recorder) return;
+      discardRecording(channel);
       syncComposer();
       notify("Не удалось записать голосовое сообщение.");
     };
     recorder.start(1000);
-    recording = {recorder};
-    byId("chat-record").setAttribute("aria-pressed", "true");
-    byId("chat-record").title = "Остановить запись";
+    state.recording = {recorder};
+    button.setAttribute("aria-pressed", "true");
+    button.title = "Остановить запись";
   } catch (error) {
-    if (microphonePending === request) notify(error.message);
+    if (state.microphonePending === request) notify(error.message);
   } finally {
-    if (!recording || recording.recorder.stream !== stream) stream?.getTracks().forEach((track) => track.stop());
-    if (microphonePending === request) microphonePending = undefined;
+    if (!state.recording || state.recording.recorder.stream !== stream) stream?.getTracks().forEach((track) => track.stop());
+    if (state.microphonePending === request) state.microphonePending = undefined;
     syncComposer();
   }
-};
+}
 
-async function sendMessage(event) {
-  const input = byId("message-input");
+async function sendMessage(channel, event) {
+  const input = composerNode(channel, "message-input");
   const agentId = selectedAgent?.id;
-  const mode = view;
-  const feedback = mode === "team" && planMode && project?.has_plan;
+  const state = composers[channel];
+  const feedback = channel === "team" && planMode && project?.has_plan;
   const message = input.value.trim();
-  const file = attachment;
-  if (!project || input.disabled || recording || mode === "terminal") return;
+  const {attachment: file, recording} = state;
+  if (!project || input.disabled || recording) return;
   if (feedback && (!message || file)) {
     showCursorToast("Для доработки плана введите текст без вложения.", event);
     return;
@@ -1344,39 +1367,34 @@ async function sendMessage(event) {
   const current = selection;
   const path = "projects/" + project.id;
   const revision = statusRevision;
-  const targets = mode === "team" ? [...teamTargets] : [agentId];
-  const targetIds = targets.length ? targets : null;
-  messageBusy = true;
+  const targets = channel === "direct" ? [agentId] : [];
+  state.busy = true;
   syncComposer();
   try {
     if (feedback) {
-      const result = await api(path + "/council/feedback", {feedback: message, target_agent_ids: targetIds});
+      const result = await api(path + "/council/feedback", {feedback: message});
       if (current === selection && revision === statusRevision) setStatus(result.status);
     } else if (file) {
-      await api(path + "/media", mediaForm(file, mode === "team" ? "team_chat" : "direct", message, targets));
-    } else if (mode === "team") {
-      await api(path + "/chat", {question: message, target_agent_ids: targetIds});
+      await api(path + "/media", mediaForm(file, channel === "team" ? "team_chat" : "direct", message, targets));
+    } else if (channel === "team") {
+      await api(path + "/chat", {question: message});
     } else {
       await api(path + "/agents/" + agentId + "/question", {question: message});
     }
-    if (current === selection && mode === view && (mode === "team" || selectedAgent?.id === agentId)) {
+    if (current === selection && (channel === "team" || selectedAgent?.id === agentId)) {
       if (input.value.trim() === message) input.value = "";
-      if (attachment === file) setAttachment();
+      if (state.attachment === file) setAttachment(channel);
     }
   } catch (error) {
     notify(error.message);
   } finally {
     if (current === selection) {
-      messageBusy = false;
+      state.busy = false;
       syncComposer();
     }
   }
 }
 
-byId("message-form").onsubmit = (event) => {
-  event.preventDefault();
-  sendMessage(event);
-};
 byId("plan-mode").onclick = () => {
   planMode = !planMode;
   syncComposer();
@@ -1418,7 +1436,6 @@ function closeContextMenu(restoreFocus = false) {
 
 document.addEventListener("click", (event) => {
   if (!contextMenu.contains(event.target)) closeContextMenu();
-  if (!agentSelector.parentElement.contains(event.target)) setAgentMenu(false);
 });
 window.addEventListener("resize", () => closeContextMenu());
 contextMenu.addEventListener("keydown", (event) => {
@@ -1459,7 +1476,6 @@ byId("context-delete").onclick = () => {
 
 function removeAgentHistory({id, name}) {
   deletedAgents.add(id);
-  teamTargets.delete(id);
   streams.direct.delete(id);
   streams.terminal.delete(id);
   const messages = streams.team.get(0) || [];
@@ -1467,7 +1483,8 @@ function removeAgentHistory({id, name}) {
     && (event.agent_id != null || (event.sender_name !== name && event.target_name !== "@" + name))));
   byId("direct").replaceChildren();
   byId("terminal").replaceChildren();
-  refreshStream(true);
+  refreshStream(view, true);
+  refreshStream("direct", true);
 }
 
 async function mutateFromModal(button, target, method, body, onError = (error) => notify(error.message)) {
@@ -1484,9 +1501,8 @@ async function mutateFromModal(button, target, method, body, onError = (error) =
         if (method === "DELETE") {
           removeAgentHistory(target.item);
           agentsInProject = agentsInProject.filter((agent) => agent.id !== target.item.id);
-          renderAgentSelector(agentsInProject);
-          renderTeamTargets();
-          renderTerminalTabs();
+          renderDirectTabs(agentsInProject);
+                  renderTerminalTabs();
         }
         await loadAgents(target.projectId, target.current);
       }
@@ -1603,7 +1619,6 @@ byId("modal-backdrop").onclick = (event) => { if (event.target === event.current
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape" || byId("unlink-dialog").open) return;
   if (!contextMenu.inert) closeContextMenu(true);
-  else if (!agentMenu.hidden) setAgentMenu(false, true);
   else showModal();
 });
 byId("hub-mobile-menu").onclick = byId("mobile-menu").onclick = () => document.querySelector(".sidebar").classList.toggle("open");
@@ -1724,6 +1739,7 @@ function renderProjectTitle() {
   }
   document.querySelector('[data-action="regenerate_plan"]').classList.toggle("hidden", !project);
   byId("welcome-dashboard").classList.toggle("hidden", Boolean(project));
+  setDirectOpen(directOpen);
   renderGitPush();
   byId("project-settings-button").disabled = !project;
   const projectName = byId("current-project-name");
