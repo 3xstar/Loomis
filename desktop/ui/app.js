@@ -1,5 +1,4 @@
-let workspaceWindow;
-const byId = (id) => document.getElementById(id) || workspaceWindow?.document.getElementById(id);
+const byId = (id) => document.getElementById(id);
 const all = (selector) => document.querySelectorAll(selector);
 
 const sessionKey = "loomis-token";
@@ -31,6 +30,7 @@ let actionBusy = false;
 let planMode = false;
 let selectedAgent;
 const composers = {team: {}, direct: {}};
+let specAttachments = [];
 const composerNode = (channel, id) => byId(channel === "direct" ? "direct-" + id : id);
 let telegramLogsEnabled = false;
 let githubUsername = null;
@@ -74,7 +74,7 @@ function notify(message) {
   const toast = document.createElement("div");
   toast.className = "toast glass-panel";
   toast.textContent = message;
-  (workspaceWindow?.document.getElementById("toasts") || byId("toasts")).append(toast);
+  byId("toasts").append(toast);
   setTimeout(() => toast.remove(), 4500);
 }
 
@@ -108,7 +108,6 @@ function showCursorToast(message, event) {
 
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  if (workspaceWindow) workspaceWindow.document.documentElement.dataset.theme = theme;
   localStorage.setItem("loomis-theme", theme);
   all(".theme-switch").forEach((button) => {
     button.innerHTML = icon(theme === "dark"
@@ -527,12 +526,45 @@ function choiceChip(label, checked, onChange) {
   return chip;
 }
 
-function setAttachment(channel, file) {
-  composers[channel].attachment = file;
-  composerNode(channel, "chat-attachment").classList.toggle("hidden", !file);
-  const name = composerNode(channel, "attachment-name");
-  name.dataset.userContent = "";
-  name.textContent = file?.name || "";
+function renderAttachmentChips(container, attachments, remove, busy) {
+  container.replaceChildren();
+  attachments.forEach(({file}, index) => {
+    const chip = element("span", "attachment-chip");
+    chip.innerHTML = icon('<path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6m-6 4h6"/>');
+    const name = element("span", "attachment-name");
+    name.dataset.userContent = "";
+    name.textContent = name.title = file.name;
+    const button = element("button", "attachment-remove");
+    button.type = "button";
+    button.textContent = "×";
+    button.setAttribute("aria-label", "Удалить: " + file.name);
+    button.disabled = Boolean(busy);
+    button.onclick = () => {
+      remove(index);
+      const buttons = container.querySelectorAll(".attachment-remove");
+      (buttons[Math.min(index, buttons.length - 1)] || container.parentElement.querySelector("textarea"))?.focus();
+    };
+    chip.append(name, button);
+    container.append(chip);
+  });
+}
+
+function setAttachments(channel, attachments = []) {
+  composers[channel].attachments = attachments;
+  renderChatAttachments(channel);
+}
+
+function renderChatAttachments(channel) {
+  const {attachments = [], busy} = composers[channel];
+  renderAttachmentChips(composerNode(channel, "chat-attachment"), attachments,
+    (index) => setAttachments(channel, attachments.filter((_, i) => i !== index)), busy);
+}
+
+function renderSpecAttachments() {
+  renderAttachmentChips(byId("spec-attachments"), specAttachments, (index) => {
+    specAttachments.splice(index, 1);
+    renderSpecAttachments();
+  }, specBusy || actionBusy);
 }
 
 function syncComposer() {
@@ -553,6 +585,9 @@ function syncComposer() {
     }
     input.disabled = !available || Boolean(busy);
     composerNode(channel, "chat-attach").disabled = input.disabled || editingPlan;
+    composerNode(channel, "chat-attachment").querySelectorAll("button").forEach((button) => {
+      button.disabled = Boolean(busy);
+    });
     const send = composerNode(channel, "send-button");
     send.disabled = input.disabled || Boolean(recording);
     send.classList.toggle("plan-send", editingPlan);
@@ -581,72 +616,6 @@ function selectView(next) {
 const workCenter = byId("work-center");
 workCenter.querySelectorAll("[data-view]").forEach((button) => button.onclick = () => selectView(button.dataset.view));
 selectView(view);
-
-const workspacePlaceholder = byId("workspace-placeholder");
-const popoutButton = byId("popout-button");
-const returnWorkspace = byId("return-workspace");
-let pendingWindow;
-
-function moveWorkspace(destination, before = null) {
-  const pane = byId(view);
-  const scroll = pane.scrollTop;
-  destination.insertBefore(workCenter, before);
-  pane.scrollTop = scroll;
-}
-
-function dockWorkspace() {
-  const child = workspaceWindow || pendingWindow;
-  if (workspaceWindow) moveWorkspace(workspacePlaceholder.parentNode, workspacePlaceholder);
-  workspaceWindow = pendingWindow = undefined;
-  workspacePlaceholder.classList.add("hidden");
-  popoutButton.classList.remove("hidden");
-  returnWorkspace.classList.add("hidden");
-  child?.close();
-}
-
-window.loomisMountWorkspace = (child, projectId) => {
-  if (child !== pendingWindow || projectId !== String(project?.id)) return false;
-  const root = child.document.getElementById("popout-root");
-  child.document.documentElement.dataset.theme = document.documentElement.dataset.theme;
-  moveWorkspace(root);
-  LoomisI18n.attach(child.document);
-  workspaceWindow = child;
-  pendingWindow = undefined;
-  workspacePlaceholder.classList.remove("hidden");
-  popoutButton.classList.add("hidden");
-  returnWorkspace.classList.remove("hidden");
-  child.addEventListener("pagehide", () => {
-    if (child === workspaceWindow) dockWorkspace();
-  }, {once: true});
-  return true;
-};
-
-popoutButton.onclick = () => {
-  if (!project) return;
-  if (pendingWindow && !pendingWindow.closed) {
-    pendingWindow.focus();
-    return;
-  }
-  const child = window.open("/?popout=workspace&project_id=" + project.id,
-    "LoomisWorkspace", "popup,width=900,height=700");
-  if (!child) {
-    notify("Не удалось открыть отдельное окно рабочей области.");
-    return;
-  }
-  pendingWindow = child;
-  setTimeout(() => {
-    if (pendingWindow !== child) return;
-    dockWorkspace();
-    notify("Не удалось подключить отдельное окно рабочей области.");
-  }, 5000);
-};
-returnWorkspace.onclick = () => {
-  dockWorkspace();
-  window.focus();
-  popoutButton.focus();
-};
-byId("focus-workspace").onclick = () => workspaceWindow?.focus();
-window.addEventListener("pagehide", dockWorkspace);
 
 function setStatus(status) {
   const enteringDraft = status === "draft" && byId("spec-panel").classList.contains("hidden");
@@ -693,6 +662,7 @@ function renderProjectControls() {
     running: ["pause", "rollback"], paused: ["pause", "rollback"], completed: ["rollback"],
   }[status] || [];
   byId("spec-panel").classList.toggle("hidden", status !== "draft");
+  workCenter.hidden = !project || status === "draft";
   byId("project-controls").classList.toggle("hidden", !available.length || status === "draft");
   all("[data-action]").forEach((button) => {
     const action = button.dataset.action;
@@ -707,6 +677,9 @@ function renderProjectControls() {
     || !agentsInProject.some((agent) => agent.enabled);
   syncComposer();
   byId("spec-add").disabled = byId("spec-attach").disabled = byId("spec-image-button").disabled = specBusy || actionBusy;
+  byId("spec-attachments").querySelectorAll("button").forEach((button) => {
+    button.disabled = specBusy || actionBusy;
+  });
   renderTeamEmpty();
 }
 
@@ -727,10 +700,7 @@ function renderTeamEmpty() {
   } else if (status === "draft") {
     copy = "Добавьте материалы в буфер и соберите ТЗ, чтобы открыть консилиум.";
     label = "Перейти к ТЗ";
-    action = () => {
-      byId("workspace-controls").open = true;
-      byId("spec-text").focus();
-    };
+    action = () => byId("spec-text").focus();
   } else if (status === "planning") {
     copy = "Запустите консилиум, чтобы агенты обсудили ТЗ и подготовили план.";
     label = "Запустить консилиум";
@@ -779,44 +749,6 @@ async function loadSpecItems(projectId, current) {
   }
 }
 
-async function addSpecItem(body) {
-  if (project?.status !== "draft" || specBusy || actionBusy) return false;
-  const current = selection;
-  specBusy = true;
-  renderProjectControls();
-  try {
-    const item = await api("projects/" + project.id + "/spec-items", body);
-    if (current !== selection) return false;
-    appendSpecItem(item);
-    byId("spec-empty").classList.add("hidden");
-    return true;
-  } catch (error) {
-    notify(error.message);
-    return false;
-  } finally {
-    if (current === selection) {
-      specBusy = false;
-      renderProjectControls();
-    }
-  }
-}
-
-byId("spec-form").onsubmit = async (event) => {
-  event.preventDefault();
-  const input = byId("spec-text");
-  const text = input.value.trim();
-  if (text && await addSpecItem({text}) && input.value.trim() === text) input.value = "";
-};
-byId("spec-attach").onclick = () => byId("spec-file").click();
-byId("spec-file").onchange = ({target}) => {
-  const file = target.files[0];
-  target.value = "";
-  if (!file) return;
-  const form = new FormData();
-  form.append("file", file);
-  addSpecItem(form);
-};
-
 function mediaForm(file, channel, caption = "", targets = []) {
   const data = new FormData();
   data.append("file", file);
@@ -826,27 +758,70 @@ function mediaForm(file, channel, caption = "", targets = []) {
   return data;
 }
 
-byId("spec-image-button").onclick = () => byId("spec-image").click();
-byId("spec-image").onchange = async ({target}) => {
-  const file = target.files[0];
-  target.value = "";
-  if (!file || project?.status !== "draft" || specBusy || actionBusy) return;
+byId("spec-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const input = byId("spec-text");
+  const message = input.value.trim();
+  if (project?.status !== "draft" || specBusy || actionBusy || (!message && !specAttachments.length)) return;
   const current = selection;
   const {id} = project;
+  const path = "projects/" + id;
+  let refreshItems = false;
   specBusy = true;
   renderProjectControls();
   try {
-    await api("projects/" + id + "/media", mediaForm(file, "spec"));
-    if (current === selection) await loadSpecItems(id, current);
+    if (message) {
+      const item = await api(path + "/spec-items", {text: message});
+      if (current !== selection) return;
+      appendSpecItem(item);
+      byId("spec-empty").classList.add("hidden");
+      if (input.value.trim() === message) input.value = "";
+    }
+    for (const attachment of [...specAttachments]) {
+      if (current !== selection || project.status !== "draft") break;
+      const {file, image} = attachment;
+      if (image) {
+        await api(path + "/media", mediaForm(file, "spec"));
+        refreshItems = true;
+      } else {
+        const body = new FormData();
+        body.append("file", file);
+        const item = await api(path + "/spec-items", body);
+        if (current !== selection) return;
+        appendSpecItem(item);
+        byId("spec-empty").classList.add("hidden");
+      }
+      if (current !== selection) return;
+      specAttachments.shift();
+      renderSpecAttachments();
+    }
   } catch (error) {
     notify(error.message);
   } finally {
     if (current === selection) {
-      specBusy = false;
-      renderProjectControls();
+      if (refreshItems && project.status === "draft") {
+        await loadSpecItems(id, current).catch((error) => notify(error.message));
+      } else {
+        specBusy = false;
+        renderProjectControls();
+      }
     }
   }
 };
+
+for (const [picker, trigger, image] of [
+  ["spec-file", "spec-attach", false],
+  ["spec-image", "spec-image-button", true],
+]) {
+  byId(trigger).onclick = () => byId(picker).click();
+  byId(picker).onchange = ({target}) => {
+    const files = Array.from(target.files, (file) => ({file, image}));
+    target.value = "";
+    if (project?.status !== "draft" || specBusy || actionBusy || !files.length) return;
+    specAttachments.push(...files);
+    renderSpecAttachments();
+  };
+}
 
 function showCommandApproval({id, command, kind}, projectId) {
   const panel = document.createElement("section");
@@ -949,7 +924,6 @@ function connect(projectId, current) {
 }
 
 async function selectProject(item) {
-  if (item?.id !== project?.id) dockWorkspace();
   const current = ++selection;
   closeContextMenu();
   byId("git-panel").open = false;
@@ -959,7 +933,7 @@ async function selectProject(item) {
   historyRequest = undefined;
   for (const channel of Object.keys(composers)) {
     discardRecording(channel);
-    setAttachment(channel);
+    setAttachments(channel);
     composerNode(channel, "message-input").value = "";
     composers[channel].busy = false;
   }
@@ -970,6 +944,8 @@ async function selectProject(item) {
   specBusy = actionBusy = false;
   byId("spec-panel").classList.add("hidden");
   byId("spec-form").reset();
+  specAttachments = [];
+  renderSpecAttachments();
   byId("spec-items").replaceChildren();
   byId("spec-empty").classList.remove("hidden");
   byId("command-approvals").replaceChildren();
@@ -990,7 +966,7 @@ async function selectProject(item) {
   selectView("team");
   setStatus(item?.status || "—");
   all(".project-button").forEach((button) => button.setAttribute("aria-current", button.dataset.id === String(item?.id)));
-  popoutButton.disabled = byId("stats-button").disabled = byId("add-agent-button").disabled = !item;
+  byId("stats-button").disabled = byId("add-agent-button").disabled = !item;
   renderDeadline();
   if (!item) return;
   connect(item.id, current);
@@ -1113,7 +1089,44 @@ for (const [id, field] of projectModes) {
   };
 }
 
-let directOpen = !matchMedia("(max-width: 900px)").matches;
+let directOpen = !matchMedia("(max-width: 1160px)").matches;
+
+const directResizer = byId("direct-resizer");
+const directWidthKey = "loomis-direct-width";
+let directWidth;
+let directDrag;
+
+function setDirectWidth(width) {
+  directWidth = Math.max(280, Math.min(560, Math.round(width)));
+  byId("project-page").style.setProperty("--direct-width", directWidth + "px");
+  directResizer.setAttribute("aria-valuenow", directWidth);
+}
+
+setDirectWidth(Number(localStorage.getItem(directWidthKey)) || 350);
+directResizer.onpointerdown = (event) => {
+  if (event.button !== 0 || directDrag) return;
+  event.preventDefault();
+  directResizer.focus();
+  directResizer.setPointerCapture(event.pointerId);
+  directDrag = {id: event.pointerId, x: event.clientX, width: byId("direct-panel").getBoundingClientRect().width};
+  document.body.classList.add("resizing-direct");
+};
+directResizer.onpointermove = (event) => {
+  if (directDrag?.id === event.pointerId) setDirectWidth(directDrag.width + directDrag.x - event.clientX);
+};
+directResizer.onpointerup = directResizer.onpointercancel = directResizer.onlostpointercapture = (event) => {
+  if (directDrag?.id !== event.pointerId) return;
+  directDrag = undefined;
+  document.body.classList.remove("resizing-direct");
+  localStorage.setItem(directWidthKey, directWidth);
+};
+directResizer.onkeydown = (event) => {
+  const width = {ArrowLeft: directWidth + 10, ArrowRight: directWidth - 10, Home: 280, End: 560}[event.key];
+  if (width === undefined) return;
+  event.preventDefault();
+  setDirectWidth(width);
+  localStorage.setItem(directWidthKey, directWidth);
+};
 
 function setDirectOpen(open) {
   directOpen = open;
@@ -1121,14 +1134,14 @@ function setDirectOpen(open) {
   const wasHidden = panel.classList.contains("hidden");
   panel.classList.toggle("hidden", !project || !open);
   const button = byId("open-direct");
-  button.classList.toggle("hidden", !project || open);
+  button.classList.toggle("hidden", !project);
   button.setAttribute("aria-expanded", String(Boolean(project && open)));
   if (project && open && wasHidden) refreshStream("direct", true);
 }
 
 byId("open-direct").onclick = () => {
-  setDirectOpen(true);
-  byId("close-direct").focus();
+  setDirectOpen(!directOpen);
+  if (directOpen) byId("close-direct").focus();
 };
 byId("close-direct").onclick = () => {
   setDirectOpen(false);
@@ -1139,7 +1152,7 @@ function selectAgent(agent) {
   if (selectedAgent?.id !== agent?.id) {
     byId("direct-message-input").value = "";
     discardRecording("direct");
-    setAttachment("direct");
+    setAttachments("direct");
   }
   selectedAgent = agent;
   syncComposer();
@@ -1271,11 +1284,12 @@ for (const channel of Object.keys(composers)) {
   };
   control("chat-attach").onclick = () => control("chat-file").click();
   control("chat-file").onchange = ({target}) => {
-    const file = target.files[0];
+    const files = Array.from(target.files, (file) => ({file}));
     target.value = "";
-    if (file && !control("chat-attach").disabled) setAttachment(channel, file);
+    if (files.length && !control("chat-attach").disabled) {
+      setAttachments(channel, [...(composers[channel].attachments || []), ...files]);
+    }
   };
-  control("remove-attachment").onclick = () => setAttachment(channel);
   control("chat-record").onclick = () => recordMessage(channel);
   control("message-form").onsubmit = (event) => {
     event.preventDefault();
@@ -1329,7 +1343,10 @@ async function recordMessage(channel) {
       stream.getTracks().forEach((track) => track.stop());
       if (state.recording?.recorder !== recorder) return;
       discardRecording(channel);
-      if (bytes) setAttachment(channel, new File(parts, "Голосовое сообщение." + extension, {type: mimeType}));
+      if (bytes) {
+        const file = new File(parts, "Голосовое сообщение." + extension, {type: mimeType});
+        setAttachments(channel, [...(state.attachments || []), {file}]);
+      }
       syncComposer();
     };
     recorder.onerror = () => {
@@ -1357,13 +1374,14 @@ async function sendMessage(channel, event) {
   const state = composers[channel];
   const feedback = channel === "team" && planMode && project?.has_plan;
   const message = input.value.trim();
-  const {attachment: file, recording} = state;
+  const {attachments = [], recording} = state;
+  const hasFiles = attachments.length > 0;
   if (!project || input.disabled || recording) return;
-  if (feedback && (!message || file)) {
+  if (feedback && (!message || hasFiles)) {
     showCursorToast("Для доработки плана введите текст без вложения.", event);
     return;
   }
-  if (!message && !file) return;
+  if (!message && !hasFiles) return;
   const current = selection;
   const path = "projects/" + project.id;
   const revision = statusRevision;
@@ -1374,8 +1392,14 @@ async function sendMessage(channel, event) {
     if (feedback) {
       const result = await api(path + "/council/feedback", {feedback: message});
       if (current === selection && revision === statusRevision) setStatus(result.status);
-    } else if (file) {
-      await api(path + "/media", mediaForm(file, channel === "team" ? "team_chat" : "direct", message, targets));
+    } else if (hasFiles) {
+      for (const attachment of attachments) {
+        if (current !== selection || !state.attachments.includes(attachment)) return;
+        await api(path + "/media", mediaForm(attachment.file, channel === "team" ? "team_chat" : "direct", message, targets));
+        if (current === selection && (channel === "team" || selectedAgent?.id === agentId)) {
+          setAttachments(channel, state.attachments.filter((item) => item !== attachment));
+        }
+      }
     } else if (channel === "team") {
       await api(path + "/chat", {question: message});
     } else {
@@ -1383,7 +1407,6 @@ async function sendMessage(channel, event) {
     }
     if (current === selection && (channel === "team" || selectedAgent?.id === agentId)) {
       if (input.value.trim() === message) input.value = "";
-      if (state.attachment === file) setAttachment(channel);
     }
   } catch (error) {
     notify(error.message);

@@ -105,7 +105,7 @@
           <button id="git-push" class="button secondary hidden" type="button">Push в Git</button>
           <button id="stats-button" class="button secondary hidden" type="button" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg> Статистика</button>
           <button class="button secondary hidden" type="button" data-action="regenerate_plan" disabled>Пересобрать план</button>
-        <button id="open-direct" class="button secondary hidden" type="button" aria-controls="direct-panel" aria-expanded="false">Личные чаты</button>
+          <button id="open-direct" class="button secondary hidden" type="button" aria-controls="direct-panel" aria-expanded="false">Личные чаты</button>
           <button id="theme-switch-top" class="theme-switch" type="button" aria-label="Светлая тема"></button>
         </div>
       </header>
@@ -165,23 +165,6 @@
         <details id="workspace-controls" class="glass-panel">
           <summary>Управление проектом</summary>
           <div class="workspace-controls-body">
-            <section id="spec-panel" class="spec-panel glass-panel stack hidden" aria-labelledby="spec-heading">
-              <h3 id="spec-heading">Буфер ТЗ</h3>
-              <form id="spec-form" class="stack">
-                <label class="field"><span>Текст ТЗ</span><textarea id="spec-text" rows="4" required></textarea></label>
-                <div class="spec-buttons">
-                  <button id="spec-add" class="button secondary" type="submit">Добавить текст</button>
-                  <button id="spec-attach" class="button secondary" type="button">Прикрепить документ</button>
-                  <button id="spec-image-button" class="button secondary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg> Изображение</button>
-                  <input id="spec-image" class="hidden" type="file" accept=".png,.jpg,.jpeg,.webp">
-                  <input id="spec-file" class="hidden" type="file" accept=".pdf,.docx,.txt,.md">
-                </div>
-              </form>
-              <p id="spec-empty" aria-live="polite">Буфер пока пуст.</p>
-              <ul id="spec-items" class="spec-items" aria-label="Элементы ТЗ"></ul>
-              <button class="button primary wide" type="button" data-action="build_spec"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg> Собрать SPEC.md и перейти к планированию</button>
-            </section>
-
             <section class="agents-section">
               <div class="section-head"><div><h3>ИИ-агенты</h3></div><button id="add-agent-button" class="button secondary small">Добавить агента</button></div>
               <div id="agent-grid" class="agent-grid"></div>
@@ -206,15 +189,35 @@
         </details>
         <div id="command-approvals" aria-live="polite"></div>
 
-        <section id="work-center" class="work-center glass-panel">
+        <section id="spec-panel" class="spec-panel glass-panel stack hidden" aria-labelledby="spec-heading">
+          <h3 id="spec-heading">Буфер ТЗ</h3>
+          <form id="spec-form" class="stack">
+            <div class="field">
+              <label for="spec-text">Текст ТЗ</label>
+              <div class="composer-input">
+                <div id="spec-attachments" class="attachment-chips" aria-live="polite"></div>
+                <textarea id="spec-text" rows="4"></textarea>
+              </div>
+            </div>
+            <div class="spec-buttons">
+              <button id="spec-add" class="button secondary" type="submit">Добавить в буфер</button>
+              <button id="spec-attach" class="button secondary" type="button">Прикрепить документ</button>
+              <button id="spec-image-button" class="button secondary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg> Изображение</button>
+              <input id="spec-image" class="hidden" type="file" multiple accept=".png,.jpg,.jpeg,.webp">
+              <input id="spec-file" class="hidden" type="file" multiple accept=".pdf,.docx,.txt,.md">
+            </div>
+          </form>
+          <p id="spec-empty" aria-live="polite">Буфер пока пуст.</p>
+          <ul id="spec-items" class="spec-items" aria-label="Элементы ТЗ"></ul>
+          <button class="button primary wide" type="button" data-action="build_spec"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg> Собрать SPEC.md и перейти к планированию</button>
+        </section>
+        <section id="work-center" hidden class="work-center glass-panel">
           <div class="work-header">
           <div class="work-switch" role="group" aria-label="Режим рабочего центра">
             <button class="tab active" data-view="team" type="button" aria-pressed="true">Общий чат ИИ</button>
             <button class="tab" data-view="terminal" type="button" aria-pressed="false">Терминал</button>
           </div>
             <button id="clear-chat" class="text-action" type="button">Очистить экран</button>
-            <button id="popout-button" class="icon-button" type="button" title="Открыть в отдельном окне" aria-label="Открыть в отдельном окне" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 5h6v6m0-6-8 8m1-7H6a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6"/></svg></button>
-            <button id="return-workspace" class="button secondary hidden" type="button">Вернуть в главное окно</button>
           </div>
           <div id="terminal-controls" class="terminal-head hidden">
             <div id="terminal-tabs" class="terminal-tabs" role="group" aria-label="Терминалы агентов"></div>
@@ -236,25 +239,23 @@
             <div id="team-controls" class="composer-top">
               <button id="plan-mode" class="choice-chip" type="button" aria-pressed="false">Режим: Обсуждение</button>
             </div>
-            <div id="chat-attachment" class="composer-top hidden">
-              <span id="attachment-name"></span>
-              <button id="remove-attachment" class="text-action" type="button">Убрать вложение</button>
-            </div>
-            <div class="composer-row">
-              <input id="chat-file" class="hidden" type="file" accept=".png,.jpg,.jpeg,.webp">
-              <button id="chat-attach" class="icon-button" type="button" title="Прикрепить изображение" aria-label="Прикрепить изображение"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg></button>
-              <button id="chat-record" class="icon-button" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение" aria-pressed="false"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1m-7 8v3m-4 0h8"/></svg></button>
-              <textarea id="message-input" rows="1" placeholder="Спросите агента о проекте…" maxlength="32000" disabled></textarea>
-              <button id="send-button" class="send-button" type="submit" title="Отправить" aria-label="Отправить" disabled><svg viewBox="0 0 24 24"><path d="m5 12 14-7-3 14-4-6-7-1Z"/><path d="m12 13 4-5"/></svg></button>
+            <div class="composer-input">
+              <div id="chat-attachment" class="attachment-chips" aria-live="polite"></div>
+              <div class="composer-row">
+                <input id="chat-file" class="hidden" type="file" multiple accept=".png,.jpg,.jpeg,.webp">
+                <button id="chat-attach" class="icon-button" type="button" title="Прикрепить изображение" aria-label="Прикрепить изображение"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg></button>
+                <button id="chat-record" class="icon-button" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение" aria-pressed="false"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1m-7 8v3m-4 0h8"/></svg></button>
+                <textarea id="message-input" rows="1" placeholder="Спросите агента о проекте…" maxlength="32000" disabled></textarea>
+                <button id="send-button" class="send-button" type="submit" title="Отправить" aria-label="Отправить" disabled><svg viewBox="0 0 24 24"><path d="m5 12 14-7-3 14-4-6-7-1Z"/><path d="m12 13 4-5"/></svg></button>
+              </div>
             </div>
             <p class="composer-hint">Enter — отправить · Shift+Enter — новая строка</p>
           </form>
         </section>
-        <div id="workspace-placeholder" class="glass-panel hidden">
-          <button id="focus-workspace" class="button secondary" type="button">Перейти к отдельному окну</button>
-        </div>
       </div>
       <aside id="direct-panel" class="glass-panel hidden" aria-labelledby="direct-heading">
+        <div id="direct-resizer" role="separator" tabindex="0" aria-label="Ширина личных чатов"
+          aria-controls="direct-panel" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="560"></div>
         <header class="direct-header">
           <h3 id="direct-heading">Личные чаты</h3>
           <button id="close-direct" class="button secondary small" type="button" aria-controls="direct-panel" aria-expanded="true">Свернуть</button>
@@ -264,16 +265,15 @@
         <p id="direct-empty">Нет активных агентов</p>
         <div id="direct" class="chat-stream" role="log" aria-label="Личный чат"></div>
         <form id="direct-message-form" class="composer">
-          <div id="direct-chat-attachment" class="composer-top hidden">
-            <span id="direct-attachment-name"></span>
-            <button id="direct-remove-attachment" class="text-action" type="button">Убрать вложение</button>
-          </div>
-          <div class="composer-row">
-            <input id="direct-chat-file" class="hidden" type="file" accept=".png,.jpg,.jpeg,.webp">
-            <button id="direct-chat-attach" class="icon-button" type="button" title="Прикрепить изображение" aria-label="Прикрепить изображение"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg></button>
-            <button id="direct-chat-record" class="icon-button" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение" aria-pressed="false"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1m-7 8v3m-4 0h8"/></svg></button>
-            <textarea id="direct-message-input" rows="1" placeholder="Напишите агенту…" maxlength="32000" disabled></textarea>
-            <button id="direct-send-button" class="send-button" type="submit" title="Отправить" aria-label="Отправить" disabled><svg viewBox="0 0 24 24"><path d="m5 12 14-7-3 14-4-6-7-1Z"/><path d="m12 13 4-5"/></svg></button>
+          <div class="composer-input">
+            <div id="direct-chat-attachment" class="attachment-chips" aria-live="polite"></div>
+            <div class="composer-row">
+              <input id="direct-chat-file" class="hidden" type="file" multiple accept=".png,.jpg,.jpeg,.webp">
+              <button id="direct-chat-attach" class="icon-button" type="button" title="Прикрепить изображение" aria-label="Прикрепить изображение"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg></button>
+              <button id="direct-chat-record" class="icon-button" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение" aria-pressed="false"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1m-7 8v3m-4 0h8"/></svg></button>
+              <textarea id="direct-message-input" rows="1" placeholder="Напишите агенту…" maxlength="32000" disabled></textarea>
+              <button id="direct-send-button" class="send-button" type="submit" title="Отправить" aria-label="Отправить" disabled><svg viewBox="0 0 24 24"><path d="m5 12 14-7-3 14-4-6-7-1Z"/><path d="m12 13 4-5"/></svg></button>
+            </div>
           </div>
         </form>
       </aside>
@@ -582,27 +582,8 @@
   </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
-  <div id="popout-root" class="hidden"></div>
   <script src="/static/i18n.js?v=latest"></script>
-  <script>
-    const params = new URLSearchParams(location.search);
-    if (params.get("popout") === "workspace") {
-      document.body.classList.add("popout-window");
-      document.title = "Loomis — рабочая область";
-      const root = document.getElementById("popout-root");
-      for (const node of [...document.body.children]) {
-        if (![root, document.currentScript].includes(node) && node.id !== "toasts") node.remove();
-      }
-      root.classList.remove("hidden");
-      if (!window.opener?.loomisMountWorkspace?.(window, params.get("project_id"))) {
-        root.textContent = "Откройте рабочую область из главного окна Loomis.";
-      }
-    } else {
-      const appScript = document.createElement("script");
-      appScript.src = "/app.js?v=latest";
-      document.body.append(appScript);
-      import("/static/lighter3d.js?v=latest");
-    }
-  </script>
+  <script src="/app.js?v=latest"></script>
+  <script type="module" src="/static/lighter3d.js?v=latest"></script>
 </body>
 </html>
