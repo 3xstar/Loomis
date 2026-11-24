@@ -197,14 +197,15 @@ syncVisibility();
 function createLighter(THREE) {
   let renderer;
   try {
-    renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: "high-performance" });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   } catch {
     return undefined;
   }
   renderer.setClearColor(0x000000, 0);
   const scene = new THREE.Scene();
   const lighterGroup = new THREE.Group();
-  lighterGroup.rotation.set(-.08, .12, -.10);
+  lighterGroup.rotation.set(0.06, -0.22, 0);
   lighterGroup.position.set(0, .12, 0);
   scene.add(lighterGroup);
   const camera = new THREE.OrthographicCamera();
@@ -241,7 +242,6 @@ function createLighter(THREE) {
     camera.lookAt(target);
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.setSize(width, height, false);
   }
 
@@ -261,7 +261,13 @@ function createLighter(THREE) {
   scene.environment = environment;
   scene.add(new THREE.HemisphereLight(0xf2f4ff, 0x343139, 1.55));
 
-  const metal = new THREE.MeshPhysicalMaterial({ metalness: .85, roughness: .24, clearcoat: .65 });
+  const metal = new THREE.MeshPhysicalMaterial({
+    roughness: 0.22,
+    metalness: 0.78,
+    clearcoat: 0.85,
+    clearcoatRoughness: 0.12,
+    flatShading: false,
+  });
   metal.onBeforeCompile = shader => {
     shader.vertexShader = `varying vec2 metalPosition;\n${shader.vertexShader}`
       .replace("#include <begin_vertex>", "#include <begin_vertex>\nmetalPosition = position.xy;");
@@ -296,8 +302,32 @@ function createLighter(THREE) {
     shape.quadraticCurveTo(-x, -y, -x + radius, -y);
     const geometry = new THREE.ExtrudeGeometry(shape, {
       depth: d - bevel * 2, bevelEnabled: true, bevelSize: bevel,
-      bevelThickness: bevel, bevelSegments: 4, curveSegments: 8, steps: 1,
+      bevelThickness: bevel, bevelSegments: 8, curveSegments: 24, steps: 1,
     });
+    const { position, normal } = geometry.attributes;
+    const corners = Array.from({ length: 3 }, () => new THREE.Vector3());
+    const edgeA = new THREE.Vector3();
+    const edgeB = new THREE.Vector3();
+    const faceNormal = new THREE.Vector3();
+    const normalsByPosition = new Map();
+    const vertexNormals = [];
+    // ExtrudeGeometry duplicates vertices per triangle. Average their normals
+    // by corner angle so the cap triangulation does not skew the bevel.
+    for (let i = 0; i < position.count; i += 3) {
+      corners.forEach((corner, j) => corner.fromBufferAttribute(position, i + j));
+      faceNormal.fromBufferAttribute(normal, i);
+      corners.forEach((corner, j) => {
+        const key = corner.toArray().join(",");
+        if (!normalsByPosition.has(key)) normalsByPosition.set(key, new THREE.Vector3());
+        const smoothNormal = normalsByPosition.get(key);
+        edgeA.subVectors(corners[(j + 1) % 3], corner);
+        edgeB.subVectors(corners[(j + 2) % 3], corner);
+        smoothNormal.addScaledVector(faceNormal, edgeA.angleTo(edgeB));
+        vertexNormals.push(smoothNormal);
+      });
+    }
+    for (const smoothNormal of normalsByPosition.values()) smoothNormal.normalize();
+    vertexNormals.forEach(({ x, y, z }, i) => normal.setXYZ(i, x, y, z));
     geometry.translate(0, 0, -d / 2 + bevel);
     return new THREE.Mesh(geometry, material);
   }
@@ -503,8 +533,6 @@ function createLighter(THREE) {
       if (theme !== light) {
         theme = light;
         metal.color.setHex(light ? 0xc2c7d0 : 0x53565f);
-        metal.metalness = light ? .64 : .88;
-        metal.roughness = light ? .39 : .23;
         badge.material.color.setHex(light ? 0x252932 : 0xe5e8f1);
         floor.material.uniforms.tint.value.setHex(light ? 0x747986 : 0xa2a9b8);
       }
@@ -568,6 +596,8 @@ function createLighter(THREE) {
       }
       renderer.render(scene, camera);
       if (!stage.hasAttribute("data-webgl")) {
+        // Resolve the hidden canvas style before starting the first transition.
+        getComputedStyle(canvas).opacity;
         stage.removeAttribute("data-webgl-fallback");
         stage.setAttribute("data-webgl", "");
       }
