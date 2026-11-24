@@ -5,7 +5,7 @@ import os
 import secrets
 import time
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 import httpx
 from aiogram.exceptions import TelegramAPIError
@@ -17,6 +17,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.bot.i18n import localize_markup, translate
 from backend.bot.keyboards import magic_login_keyboard
 from backend.core.github import bind_github
 from backend.database.db import get_session
@@ -47,6 +48,7 @@ class UserView(BaseModel):
     username: str | None
     telegram_id: int | None
     tg_logs_enabled: bool
+    language: Literal["ru", "en"]
     github_username: str | None
     github_avatar_url: str | None
     telegram_username: str | None
@@ -163,8 +165,11 @@ async def request_magic_login(data: MagicLoginStart, session: Session):
     try:
         await bot.send_message(
             chat_id,
-            f"🔐 Запрос входа в Loomis Desktop\nАккаунт: {username}\nЕсли это вы, подтвердите вход.",
-            reply_markup=magic_login_keyboard(request_id),
+            translate(
+                f"🔐 Запрос входа в Loomis Desktop\nАккаунт: {username}\nЕсли это вы, подтвердите вход.",
+                user.language,
+            ),
+            reply_markup=localize_markup(magic_login_keyboard(request_id), user.language),
         )
     except TelegramAPIError:
         await session.execute(delete(MagicLoginRequest).where(
@@ -300,6 +305,7 @@ async def disconnect_github(session: Session, user: CurrentUser):
 
 
 class UserPreferences(BaseModel):
+    language: Literal["ru", "en"] | None = None
     tg_logs_enabled: bool | None = None
     default_projects_dir: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1024,
@@ -316,6 +322,8 @@ async def update_preferences(data: UserPreferences, session: Session, user: Curr
         user.default_projects_dir = path
     if data.tg_logs_enabled is not None:
         user.tg_logs_enabled = data.tg_logs_enabled
+    if data.language is not None:
+        user.language = data.language
     await session.commit()
     return user
 

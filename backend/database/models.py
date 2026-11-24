@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, LargeBinary, String, Text, false, true
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, JSON, LargeBinary, String, Text, false, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.settings import ROOT
@@ -42,6 +42,9 @@ class ResponseCache(Base):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (CheckConstraint("language IN ('ru', 'en')", name="ck_users_language"),)
+
+    language: Mapped[str] = mapped_column(String(5), default="ru", server_default="ru")
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     telegram_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True)

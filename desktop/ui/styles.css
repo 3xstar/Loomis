@@ -808,7 +808,7 @@ option { background: var(--base); }
 .settings-tabs {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   margin-bottom: 16px;
@@ -818,7 +818,7 @@ option { background: var(--base); }
   position: absolute;
   box-sizing: border-box;
   inset: 4px auto 4px 4px;
-  width: calc(50% - 6px);
+  width: calc((100% - 16px) / 3);
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface);
@@ -828,10 +828,28 @@ option { background: var(--base); }
 .settings-tabs:has(#integrations-tab[aria-selected="true"])::before {
   transform: translate3d(calc(100% + 4px), 0, 0);
 }
+.settings-tabs:has(#language-tab[aria-selected="true"])::before {
+  transform: translate3d(calc(200% + 8px), 0, 0);
+}
+.language-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.language-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 72px;
+  padding: 14px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.language-card[aria-pressed="true"] { border-color: var(--accent); background: var(--surface); }
+.language-check { visibility: hidden; color: var(--accent); }
+.language-card[aria-pressed="true"] .language-check { visibility: visible; }
 .settings-tabs .tab { position: relative; }
 .settings-tabs .tab.active { border-color: transparent; background: transparent; }
 @media (prefers-reduced-motion: no-preference) {
-  .settings-tabs::before { transition: transform var(--motion) cubic-bezier(0.22, 1, 0.36, 1); }
+  .settings-tabs::before { transition: transform 420ms cubic-bezier(0.2, 1.45, 0.4, 1); }
   #settings-modal [role="tabpanel"]:not([hidden]) {
     animation: settings-panel-in var(--motion) cubic-bezier(0.22, 1, 0.36, 1);
   }

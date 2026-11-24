@@ -1,154 +1,89 @@
-<p align="center"><img src="desktop/ui/favicon.png" width="96" height="96" alt="Логотип Loomis"></p>
+English | [Русский](README.ru.md)
+
+<p align="center"><img src="desktop/ui/favicon.png" width="96" height="96" alt="Loomis logo"></p>
 <h1 align="center">Loomis</h1>
-<p align="center"><strong>От первого сообщения с ТЗ до проверенного изменения в Git.</strong></p>
+<p align="center"><strong>Turn project requirements into reviewed changes in Git.</strong></p>
 
-<p align="center">
-  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009688?style=flat-square">
-  <img alt="Aiogram 3" src="https://img.shields.io/badge/Aiogram%203-229ED9?style=flat-square">
-  <img alt="SQLAlchemy async" src="https://img.shields.io/badge/SQLAlchemy%20async-BF3027?style=flat-square">
-  <img alt="WebSocket" src="https://img.shields.io/badge/WebSocket-465671?style=flat-square">
-  <img alt="pywebview" src="https://img.shields.io/badge/pywebview-6366F1?style=flat-square">
-  <img alt="Vanilla JS" src="https://img.shields.io/badge/Vanilla%20JS-B5860D?style=flat-square">
-</p>
+Loomis is a local workspace for managing software projects and AI development agents. Collect requirements in Desktop or Telegram, have agents discuss the work, and approve their plan. Follow progress and logs in real time.
 
-Loomis — локальная система управления проектами и агентами разработки. Соберите требования в Telegram, запустите консилиум и утвердите план. FastAPI управляет проектами и передаёт в реальном времени статусы и журналы выполнения.
+## Features
 
-## Возможности
+- Build `SPEC.md` from text, documents, and images. Telegram also accepts voice notes.
+- Save CLI and OpenAI-compatible model presets in the Model Hub, connect them to projects, and track reported token usage.
+- Run a two-round agent council and approve the resulting `PLAN.md`. Send questions in team or direct chat, or send feedback to revise the plan.
+- Set request deadlines and choose how Loomis hands off work when an agent fails. Git checkpoints support rollback and configurable push behavior.
+- Use the Liquid Glass Desktop workspace, detach chats and terminals into a separate window, or manage projects from Telegram.
+- Choose Russian or English in Desktop under **Settings → Language** or in Telegram under **Account settings → Language**. Both clients use the same account preference.
 
-- **Проекты и ТЗ.** Desktop и Telegram принимают требования и собирают из них `SPEC.md` в рабочей копии проекта. Можно добавлять текст, документы и изображения. Telegram принимает и голосовое ТЗ.
-- **Личный Хаб нейросетей.** Храните пресеты CLI и OpenAI-совместимых моделей, подключайте их к проектам по одному или группой. Loomis учитывает токены по агентам и суммирует расход связанных агентов в пресете по всем проектам, когда провайдер или CLI сообщает статистику.
-- **Светофор статусов.** Зелёный показывает работу агента или вопрос, требующий ответа, жёлтый обозначает ожидание, красный сообщает об ошибке. Общий чат, личные диалоги и терминалы получают обновления через WebSocket.
-- **Публичный двухраундовый консилиум.** Агенты публикуют в общем чате предложения и обсуждают их во втором раунде. Затем Loomis собирает `PLAN.md` для утверждения. В общем чате режим «Обсуждение» отправляет сообщение выбранным агентам, а «Правка PLAN.md» передаёт ваши замечания на пересборку плана с повторным утверждением.
-- **Дедлайн и перехват задачи.** По истечении срока запроса или при отказе агента Loomis сохраняет частичные изменения, публикует диагностику и выбирает преемника с учётом очереди и ролей в плане. Передача происходит автоматически или после подтверждения, в зависимости от настроек проекта.
-- **Liquid Glass Desktop и Pop-out.** Общий чат, личные диалоги и терминал можно вынести в отдельное окно WebView2 и вернуть вместе с черновиком. Настройки снабжены подсказками, а единая кнопка переключает Проекты и Хаб. Вход можно подтвердить в Telegram через Magic Login.
-- **Паритет управления проектами в Telegram.** Бот поддерживает тот же рабочий цикл, что и Desktop. Через него можно управлять проектом, ТЗ, агентами, Хабом, настройками и планом, запускать консилиум, отвечать на запросы подтверждения, пользоваться адресным общим и личным чатом, отправлять вложения и смотреть статистику. Доставку рабочих журналов можно настроить отдельно.
-- **Git и сетевые воркеры.** Loomis создаёт точки отката и позволяет откатить последний шаг при приостановленном или завершённом проекте. Выполнение можно передать сетевому воркеру.
-
-## Архитектура
+## Architecture
 
 ```mermaid
 flowchart LR
-    Desktop["Liquid Glass Desktop<br/>pywebview + Vanilla JS"] -. "HTTP / WebSocket" .-> API["FastAPI"]
-    Telegram["Telegram Bot<br/>Aiogram 3"] <--> API
-    API --> ORM["SQLAlchemy async"]
-    ORM --> DB[("SQLite")]
-    API <--> Core["Master / оркестратор"]
-    Core <--> Worker["Локальные адаптеры / сетевой worker"]
-    Worker --> Agents["CLI / OpenAI-совместимый API"]
+    Desktop["Liquid Glass Desktop<br/>pywebview + JavaScript"] <-->|HTTP / WebSocket| API["FastAPI"]
+    Telegram["Telegram bot<br/>Aiogram 3"] <--> API
+    API --> ORM["Async SQLAlchemy"]
+    ORM --> DB[("SQLite by default")]
+    API <--> Core["Orchestrator"]
+    Core <--> Worker["Local adapters / remote workers"]
+    Worker --> Agents["CLI / OpenAI-compatible API"]
 ```
 
-### Структура каталогов
+The backend lives in `backend/`, executor adapters and Git operations in `worker/`, and the Desktop client in `desktop/`. Loomis stores project worktrees in `workspaces/` by default.
 
-```text
-backend/
-├── api/            HTTP API, авторизация и WebSocket
-├── bot/            Telegram-команды, меню и приём ТЗ
-├── core/           Оркестратор, консилиум, документы и голос
-├── database/       Асинхронные модели и подключение к БД
-└── main.py         Точка входа FastAPI
-worker/
-├── adapters/       CLI- и API-адаптеры агентов
-├── git_bridge.py   Git-операции и откат
-└── worker_node.py  Точка входа сетевого воркера
-desktop/            Настольный клиент
-workspaces/         Локальные рабочие копии проектов
-temp_uploads/       Временные загрузки
-```
+## Quick start on Windows
 
-## Быстрый старт · Windows PowerShell
-
-Из корня проекта создайте виртуальное окружение и установите зависимости.
+From the repository root in PowerShell:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-```
-
-Если `.env` уже есть, сохраните его и добавьте недостающие настройки из `.env.example`. Для Telegram задайте `BOT_TOKEN`, для сохранения сессий после перезапуска — постоянный случайный `SECRET_KEY`.
-
-```powershell
-uvicorn backend.main:app --host 127.0.0.1 --port 8000
-```
-
-Swagger UI доступен по адресу [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs), проверка состояния — по `GET /health`. Чтобы запустить сервер с адресом и портом из настроек Loomis, используйте `python -m backend.main`.
-
-Запустите десктопный клиент из корня проекта в активированном окружении.
-
-```powershell
 python -m desktop.app
 ```
 
-Клиент запускает API автоматически, если `/health` недоступен. В окне доступны темы Dark Monochrome Liquid Glass и Light Monochrome Liquid Glass. Выбор темы сохраняется между запусками.
+The Desktop client starts the local API if needed. To run it directly, use `python -m backend.main`. Set `BOT_TOKEN` to enable Telegram, `SECRET_KEY` to keep API tokens valid across restarts, and `GITHUB_CLIENT_ID` to enable GitHub Device Flow for a configured OAuth app. The default API address is `http://127.0.0.1:8000`.
 
-### Генераторы изображений
+### Telegram sign-in
 
-В Хабе или в настройках агента выберите роль «Генератор изображений» и укажите OpenAI-совместимый API с маршрутом `/images/generations`. На карточке модели появится бейдж `IMG`. При подключении Loomis проверяет модель пробной генерацией.
-
-Универсальные модели участвуют в консилиуме и могут назначить генератору шаг в `PLAN.md`. Loomis создаёт PNG по указанному пути, показывает миниатюру в Общем чате ИИ и передаёт ход следующему исполнителю. Для генерации вне плана отправьте описание в личный чат художника или обратитесь к нему через `@Имя` в Общем чате. Эти файлы сохраняются в `assets/generated/` проекта.
-
-### Переменные окружения
-
-| Переменная | По умолчанию | Назначение |
-| --- | --- | --- |
-| `BOT_TOKEN` | Пусто | Токен Telegram-бота. При пустом значении бот не запускается. |
-| `API_HOST` | `127.0.0.1` | Адрес сервера при запуске через `python -m backend.main`. |
-| `API_PORT` | `8000` | Порт сервера при запуске через `python -m backend.main`. |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./loomis.db` | Строка подключения асинхронного SQLAlchemy. |
-| `SECRET_KEY` | Временный ключ процесса | Подписывает токены API. Постоянный ключ сохраняет их действие после перезапуска до истечения срока. |
-| `LOOMIS_WORKER_TOKEN` | Пусто | Общий секрет Master и сетевого воркера. |
-| `WHISPER_MODEL` | `base` | Модель faster-whisper для расшифровки аудио. Загружается при первом обращении. |
+Sign in to an existing account, generate a one-time Telegram link in the Desktop integration settings, and open it in Telegram. Once linked, the bot can approve future Desktop sign-ins. Magic Login requests expire after five minutes.
 
 ## API
 
-Для защищённых HTTP-маршрутов и WebSocket проекта передавайте `Authorization: Bearer <access_token>`.
+Send `Authorization: Bearer <access_token>` to protected HTTP routes. Desktop authenticates project WebSockets with the `loomis` subprotocol followed by the access token. The full HTTP schema and interactive reference are available in Swagger UI. [Local API docs](http://127.0.0.1:8000/docs)
 
-| Метод | Маршрут | Назначение |
+| Method | Route | Purpose |
 | --- | --- | --- |
-| POST | `/api/auth/register` | Зарегистрировать аккаунт. |
-| POST | `/api/auth/login` | Получить Bearer-токен. |
-| GET | `/api/auth/me` | Получить профиль текущего пользователя. |
-| POST | `/api/auth/generate-link-code` | Получить одноразовый код привязки Telegram. |
-| GET / POST | `/api/projects` | Получить список проектов или создать проект. |
-| GET / PATCH / DELETE | `/api/projects/{project_id}` | Прочитать, изменить или удалить проект. |
-| POST | `/api/projects/{project_id}/actions` | Запустить консилиум, утвердить план, приостановить, возобновить или откатить шаг. |
-| POST | `/api/projects/{project_id}/chat` | Отправить сообщение выбранным агентам в общий чат. |
-| POST | `/api/projects/{project_id}/council/feedback` | Отправить замечания для пересборки `PLAN.md`. |
-| POST | `/api/projects/{project_id}/agents/{agent_id}/question` | Задать вопрос агенту. |
-| GET | `/api/hub/leaderboard` | Получить рейтинг и среднюю задержку моделей. Требуется Bearer-токен. |
-| WS | `/ws/{project_id}` | Получать статусы и события проекта. |
-| WS | `/ws/workers` | Подключить сетевой воркер с общим секретом. |
-| POST | `/api/auth/magic-login/request` | Запросить вход через Telegram. |
-| GET | `/api/auth/magic-login/status/{request_id}` | Проверить статус запроса и получить Bearer-токен после подтверждения. |
+| GET | `/health` | Check service health |
+| POST | `/api/auth/register`, `/api/auth/login` | Register an account or get a bearer token |
+| GET / PATCH | `/api/auth/me` | Read the profile or update preferences, including `{"language":"en"}` or `{"language":"ru"}` |
+| POST | `/api/auth/generate-link-code`, `/api/auth/telegram/unlink` | Link or disconnect Telegram |
+| POST | `/api/auth/magic-login/request` | Request Telegram approval for Desktop sign-in |
+| GET | `/api/auth/magic-login/status/{request_id}` | Poll a sign-in request and get the token when approved |
+| POST | `/api/auth/github/device/start`, `/api/auth/github/device/poll` | Start or poll GitHub Device Flow |
+| POST / DELETE | `/api/auth/github` | Link GitHub with a token or disconnect it |
+| GET / POST | `/api/projects` | List or create projects |
+| GET | `/api/projects/dashboard-usage` | Read dashboard token usage |
+| GET / PATCH / DELETE | `/api/projects/{project_id}` | Read, update, or delete a project |
+| GET / POST | `/api/projects/{project_id}/spec-items` | List or add specification entries |
+| POST | `/api/projects/{project_id}/actions` | Run project lifecycle actions |
+| POST | `/api/projects/{project_id}/chat`, `/api/projects/{project_id}/council/feedback` | Message agents or submit plan feedback |
+| POST | `/api/projects/{project_id}/agents/{agent_id}/question` | Ask an agent a question |
+| GET / POST | `/api/projects/{project_id}/agents` | List or add agents |
+| GET / PATCH / DELETE | `/api/projects/{project_id}/agents/{agent_id}` | Read, update, or remove an agent |
+| POST | `/api/projects/{project_id}/agents/test`, `/api/projects/{project_id}/agents/from-hub`, `/api/projects/{project_id}/agents/{agent_id}/retry` | Test a configuration, import a preset, or resume an agent |
+| POST | `/api/projects/{project_id}/approvals/{key}`, `/api/projects/{project_id}/clear-view` | Resolve an approval or clear a chat view |
+| POST / GET | `/api/projects/{project_id}/media`, `/api/projects/{project_id}/media/{media_id}` | Upload or retrieve project media |
+| GET | `/api/projects/{project_id}/history`, `/api/projects/{project_id}/stats`, `/api/projects/{project_id}/commits` | Read history, statistics, or Git commits |
+| POST | `/api/projects/{project_id}/push`, `/api/projects/{project_id}/commits/{commit_hash}/rollback` | Push commits or roll back to a commit |
+| GET / POST | `/api/hub/models` | List or create model presets |
+| PATCH / DELETE | `/api/hub/models/{preset_id}` | Update or delete a model preset |
+| GET | `/api/hub/leaderboard` | Read model reliability and latency |
+| WS | `/ws/{project_id}` | Stream project status and events |
+| WS | `/ws/workers` | Connect a remote worker using the shared worker secret |
 
-### Поиск, рейтинг и кэш ответов
+## License
 
-- OpenAI-совместимые API-агенты с поддержкой Function Calling могут искать публичные источники через `web_search` (DDGS) и читать их через `read_webpage` (Jina Reader). Ключ для этих сервисов не требуется. Результаты поиска хранятся в памяти 15 минут. Чтение ограничено 15 секундами и 8000 символами. Внешние сервисы могут ограничивать частоту запросов.
-- Хаб показывает надёжность модели в виде бейджа `★ 98%`. Успешные вызовы приближают рейтинг к 100%, ошибки снижают его. При одинаковом рейтинге приоритет получает модель с меньшей средней задержкой успешных вызовов. Оркестратор исключает из выбора агентов в cooldown.
-- Текстовые вопросы, обсуждение и сборка плана при температуре до 0.2 используют кэш ответов SQLite/PostgreSQL на 24 часа. SHA-256 учитывает модель, системный промпт и полный пользовательский запрос с контекстом. Вложения и вызовы на изменение файлов обходят кэш. Для API-агента можно переопределить температуру в `settings.temperature`. Сетевой воркер должен объявить совместимую модель и температуру при подключении, чтобы Master использовал кэш для его ответов.
+Loomis is available under the [PolyForm Noncommercial License 1.0.0](LICENSE). Copyright © 2026 3xstar.
 
-### Magic Login
-
-1. Клиент отправляет логин пользователя в `POST /api/auth/magic-login/request` и получает `request_id`. Аккаунт должен быть привязан к Telegram, а бот — запущен.
-2. Бот присылает запрос, который пользователь подтверждает или отклоняет в Telegram. Запрос действует пять минут.
-3. Клиент проверяет статус по `request_id`. После подтверждения API возвращает Bearer-токен для открытия сессии.
-
-Сейчас привязка Telegram выполняется из существующего аккаунта. Войдите через `/api/auth/login`, получите код в `/api/auth/generate-link-code` и передайте его боту через `/link`. Код действует пять минут и используется один раз.
-
-## Настройки и Git в Telegram
-
-- В «⚙️ Настройки аккаунта» можно задать общую папку проектов на ПК, переключить доставку рабочих логов и привязать GitHub. Для входа включите Device Flow в настройках GitHub OAuth App и задайте `GITHUB_CLIENT_ID` в `.env`. Бот выдаёт код и сообщает о результате. Отвязка требует подтверждения.
-- При создании и в настройках проекта доступны имя, каталог на ПК, дедлайн, режимы работы, передачи при сбое, отчётов, коммитов и автопуша. После привязки GitHub можно указать существующий репозиторий или создать публичный либо приватный.
-- Хаб и список агентов показывают специализацию `[IMG]` и рейтинг надёжности, когда накоплена статистика. Агента в состоянии ошибки можно перезапустить с сохранённого шага, если для текущего плана есть сохранённый контекст.
-- Нижнее меню проекта открывает историю коммитов, ручной push и мягкую очистку чатов. Откат требует подтверждения, сбрасывает рабочую копию и восстанавливает снимок контекста выбранного коммита при его наличии. Очистка скрывает историю из последующих выдач Loomis и сохраняет контекст агентов.
-
-## Безопасность и локальность
-
-- API по умолчанию слушает `127.0.0.1`, а SQLite хранит данные локально в `loomis.db`.
-- Telegram и внешние провайдеры агентов обмениваются данными с Loomis по сети при включении соответствующих интеграций. Для сетевых воркеров используйте общий секрет и TLS (`wss://`).
-- Храните секреты в `.env`. Дочерние команды внешних CLI ограничиваются песочницей соответствующего CLI или ОС. Доверяйте только проверенным конфигурациям агентов и Git-репозиториям.
-
-## Лицензия и статус
-
-Файл лицензии в репозитории отсутствует.
+You may run and use Loomis free of charge for personal and noncommercial purposes within the terms of the license. Commercial use, resale, and integration into paid products require separate written permission from the copyright holder.

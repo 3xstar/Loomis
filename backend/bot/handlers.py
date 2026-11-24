@@ -52,6 +52,7 @@ from .keyboards import (
     PROJECT_BUTTONS, PROJECT_ROWS, agent_chat_keyboard, cancel_keyboard, first_project_keyboard, inline_menu,
     main_menu, profile_keyboard, project_keyboard, project_reply_keyboard, projects_keyboard, spec_keyboard,
 )
+from .i18n import bot_language, status_label, translate
 from .middlewares import AccountMiddleware
 from .states import AccountSetup, AgentInteraction, HubSetup, ProjectSettings, ProjectSetup
 
@@ -85,7 +86,7 @@ async def leave_project(message, state, account):
 
 @router.message(F.text.func(lambda value: isinstance(value, str) and value.strip() in PROJECT_BUTTONS))
 async def project_navigation(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
-    label = message.text.strip()
+    label = PROJECT_BUTTONS[message.text.strip()]
     if label == PROJECT_ROWS[3][1]:
         if account:
             orchestrator.telegram_projects.pop(account.id, None)
@@ -104,6 +105,8 @@ async def project_navigation(message: Message, state: FSMContext, session: Async
         return
     await state.set_data({"project_id": project.id})
     await state.set_state(None)
+    if message.text.strip() != translate(label):
+        await message.answer("Управление проектом", reply_markup=project_reply_keyboard())
     if label == PROJECT_ROWS[0][0]:
         await show_team_chat(message, project, session)
     elif label == PROJECT_ROWS[0][1]:
@@ -285,7 +288,7 @@ async def show_projects(message, session: AsyncSession, account: User | None):
 
 
 @router.message(Command("cancel"))
-@router.message(F.text == "❌ Отмена")
+@router.message(F.text.in_({"❌ Отмена", "❌ Cancel"}))
 async def cancel(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
     project = await owned_project(session, account, (await state.get_data()).get("project_id"))
     if project is not None:
@@ -358,6 +361,30 @@ async def profile_callback(callback: CallbackQuery, account: User | None):
     await show_account_settings(callback.message, account)
 
 
+@router.callback_query(F.data.in_({"profile:language", "profile:language:ru", "profile:language:en"}))
+async def account_language(callback: CallbackQuery, state: FSMContext, session: AsyncSession, account: User | None):
+    if account is None:
+        await callback.answer("Привяжите Telegram к аккаунту Loomis.", show_alert=True)
+        return
+    if callback.data == "profile:language":
+        await callback.answer()
+        await callback.message.answer("Выберите язык.", reply_markup=inline_menu([
+            [("✓ Русский" if account.language == "ru" else "Русский", "profile:language:ru"),
+             ("✓ English" if account.language == "en" else "English", "profile:language:en")],
+            [("Назад", "profile")],
+        ]))
+        return
+
+    language = callback.data.rsplit(":", 1)[1]
+    await update_preferences(UserPreferences(language=language), session, account)
+    bot_language.set(language)
+    await callback.answer("Язык сохранён.")
+    project = await owned_project(session, account, (await state.get_data()).get("project_id"))
+    if project and orchestrator.telegram_projects.get(account.id) == project.id:
+        await callback.message.answer("Управление проектом", reply_markup=project_reply_keyboard())
+    await show_account_settings(callback.message, account)
+
+
 github_flows = set()
 
 
@@ -422,6 +449,7 @@ async def wait_for_github(message, owner_id, telegram_id, flow):
                 account = await session.get(User, owner_id)
                 if account is None or account.telegram_id != telegram_id:
                     return
+                bot_language.set(account.language)
                 if account.github_username:
                     await show_account_settings(message, account)
                     return
@@ -522,7 +550,7 @@ async def project_card(callback: CallbackQuery, state: FSMContext, session: Asyn
     created = project.created_at.strftime("%Y-%m-%d %H:%M") if project.created_at else "—"
     updated = project.updated_at.strftime("%Y-%m-%d %H:%M") if getattr(project, "updated_at", None) else "—"
     await callback.message.answer(
-        f"{project.name}\nСтатус: {project.status}\nСоздан: {created}\nОбновлён: {updated}\n"
+        f"{project.name}\nСтатус: {status_label(project.status)}\nСоздан: {created}\nОбновлён: {updated}\n"
         f"Записей ТЗ: {count}\n{workspace_details(project)}", reply_markup=project_keyboard(project),
     )
 
@@ -930,7 +958,7 @@ def run_project_action(message, project, action, **options):
         except (OSError, ValueError, RuntimeError) as exc:
             await answer_formatted(message, str(exc))
         else:
-            text = "Последний шаг откачен." if action == "rollback" else f"Статус проекта — {project.status}."
+            text = "Последний шаг откачен." if action == "rollback" else f"Статус проекта — {status_label(project.status)}."
             await message.answer(text, reply_markup=project_keyboard(project))
 
     orchestrator.background_reply(reply())
@@ -1205,7 +1233,7 @@ async def show_plan(message, project):
         rows.append([("Утвердить план и запустить", action + "approve")])
     if project.status in {"paused", "completed"}:
         rows.append([("Откатить последний Git-шаг", action + "rollback")])
-    await message.answer(f"План и консилиум · {project.status}", reply_markup=inline_menu(rows) if rows else None)
+    await message.answer(f"План и консилиум · {status_label(project.status)}", reply_markup=inline_menu(rows) if rows else None)
 
 
 @router.callback_query(F.data.startswith("plan_feedback:"))
@@ -1384,7 +1412,7 @@ async def git_rollback(callback: CallbackQuery, session: AsyncSession, account: 
     context = "Контекст агентов восстановлен." if result["context_restored"] else (
         "История восстановлена по дате коммита. Снимок состояния агентов отсутствует."
     )
-    await message.answer(f"Выполнен откат до <code>{commit_hash}</code>. {context}", parse_mode="HTML")
+    await message.answer(f"Выполнен откат до <code>{commit_hash}</code>. {translate(context)}", parse_mode="HTML")
 
 
 async def send_push(message, project):
@@ -1443,7 +1471,7 @@ async def show_agents(message, project, session):
         rows.append([("Добавить CLI", f"agent_add:{project.id}:cli"), ("Добавить API", f"agent_add:{project.id}:api")])
     for agent in agents:
         prefix = f"agent_manage:{project.id}:{agent.id}:"
-        status = agent.traffic_state if agent.enabled else "выключен"
+        status = status_label(agent.traffic_state if agent.enabled else "disabled")
         score = ratings.get(keys[agent.id])
         badges = model_badges(agent.agent_role_type, score)
         actions = [

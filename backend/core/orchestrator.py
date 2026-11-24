@@ -19,6 +19,7 @@ from PIL import Image
 
 from backend.api.ws import manager, workers
 from backend.bot.formatting import telegram_html
+from backend.bot.i18n import bot_language, localize_markup, translate
 from backend.database.db import async_session_factory
 from backend.database.models import AgentConfig, AgentMessage, CommitState, Project, ProjectMedia, TaskLog, User, UserModelPreset
 from worker.adapters import CLI_PROVIDERS, build_agent
@@ -406,7 +407,7 @@ class Orchestrator:
             if owner and owner.telegram_id and self.telegram_projects.get(owner.id) == project_id:
                 self.background_reply(self.send_team_chat(
                     project_id, owner.id, owner.telegram_id, sender, target, content,
-                    media if sender != "User" else None,
+                    media if sender != "User" else None, owner.language,
                 ))
         return rows[0].media_id
 
@@ -420,13 +421,20 @@ class Orchestrator:
         return "\n".join(f"{row.sender_name} → {row.target_name}: {row.content[-4000:]}"
                          for row in reversed(rows))[-16000:]
 
-    async def send_team_chat(self, project_id, owner_id, chat_id, sender, target, content, media=None):
+    async def send_team_chat(self, project_id, owner_id, chat_id, sender, target, content, media=None,
+                             language="ru"):
+        if sender == "Loomis" or (content or "").startswith(f"От: {sender}\nКому: "):
+            content = translate(content, language)
         heading = escape(f"{sender} → {target}"[:200])
         async with self.runtime(project_id).telegram_delivery:
             for part in telegram_html(content or "—"):
                 while self.telegram_projects.get(owner_id) == project_id:
                     try:
-                        await self.bot.send_message(chat_id, f"<b>{heading}</b>\n{part}", parse_mode="HTML")
+                        locale = bot_language.set("ru")
+                        try:
+                            await self.bot.send_message(chat_id, f"<b>{heading}</b>\n{part}", parse_mode="HTML")
+                        finally:
+                            bot_language.reset(locale)
                     except TelegramRetryAfter as exc:
                         await asyncio.sleep(exc.retry_after)
                     else:
@@ -527,12 +535,16 @@ class Orchestrator:
             if owner and owner.telegram_id and (owner.tg_logs_enabled or markup or critical):
                 if in_team_chat and self.telegram_projects.get(owner.id) == project_id:
                     return
+                locale = bot_language.set("ru")
                 try:
-                    for index, part in enumerate(telegram_html(message)):
+                    localized = translate(message, owner.language)
+                    for index, part in enumerate(telegram_html(localized)):
                         await self.bot.send_message(owner.telegram_id, part, parse_mode="HTML",
-                                                    reply_markup=markup if index == 0 else None)
+                                                    reply_markup=localize_markup(markup, owner.language) if index == 0 else None)
                 except Exception:
                     logger.exception("Meeting or approval delivery failed for project %s", project_id)
+                finally:
+                    bot_language.reset(locale)
 
     async def request_approval(self, project_id, command, *, kind="command", config=None):
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup

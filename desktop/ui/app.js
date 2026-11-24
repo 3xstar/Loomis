@@ -139,12 +139,14 @@ async function signIn(accessToken, isCurrent = () => true) {
   const user = await api("auth/me", undefined, accessToken);
   if (!isCurrent()) return;
   token = accessToken;
+  applyLanguage(user.language);
   activeProjectKey = "loomis-project:" + user.id;
   telegramLogsEnabled = user.tg_logs_enabled;
   renderIntegrations(user);
   defaultProjectsDir = user.default_projects_dir;
   renderTelegramLogs();
   sessionStorage.setItem("loomis-token", token);
+  byId("user-name").dataset.userContent = "";
   byId("user-name").textContent = user.username || "Loomis";
   byId("user-avatar").textContent = byId("user-name").textContent[0].toUpperCase();
   showWorkspace(true);
@@ -261,6 +263,7 @@ function codeCard(language, source) {
   };
   head.append(element("span", "", language || "Код"), copy);
   const pre = element("pre"), code = element("code");
+  pre.dataset.userContent = "";
   let offset = 0;
   const tokens = /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\/\/[^\n]*|\b(?:const|let|return|function|class|import|from|def|async|await|if|else|for|true|false|null|None)\b|\b\d+(?:\.\d+)?\b)/g;
   for (const match of source.matchAll(tokens)) {
@@ -283,6 +286,7 @@ function renderMarkdown(body, text, terminal) {
       const tag = /^\s*\d/.test(line) ? "ol" : "ul";
       if (list?.localName !== tag) {
         list = element(tag);
+        list.dataset.userContent = "";
         if (tag === "ol") list.start = parseInt(line, 10);
         body.append(list);
       }
@@ -298,10 +302,13 @@ function renderMarkdown(body, text, terminal) {
       while (++i < lines.length && !/^\s*\x60{3,}\s*$/.test(lines[i])) code.push(lines[i]);
       body.append(codeCard(fence[1], code.join("\n")));
     } else if (terminal) {
-      body.append(line + (i + 1 < lines.length ? "\n" : ""));
+      const output = element("span", "", line + (i + 1 < lines.length ? "\n" : ""));
+      output.dataset.userContent = "";
+      body.append(output);
     } else if (line.trim()) {
       const heading = line.match(/^(#{1,6})\s+(.+)/);
       const block = element(heading ? "h" + heading[1].length : "p");
+      block.dataset.userContent = "";
       inlineMarkdown(block, heading ? heading[2] : line);
       body.append(block);
     }
@@ -385,6 +392,7 @@ function renderTerminalTabs() {
   if (!agentsInProject.some((agent) => agent.id === terminalAgent)) terminalAgent = agentsInProject[0]?.id;
   byId("terminal-tabs").replaceChildren(...agentsInProject.map((agent) => {
     const tab = element("button", "tab", agent.name);
+    tab.dataset.userContent = "";
     tab.type = "button";
     tab.setAttribute("aria-pressed", String(agent.id === terminalAgent));
     tab.onclick = () => {
@@ -463,6 +471,7 @@ function renderTeamTargets() {
 function setAttachment(file) {
   attachment = file;
   byId("chat-attachment").classList.toggle("hidden", !file);
+  byId("attachment-name").dataset.userContent = "";
   byId("attachment-name").textContent = file?.name || "";
 }
 
@@ -542,6 +551,7 @@ window.loomisMountWorkspace = (child, projectId) => {
   const root = child.document.getElementById("popout-root");
   child.document.documentElement.dataset.theme = document.documentElement.dataset.theme;
   moveWorkspace(root);
+  LoomisI18n.attach(child.document);
   workspaceWindow = child;
   pendingWindow = undefined;
   workspacePlaceholder.classList.remove("hidden");
@@ -974,6 +984,7 @@ async function loadAgents(projectId, current) {
         kind: "agent", item: agent, path: `projects/${projectId}/agents/${agent.id}`, projectId, current,
       });
     };
+    name.dataset.userContent = "";
     name.textContent = agent.name;
     if (agent.agent_role_type === "image_gen") name.append(imageBadge());
     details.textContent = [agent.provider, agent.model].filter(Boolean).join(" · ");
@@ -1086,6 +1097,7 @@ function selectAgent(agent) {
     setAttachment();
   }
   selectedAgent = agent;
+  byId("agent-selector-label").toggleAttribute("data-user-content", Boolean(agent));
   if (agent) byId("agent-selector-label").textContent = agent.name;
   syncComposer();
   if (view === "direct") refreshStream(true);
@@ -1102,6 +1114,7 @@ function renderAgentSelector(agents) {
   agentMenu.replaceChildren(...enabled.map((agent) => {
     const button = document.createElement("button");
     button.type = "button";
+    button.dataset.userContent = "";
     button.textContent = agent.name;
     button.setAttribute("aria-pressed", String(agent === next));
     button.onclick = () => {
@@ -1147,6 +1160,7 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
     const button = document.createElement("button");
     button.className = "project-button";
     button.dataset.id = item.id;
+    button.dataset.userContent = "";
     button.textContent = item.name;
     button.oncontextmenu = (event) => {
       openContextMenu(event, {kind: "project", item, path: "projects/" + item.id});
@@ -1692,7 +1706,9 @@ function renderProjectTitle() {
   byId("welcome-dashboard").classList.toggle("hidden", Boolean(project));
   renderGitPush();
   byId("project-settings-button").disabled = !project;
-  byId("current-project-name").textContent = project?.name || "Выберите проект";
+  const projectName = byId("current-project-name");
+  projectName.toggleAttribute("data-user-content", Boolean(project));
+  projectName.textContent = project?.name || "Выберите проект";
   byId("current-project-workspace").textContent = project ? "Папка проекта на ПК: " + project.workspace_path : "";
   byId("current-project-git").textContent = project?.git_repo_url ? "Git-репозиторий: " + project.git_repo_url : "";
 }
@@ -1777,7 +1793,7 @@ byId("context-rollback-commit").onclick = async () => {
   const {commit, path, current} = contextTarget;
   closeContextMenu(true);
   if (current !== selection || gitRollbackPending ||
-    !confirm("Откатить файлы и контекст ИИ до коммита " + commit.short_hash + "?")) return;
+    !confirm(LoomisI18n.translate("Откатить файлы и контекст ИИ до коммита " + commit.short_hash + "?"))) return;
   gitRollbackPending = true;
   try {
     const result = await api(path + "/commits/" + commit.hash + "/rollback", {});
@@ -1840,10 +1856,55 @@ for (const tab of settingsTabs) {
   tab.onkeydown = (event) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
+    const index = settingsTabs.indexOf(tab);
+    const offset = event.key === "ArrowLeft" ? -1 : 1;
     const next = event.key === "Home" ? settingsTabs[0]
-      : event.key === "End" ? settingsTabs[1] : settingsTabs.find((button) => button !== tab);
+      : event.key === "End" ? settingsTabs.at(-1)
+      : settingsTabs[(index + offset + settingsTabs.length) % settingsTabs.length];
     selectSettingsTab(next);
     next.focus();
+  };
+}
+
+function applyLanguage(language) {
+  LoomisI18n.setLanguage(language);
+  for (const card of all("[data-language]")) {
+    card.setAttribute("aria-pressed", card.dataset.language === LoomisI18n.language);
+  }
+}
+
+let languageWrite;
+for (const card of all("[data-language]")) {
+  card.onclick = async () => {
+    const session = token;
+    const previous = LoomisI18n.language;
+    const language = card.dataset.language;
+    if (!session || previous === language) return;
+    applyLanguage(language);
+
+    if (languageWrite?.session === session) {
+      languageWrite.desired = language;
+      return;
+    }
+    const write = {session, saved: previous, desired: language};
+    languageWrite = write;
+    try {
+      while (token === session && write.saved !== write.desired) {
+        const requested = write.desired;
+        try {
+          await api("auth/me", {language: requested}, session, "PATCH");
+          write.saved = requested;
+        } catch {
+          if (token === session && write.desired === requested) {
+            applyLanguage(write.saved);
+            notify("Не удалось сохранить язык.");
+            return;
+          }
+        }
+      }
+    } finally {
+      if (languageWrite === write) languageWrite = undefined;
+    }
   };
 }
 
@@ -2175,7 +2236,7 @@ byId("deadline-form").onsubmit = async (event) => {
   const field = byId("request-deadline");
   const deadline = Number(field.value);
   if (deadline < 1 || deadline > 1440) {
-    field.setCustomValidity("Введите целое число от 1 до 1440.");
+    field.setCustomValidity(LoomisI18n.translate("Введите целое число от 1 до 1440."));
     field.reportValidity();
     return;
   }
@@ -2282,7 +2343,7 @@ const projectTemplates = {
 };
 
 function openProjectModal(template) {
-  const [name, spec] = template || ["", ""];
+  const [name, spec] = (template || ["", ""]).map(LoomisI18n.translate);
   byId("project-name").value = name;
   byId("project-template").value = spec;
   byId("project-template-field").classList.toggle("hidden", !template);
@@ -2456,7 +2517,7 @@ function renderHubModels() {
       '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7l1-3h4l1 3"/>', true);
     edit.onclick = () => openHubForm(preset);
     remove.onclick = async () => {
-      if (!confirm("Удалить модель «" + preset.name + "» из Хаба?")) return;
+      if (!confirm(LoomisI18n.translate("Удалить модель «" + preset.name + "» из Хаба?"))) return;
       remove.disabled = true;
       try {
         await api("hub/models/" + preset.id, undefined, token, "DELETE");
@@ -2476,6 +2537,7 @@ function renderHubModels() {
     usage.append(element("strong", "", statsNumber.format(preset.total_tokens_used)),
       element("small", "", "Токенов за всё время"));
     const heading = element("h3", "", preset.name);
+    heading.dataset.userContent = "";
     if (preset.agent_role_type === "image_gen") heading.append(imageBadge());
     heading.append(badge);
     card.append(heading,
@@ -2582,6 +2644,7 @@ byId("stats-button").onclick = async () => {
     for (const agent of stats.agents) {
       const row = rows.insertRow();
       const name = element("th", "", agent.name);
+      name.dataset.userContent = "";
       name.scope = "row";
       row.append(name);
       row.insertCell().textContent = statsNumber.format(agent.tokens);
@@ -2599,6 +2662,7 @@ byId("stats-button").onclick = async () => {
 
 byId("logout-button").onclick = () => {
   token = null;
+  applyLanguage("ru");
   githubUsername = null;
   defaultProjectsDir = "";
   telegramId = null;

@@ -415,6 +415,11 @@
       <div class="settings-tabs glass-panel" role="tablist" aria-label="Разделы настроек">
         <button id="general-tab" class="tab active" type="button" role="tab" aria-controls="general-panel" aria-selected="true">Общие</button>
         <button id="integrations-tab" class="tab" type="button" role="tab" aria-controls="integrations-panel" aria-selected="false" tabindex="-1">Интеграции</button>
+        <button id="language-tab" class="tab" type="button" role="tab" aria-controls="language-panel" aria-selected="false" tabindex="-1">Язык</button>
+      </div>
+      <div id="language-panel" class="language-cards" role="tabpanel" aria-labelledby="language-tab" hidden>
+        <button class="language-card glass-panel" type="button" data-language="ru" aria-pressed="true"><span lang="ru">Русский (RU)</span><span class="language-check" aria-hidden="true">✓</span></button>
+        <button class="language-card glass-panel" type="button" data-language="en" aria-pressed="false"><span lang="en">English (EN)</span><span class="language-check" aria-hidden="true">✓</span></button>
       </div>
       <div id="general-panel" class="stack" role="tabpanel" aria-labelledby="general-tab">
         <form id="projects-dir-form" class="field" aria-labelledby="projects-dir-title">
@@ -562,6 +567,7 @@
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
   <div id="popout-root" class="hidden"></div>
+  <script src="/static/i18n.js?v=latest"></script>
   <script>
     const params = new URLSearchParams(location.search);
     if (params.get("popout") === "workspace") {

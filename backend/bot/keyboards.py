@@ -1,6 +1,9 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 
+from .i18n import status_label, translate
+
+
 PROJECT_ROWS = (
     ("Общий чат ИИ", "Личный чат с ИИ"),
     ("Агенты проекта", "План и Консилиум"),
@@ -9,7 +12,10 @@ PROJECT_ROWS = (
     ("История коммитов", "Push в Git"),
     ("Очистить экран чата",),
 )
-PROJECT_BUTTONS = {label for row in PROJECT_ROWS for label in row}
+PROJECT_BUTTONS = {
+    translate(label, language): label
+    for row in PROJECT_ROWS for label in row for language in ("ru", "en")
+}
 
 
 def project_reply_keyboard() -> ReplyKeyboardMarkup:
@@ -44,6 +50,7 @@ def profile_keyboard(github_linked: bool) -> InlineKeyboardMarkup:
                               callback_data="profile:unlink" if github_linked else "profile:github")],
         [InlineKeyboardButton(text="Изменить общую папку для проектов", callback_data="profile:folder")],
         [InlineKeyboardButton(text="Переключить рабочие логи в Telegram", callback_data="profile:logs")],
+        [InlineKeyboardButton(text="Язык / Language", callback_data="profile:language")],
         [InlineKeyboardButton(text="🔑 Сгенерировать новый пароль", callback_data="profile:new_password")],
         [InlineKeyboardButton(text="Мои проекты", callback_data="projects")],
     ])
@@ -76,7 +83,7 @@ def spec_keyboard(project_id: int) -> InlineKeyboardMarkup:
 
 
 def projects_keyboard(projects) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=f"{p.name} · {p.status}", callback_data=f"project:{p.id}")]
+    rows = [[InlineKeyboardButton(text=f"{p.name} · {status_label(p.status)}", callback_data=f"project:{p.id}")]
             for p in projects]
     rows.append([InlineKeyboardButton(text="➕ Новый проект", callback_data="new_project")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

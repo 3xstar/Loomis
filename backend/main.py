@@ -12,6 +12,7 @@ from sqlalchemy import func, inspect, select, update
 from sqlalchemy.schema import CreateTable
 
 from backend.api import auth, projects, ws
+from backend.bot.i18n import LocalizeTelegram
 from backend.bot.handlers import router as bot_router
 from backend.core.orchestrator import orchestrator
 from backend.database.db import Base, engine
@@ -36,7 +37,9 @@ def initialize_schema(connection) -> None:
                   "github_token": "TEXT", "github_username": "VARCHAR(100)",
                   "github_avatar_url": "VARCHAR", "telegram_username": "VARCHAR",
                   "telegram_avatar_url": "VARCHAR",
-                  "default_projects_dir": "VARCHAR(1024)"},
+                  "default_projects_dir": "VARCHAR(1024)",
+                  "language": "VARCHAR(5) NOT NULL DEFAULT 'ru' "
+                              "CONSTRAINT ck_users_language CHECK (language IN ('ru', 'en'))"},
         "agent_messages": {
             "is_ui_cleared": "BOOLEAN NOT NULL DEFAULT FALSE",
             "step_title": "TEXT",
@@ -181,6 +184,7 @@ async def lifespan(app: FastAPI):
             )
         if settings.bot_token:
             bot = Bot(token=settings.bot_token)
+            bot.session.middleware(LocalizeTelegram())
             orchestrator.bot = bot
             await bot.set_my_commands([
                 BotCommand(command="start", description="Главное меню и статус аккаунта"),

@@ -1,6 +1,7 @@
 from aiogram import BaseMiddleware
 from sqlalchemy import select
 
+from backend.bot.i18n import bot_language
 from backend.database.db import async_session_factory
 from backend.database.models import User
 
@@ -13,4 +14,8 @@ class AccountMiddleware(BaseMiddleware):
             data["account"] = None if sender is None else await session.scalar(
                 select(User).where(User.telegram_id == sender.id)
             )
-            return await handler(event, data)
+            locale = bot_language.set(data["account"].language if data["account"] else "ru")
+            try:
+                return await handler(event, data)
+            finally:
+                bot_language.reset(locale)
