@@ -3,6 +3,7 @@ const content = document.querySelector("#welcome-widgets");
 const widgetArea = content.querySelector(".welcome-scroll");
 const stage = document.querySelector(".lighter-stage");
 const canvas = document.querySelector("#welcome-lighter");
+const surfaceLine = stage.querySelector(".lighter-surface-line");
 const toggle = document.querySelector("#lighter-toggle");
 const ash = document.querySelector("#welcome-ash");
 const ashContext = ash.getContext("2d");
@@ -281,8 +282,7 @@ function createLighter(THREE) {
   const palettes = flamePalettes.map(palette => palette.map(color => new THREE.Color(color)));
 
   function resize() {
-    const nextWidth = canvas.clientWidth;
-    const nextHeight = canvas.clientHeight;
+    const { width: nextWidth, height: nextHeight } = canvas.getBoundingClientRect();
     const nextOffset = parseFloat(getComputedStyle(toggle).bottom) + 8;
     if (!nextWidth || !nextHeight || (width === nextWidth && height === nextHeight && surfaceOffset === nextOffset)) return;
     width = nextWidth;
@@ -298,6 +298,10 @@ function createLighter(THREE) {
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
     renderer.setSize(width, height, false);
+    body.updateWorldMatrix(true, false);
+    const baseY = new THREE.Box3().setFromObject(body).min.y;
+    const projectedBase = projection.set(0, baseY, 0).project(camera);
+    surfaceLine.style.top = `${(1 - projectedBase.y) * height / 2}px`;
   }
 
   const studio = document.createElement("canvas");
@@ -542,12 +546,14 @@ function createLighter(THREE) {
 
   canvas.addEventListener("webglcontextlost", event => {
     event.preventDefault();
+    surfaceLine.style.removeProperty("top");
     stage.removeAttribute("data-webgl");
     stage.setAttribute("data-webgl-fallback", "");
     model = undefined;
     scheduleFrame();
   });
   canvas.addEventListener("webglcontextrestored", () => {
+    width = 0;
     model = lighter;
     scheduleFrame();
   });
