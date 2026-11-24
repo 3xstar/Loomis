@@ -16,6 +16,8 @@ let previousTime = 0;
 let model;
 let loading = false;
 let pointer;
+let drag;
+let suppressPointerClick = false;
 let ashes = [];
 // Outer flame, inner flame, core, and reflected light at each project count.
 const flamePalettes = [
@@ -105,6 +107,7 @@ function scheduleFrame() {
 }
 
 toggle.addEventListener("click", event => {
+  if (event.detail && suppressPointerClick) return;
   if (event.detail && model && !model.hitTest({ x: event.clientX, y: event.clientY }, burning)) return;
   burning = !burning;
   toggle.setAttribute("aria-expanded", String(burning));
@@ -118,6 +121,49 @@ toggle.addEventListener("click", event => {
   }
   content.classList.toggle("revealed", burning);
   content.inert = !burning;
+  scheduleFrame();
+});
+
+toggle.addEventListener("pointerdown", event => {
+  if (drag || event.button !== 0) return;
+  suppressPointerClick = false;
+  const { clientX: x, clientY: y, pointerId, timeStamp } = event;
+  if (event.pointerType !== "mouse" || !model?.hitTest({ x, y }, burning)) return;
+  drag = { pointerId, x, y, lastX: x, timeStamp, speed: 0, moved: false };
+  model.stopRotation();
+  toggle.setPointerCapture(pointerId);
+});
+
+function updateDrag(event) {
+  const { clientX: x, clientY: y, timeStamp } = event;
+  if (!drag.moved && Math.hypot(x - drag.x, y - drag.y) < 5) return;
+  drag.moved = true;
+  const dx = x - drag.lastX;
+  if (dx) {
+    drag.speed = dx / Math.max(8, timeStamp - drag.timeStamp);
+    drag.lastX = x;
+    drag.timeStamp = timeStamp;
+    model?.rotate(dx);
+  }
+}
+
+toggle.addEventListener("pointermove", event => {
+  if (drag?.pointerId === event.pointerId) updateDrag(event);
+});
+toggle.addEventListener("pointerup", event => {
+  if (drag?.pointerId !== event.pointerId) return;
+  updateDrag(event);
+  suppressPointerClick = drag.moved;
+  if (drag.moved && !reducedMotion.matches) {
+    const momentum = Math.max(0, 90 - (event.timeStamp - drag.timeStamp));
+    model?.rotate(Math.max(-3, Math.min(3, drag.speed)) * momentum);
+  }
+  drag = undefined;
+});
+toggle.addEventListener("lostpointercapture", event => {
+  if (drag?.pointerId !== event.pointerId) return;
+  suppressPointerClick = true;
+  drag = undefined;
   scheduleFrame();
 });
 
@@ -162,6 +208,12 @@ function syncVisibility() {
   }
   cancelAnimationFrame(frame);
   frame = 0;
+  if (drag) {
+    const { pointerId } = drag;
+    drag = undefined;
+    suppressPointerClick = true;
+    if (toggle.hasPointerCapture(pointerId)) toggle.releasePointerCapture(pointerId);
+  }
   if (!dashboard.closest(".hidden")) return;
   burning = false;
   ignition = 0;
@@ -205,7 +257,7 @@ function createLighter(THREE) {
   renderer.setClearColor(0x000000, 0);
   const scene = new THREE.Scene();
   const lighterGroup = new THREE.Group();
-  lighterGroup.rotation.set(0.06, -0.22, 0);
+  lighterGroup.rotation.set(.03, 0, 0, "YXZ");
   lighterGroup.position.set(0, .12, 0);
   scene.add(lighterGroup);
   const camera = new THREE.OrthographicCamera();
@@ -216,6 +268,7 @@ function createLighter(THREE) {
   let width = 0;
   let height = 0;
   let floorOffset = 0;
+  let yawTarget = 0;
   let angle = burning ? THREE.MathUtils.degToRad(105) : 0;
   let velocity = 0;
   let fire = 0;
@@ -238,7 +291,7 @@ function createLighter(THREE) {
     const halfWidth = viewHeight * width / height / 2;
     Object.assign(camera, { left: -halfWidth, right: halfWidth, top: viewHeight / 2, bottom: -viewHeight / 2, near: .1, far: 30 });
     target.y = viewHeight * (.5 - floorOffset / height) / .981;
-    camera.position.copy(target).add(new THREE.Vector3(1.8, 1.45, 7));
+    camera.position.copy(target).add(new THREE.Vector3(0, 1.45, 7));
     camera.lookAt(target);
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
@@ -388,6 +441,7 @@ function createLighter(THREE) {
     transparent: true, depthWrite: false,
     uniforms: {
       glow: { value: 0 }, tint: { value: new THREE.Color() }, glowColor: { value: fireLight.color },
+      yaw: { value: 0 },
     },
     vertexShader: `
       varying vec2 floorUv;
@@ -397,14 +451,16 @@ function createLighter(THREE) {
       }`,
     fragmentShader: `
       varying vec2 floorUv;
-      uniform float glow;
+      uniform float glow, yaw;
       uniform vec3 tint, glowColor;
       void main() {
         vec2 p = (floorUv - .5) * 2.;
         float pool = exp(-dot(p * vec2(2.9, 2.6), p * vec2(2.9, 2.6)));
-        vec2 mirror = vec2((p.x + .055 * p.y) * 4.5, (p.y + .25) * 3.);
+        vec2 footprint = p * vec2(2.5, 1.6);
+        float c = cos(yaw), s = sin(yaw);
+        vec2 mirror = mat2(c, -s, s, c) * footprint * vec2(1.8, 3.8);
         float silhouette = (1. - smoothstep(.70, 1.15, abs(mirror.x)))
-          * (1. - smoothstep(.2, 1.1, abs(mirror.y))) * smoothstep(.07, .2, -p.y);
+          * (1. - smoothstep(.2, 1.1, abs(mirror.y)));
         float alpha = (pool * (.11 + glow * .52) + silhouette * .19)
           * (1. - smoothstep(.68, 1., length(p)));
         gl_FragColor = vec4(mix(tint, glowColor, glow * .9), alpha);
@@ -507,6 +563,7 @@ function createLighter(THREE) {
 
   function reset() {
     angle = velocity = fire = bend = depth = sparkTimer = 0;
+    yawTarget = lighterGroup.rotation.y = 0;
     pivot.rotation.z = 0;
     for (const spark of sparks) {
       spark.life = 0;
@@ -527,6 +584,13 @@ function createLighter(THREE) {
   });
   const lighter = {
     hitTest, reset,
+    stopRotation() {
+      yawTarget = lighterGroup.rotation.y;
+    },
+    rotate(dx) {
+      yawTarget += dx * (2 * Math.PI / 240);
+      scheduleFrame();
+    },
     draw(time, dt, open, lit) {
       resize();
       const light = document.documentElement.dataset.theme === "light";
@@ -537,6 +601,10 @@ function createLighter(THREE) {
         floor.material.uniforms.tint.value.setHex(light ? 0x747986 : 0xa2a9b8);
       }
       const still = reducedMotion.matches;
+      const yaw = lighterGroup.rotation.y;
+      const rotating = Math.abs(yawTarget - yaw) > .001;
+      lighterGroup.rotation.y = still || !rotating ? yawTarget : THREE.MathUtils.damp(yaw, yawTarget, 20, dt);
+      floor.material.uniforms.yaw.value = lighterGroup.rotation.y;
       temperature = still ? projectCount : THREE.MathUtils.damp(temperature, projectCount, 8, dt);
       const lower = Math.floor(temperature);
       const upper = Math.min(lower + 1, palettes.length - 1);
@@ -546,7 +614,7 @@ function createLighter(THREE) {
       }
       fireLight.color.lerpColors(palettes[lower][3], palettes[upper][3], blend);
       scene.updateMatrixWorld();
-      const hit = Boolean(pointer?.onToggle && hitTest(pointer, open));
+      const hit = Boolean(!drag?.moved && pointer?.onToggle && hitTest(pointer, open));
       stage.toggleAttribute("data-hit", hit);
       const goal = THREE.MathUtils.degToRad(open ? 105 : hit ? 15 : 0);
       velocity += ((goal - angle) * 130 - velocity * 17) * dt;
@@ -601,7 +669,7 @@ function createLighter(THREE) {
         stage.removeAttribute("data-webgl-fallback");
         stage.setAttribute("data-webgl", "");
       }
-      return !still && (lit || fire > .002 || Math.abs(angle - goal) > .0005 ||
+      return !still && (rotating || lit || fire > .002 || Math.abs(angle - goal) > .0005 ||
         Math.abs(velocity) > .001 || Math.abs(temperature - projectCount) > .001 ||
         sparks.some(spark => spark.life > 0));
     },
