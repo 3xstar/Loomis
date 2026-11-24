@@ -186,7 +186,9 @@ document.documentElement.addEventListener("pointerleave", () => {
 });
 
 function syncVisibility() {
-  const visible = !document.hidden && !dashboard.closest(".hidden");
+  const onDashboard = !dashboard.closest(".hidden");
+  if (!onDashboard) stage.removeAttribute("data-webgl");
+  const visible = !document.hidden && onDashboard;
   if (active === visible) return;
   active = visible;
   if (active) {
@@ -214,7 +216,7 @@ function syncVisibility() {
     suppressPointerClick = true;
     if (toggle.hasPointerCapture(pointerId)) toggle.releasePointerCapture(pointerId);
   }
-  if (!dashboard.closest(".hidden")) return;
+  if (onDashboard) return;
   burning = false;
   ignition = 0;
   pointer = undefined;
@@ -266,7 +268,7 @@ function createLighter(THREE) {
   const rayPoint = new THREE.Vector2();
   let width = 0;
   let height = 0;
-  let floorOffset = 0;
+  let surfaceOffset = 0;
   let yawTarget = 0;
   let angle = burning ? THREE.MathUtils.degToRad(105) : 0;
   let velocity = 0;
@@ -282,13 +284,13 @@ function createLighter(THREE) {
     const nextWidth = canvas.clientWidth;
     const nextHeight = canvas.clientHeight;
     const nextOffset = parseFloat(getComputedStyle(toggle).bottom) + 8;
-    if (!nextWidth || !nextHeight || (width === nextWidth && height === nextHeight && floorOffset === nextOffset)) return;
+    if (!nextWidth || !nextHeight || (width === nextWidth && height === nextHeight && surfaceOffset === nextOffset)) return;
     width = nextWidth;
     height = nextHeight;
-    floorOffset = nextOffset;
+    surfaceOffset = nextOffset;
     const viewHeight = Math.min(3.85, Math.max(3.2, height * 3.85 / 326));
     const halfWidth = viewHeight * width / height / 2;
-    const verticalOffset = viewHeight * (.5 - floorOffset / height) - lighterGroup.position.y;
+    const verticalOffset = viewHeight * (.5 - surfaceOffset / height) - lighterGroup.position.y;
     Object.assign(camera, { left: -halfWidth, right: halfWidth, top: verticalOffset + viewHeight / 2, bottom: verticalOffset - viewHeight / 2, near: .1, far: 30 });
     camera.position.z = 7;
     camera.position.y = lighterGroup.position.y;
@@ -437,39 +439,6 @@ function createLighter(THREE) {
   badge.position.set(0, .40, .217);
   lighterGroup.add(badge);
 
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(5, 3.2), new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false,
-    uniforms: {
-      glow: { value: 0 }, tint: { value: new THREE.Color() }, glowColor: { value: fireLight.color },
-      yaw: { value: 0 },
-    },
-    vertexShader: `
-      varying vec2 floorUv;
-      void main() {
-        floorUv = uv;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.);
-      }`,
-    fragmentShader: `
-      varying vec2 floorUv;
-      uniform float glow, yaw;
-      uniform vec3 tint, glowColor;
-      void main() {
-        vec2 p = (floorUv - .5) * 2.;
-        float pool = exp(-dot(p * vec2(2.9, 2.6), p * vec2(2.9, 2.6)));
-        vec2 footprint = p * vec2(2.5, 1.6);
-        float c = cos(yaw), s = sin(yaw);
-        vec2 mirror = mat2(c, -s, s, c) * footprint * vec2(1.8, 3.8);
-        float silhouette = (1. - smoothstep(.70, 1.15, abs(mirror.x)))
-          * (1. - smoothstep(.2, 1.1, abs(mirror.y)));
-        float alpha = (pool * (.11 + glow * .52) + silhouette * .19)
-          * (1. - smoothstep(.68, 1., length(p)));
-        gl_FragColor = vec4(mix(tint, glowColor, glow * .9), alpha);
-        #include <colorspace_fragment>
-      }`,
-  }));
-  floor.rotation.x = -Math.PI / 2;
-  scene.add(floor);
-
   const flame = new THREE.Group();
   flame.position.set(.10, 1.73, 0);
   lighterGroup.add(flame);
@@ -598,13 +567,11 @@ function createLighter(THREE) {
         theme = light;
         metal.color.setHex(light ? 0xc2c7d0 : 0x53565f);
         badge.material.color.setHex(light ? 0x252932 : 0xe5e8f1);
-        floor.material.uniforms.tint.value.setHex(light ? 0x747986 : 0xa2a9b8);
       }
       const still = reducedMotion.matches;
       const yaw = lighterGroup.rotation.y;
       const rotating = Math.abs(yawTarget - yaw) > .001;
       lighterGroup.rotation.y = still || !rotating ? yawTarget : THREE.MathUtils.damp(yaw, yawTarget, 20, dt);
-      floor.material.uniforms.yaw.value = lighterGroup.rotation.y;
       temperature = still ? projectCount : THREE.MathUtils.damp(temperature, projectCount, 8, dt);
       const lower = Math.floor(temperature);
       const upper = Math.min(lower + 1, palettes.length - 1);
@@ -641,7 +608,6 @@ function createLighter(THREE) {
       flameUniforms.strength.value = fire;
       flame.scale.setScalar(.36 + .64 * fire);
       fireLight.intensity = fire * (still ? .7 : .7 + .09 * Math.sin(time * 21.));
-      floor.material.uniforms.glow.value = fireLight.intensity;
 
       sparkTimer -= dt;
       if (lit && !still && influence > 0 && sparkTimer <= 0) {
