@@ -9,6 +9,20 @@ from uuid import uuid4
 
 
 PROJECT_METADATA = ("SPEC.md", "PLAN.md", "Project_context.md")
+DOCUMENT_EXTENSIONS = {".docx", ".md", ".rst", ".txt", ".pdf", ".odt"}
+CONVENTIONAL_SUBJECT = re.compile(
+    r"(?:feat|fix|docs|test|refactor|build|chore|perf|style|ci|revert)(?:\([\w.-]+\))?!?: "
+    r"([^\x00-\x1f\x7f]{4,110})"
+)
+FORBIDDEN_SUBJECT_TEXT = re.compile(
+    r"ход\s+выполнения|шаг\s+разработки|gpt|claude|codex|gemini|glm|deepseek|"
+    r"\b(?:commit_msg|loomis_\w+)\b", re.IGNORECASE,
+)
+SERVICE_SUBJECT = re.compile(
+    r"(?:<[^<>]*>|n/?a|none|null|skip|done|no changes|без изменений|нет изменений|"
+    r"готово|выполнено|служебная строка|обновить файлы|update files|краткая суть изменений)"
+    r"[.!…]*", re.IGNORECASE,
+)
 
 
 def is_github_repo(url: str) -> bool:
@@ -102,9 +116,17 @@ class GitBridge:
         if not paths or not await self.git("status", "--porcelain", "--", *paths):
             return False
         await self.clear_stale_index_lock()
-        await self.git("-c", "user.name=Project Maintainer", "-c", "user.email=maintainer@localhost",
-                       "commit", "--only", "-m", "chore: удалить служебные документы проекта", "--", *paths)
+        await self.write_commit("commit", "--only", "-m", "chore: удалить служебные документы проекта", "--", *paths)
         return True
+
+    async def write_commit(self, *args):
+        name = await self.git("config", "--global", "--get", "user.name", allowed=(0, 1))
+        email = await self.git("config", "--global", "--get", "user.email", allowed=(0, 1))
+        if not name or not email:
+            raise RuntimeError("Укажите user.name и user.email в глобальном профиле Git.")
+        env = dict(os.environ, GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=email,
+                   GIT_COMMITTER_NAME=name, GIT_COMMITTER_EMAIL=email)
+        return await self.git("-c", f"user.name={name}", "-c", f"user.email={email}", *args, env=env)
 
     async def commit(self, subject=None, *, forbidden_names=()):
         await self.clear_stale_index_lock()
@@ -112,43 +134,32 @@ class GitBridge:
         if not await self.git("status", "--porcelain", "--untracked-files=all"):
             return False
         await self.git("add", "-A")
-        staged = await self.git("-c", "core.quotepath=false", "diff", "--cached", "--name-status", "--no-renames")
+        staged = await self.git("diff", "--cached", "--name-status", "-z", "--no-renames")
         if not staged:
             return False
-        groups = {"A": [], "M": [], "D": [], "T": []}
-        for line in staged.splitlines():
-            status, _, path = line.partition("\t")
-            if path:
-                groups.setdefault(status, []).append(path)
-        labels = {"A": "Добавить", "M": "Обновить", "D": "Удалить", "T": "Изменить тип"}
-        forbidden = [r"Шаг разработки\s*:", r"\b(?:gpt|chatgpt|claude|codex|gemini|glm|deepseek)(?:\b|\d)"]
+        forbidden = [FORBIDDEN_SUBJECT_TEXT.pattern]
         forbidden.extend(rf"(?<!\w){re.escape(name)}(?!\w)" for name in forbidden_names if name)
         names = re.compile("|".join(forbidden), re.IGNORECASE)
-        if not (subject and re.fullmatch(
-                r"(?:feat|fix|docs|test|refactor|build|chore|perf|style|ci)(?:\([\w.-]+\))?: [^\x00-\x1f\x7f]{4,110}",
-                subject) and not names.search(subject)):
-            subject = None
-        parts = []
-        all_paths = []
-        for status, paths in groups.items():
-            if not paths:
-                continue
-            suffixes = {Path(path.strip('"')).suffix.lower() for path in paths}
-            all_paths.extend(paths)
-            if suffixes <= {".docx", ".md", ".rst", ".txt", ".pdf", ".odt"}:
-                scope = "документацию"
-            elif suffixes <= {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico"}:
-                scope = "графические ресурсы"
-            else:
-                scope = "файлы проекта"
-            files = [Path(path.strip('"')).name for path in paths]
-            examples = ", ".join(name for name in files[:3] if not names.search(name))[:75]
-            parts.append(f"{labels.get(status, 'Обновить')} {scope}" + (f" ({examples})" if examples else ""))
-        kind = ("docs" if all(Path(path.strip('"')).suffix.lower() in {".docx", ".md", ".rst", ".txt", ".pdf", ".odt"}
-                              for path in all_paths) else ("feat" if groups["A"] else "chore"))
-        message = subject or f"{kind}: {', '.join(parts)}"
-        await self.git("-c", "user.name=Project Maintainer", "-c", "user.email=maintainer@localhost",
-                       "commit", "-m", message)
+        subject = (subject or "").strip()
+        match = CONVENTIONAL_SUBJECT.fullmatch(subject)
+        if (not match or names.search(subject) or SERVICE_SUBJECT.fullmatch(match[1].strip())
+                or not any(char.isalnum() for char in match[1])):
+            fields = staged.split("\0")
+            groups = {}
+            for status, path in zip(fields[::2], fields[1::2]):
+                groups.setdefault(status, []).append(Path(path))
+            is_docs = all(path.suffix.lower() in DOCUMENT_EXTENSIONS
+                          for paths in groups.values() for path in paths)
+            kind = "docs" if is_docs else ("feat" if "A" in groups else "fix")
+            labels = {"A": "добавить", "M": "обновить", "D": "удалить", "T": "изменить тип"}
+            parts = []
+            for status, paths in groups.items():
+                examples = [path.name for path in paths if not names.search(path.name)
+                            and path.name.isprintable()]
+                files = ", ".join(examples[:3])[:60] or ("документацию" if is_docs else "файлы проекта")
+                parts.append(f"{labels.get(status, 'обновить')} {files}")
+            subject = f"{kind}: {', '.join(parts)[:110].rstrip(', ')}"
+        await self.write_commit("commit", "-m", subject)
         return True
 
     async def head(self):
@@ -162,8 +173,7 @@ class GitBridge:
         head = await self.head()
         if head and tree == await self.git("rev-parse", "HEAD^{tree}"):
             return head
-        return await self.git("-c", "user.name=Project Maintainer", "-c", "user.email=maintainer@localhost",
-                              "commit-tree", tree, "-m", "Loomis workspace checkpoint")
+        return await self.write_commit("commit-tree", tree, "-m", "chore: сохранить снимок рабочей области")
 
     async def checkpoint(self):
         await self.clean_project_metadata()

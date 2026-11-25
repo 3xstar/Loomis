@@ -1215,8 +1215,10 @@ class Orchestrator:
                                 + (" Это финальная проверка. Проверь файлы и критерии ТЗ за один проход. "
                                    "Верни краткий вывод. Сохрани содержимое файлов без изменений. " if reviewing else "")
                                 + autonomy_instruction(mode)
-                                + " Добавь отдельную строку LOOMIS_COMMIT: <тип>: <суть изменений>. "
-                                "Используй техническое описание выполненной работы без имён агентов и моделей. "
+                                + " В конце отчёта верни отдельную короткую строку "
+                                "COMMIT_MSG: <тип>: <краткая суть изменений>. "
+                                "Например, COMMIT_MSG: docs: обновить паспорт проекта. "
+                                "Описывай изменения без имён агентов и моделей. "
                                 "Если из-за технической ошибки невозможно собрать требуемый результат, "
                                 "верни отдельную строку LOOMIS_BLOCKED: <причина>. "
                                 "Если все задачи плана завершены, верни отдельную строку LOOMIS_COMPLETE.",
@@ -1273,7 +1275,7 @@ class Orchestrator:
                         complete = (runtime.plan_step + 1 == len(steps) if planned else
                                     "LOOMIS_COMPLETE" in result.message.splitlines())
                         if project.commit_mode == "sequential" or complete:
-                            subject = re.search(r"(?m)^LOOMIS_COMMIT:[ \t]*(.+)$", result.message)
+                            subject = re.search(r"(?m)^COMMIT_MSG:[ \t]*([^\r\n]*)", response)
                             names = {name for item in configs for name in (item.name, item.model, item.provider)}
                             committed = await bridge.commit(subject[1] if subject else None, forbidden_names=names)
                         break
