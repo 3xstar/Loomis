@@ -14,14 +14,14 @@ from uuid import uuid4
 from sqlalchemy import func, or_, select, true, update
 from sqlalchemy.exc import SQLAlchemyError
 from aiogram.exceptions import TelegramRetryAfter
-from aiogram.types import BufferedInputFile
+from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from PIL import Image
 
 from backend.api.ws import manager, workers
 from backend.bot.formatting import telegram_html
-from backend.bot.i18n import bot_language, localize_markup, translate
+from backend.bot.i18n import EN, STATUS, bot_language, localize_markup, translate
 from backend.database.db import async_session_factory
-from backend.database.models import AgentConfig, AgentMessage, CommitState, Project, ProjectMedia, TaskLog, User, UserModelPreset
+from backend.database.models import AgentConfig, AgentMessage, CommitState, Project, ProjectMedia, ResponseCache, TaskLog, User, UserModelPreset
 from worker.adapters import CLI_PROVIDERS, build_agent
 from worker.adapters.api_adapter import REVIEW_INSTRUCTION, ApiAgent, api_system_prompt, run_workspace_command
 from worker.adapters.base import AgentResult, BaseAgent
@@ -34,9 +34,17 @@ from .council import (
     autonomy_instruction, is_compact_plan, periodic_meeting, scheduled_steps, starting_council, validate_steps,
 )
 from .github import github_token
-from .model_performance import cache_response, cached_response, model_key, prompt_digest, rank_configs, record_model_result
+from .model_performance import cache_response, model_key, prompt_digest, rank_configs, record_model_result
 
 logger = logging.getLogger(__name__)
+STATUS["review_pending"] = ("На проверке", "Pending review")
+EN.update({
+    "Результат готов к проверке.": "The result is ready for review.",
+    "Подтвердить завершение": "Confirm completion",
+    "Продолжить разработку": "Continue development",
+    "Вернуться к проекту": "Return to project",
+    "Проект больше не ожидает проверки.": "The project is no longer pending review.",
+})
 
 COMMIT_INSTRUCTION = (
     "COMMIT_MSG: <тип>: <совершённый факт в прошедшем времени>. "
@@ -298,7 +306,18 @@ class ProjectAgent(BaseAgent):
                             temperature = advertised[1]
                     if type(temperature) in {int, float} and 0 <= temperature <= 0.2:
                         digest = prompt_digest(key, api_system_prompt(instruction), f"{context}\n\n{prompt}")
-                        answer = await cached_response(digest)
+                        async with async_session_factory() as session:
+                            cached = (await session.execute(update(ResponseCache).where(
+                                ResponseCache.prompt_hash == digest,
+                                ResponseCache.created_at > datetime.now(timezone.utc) - timedelta(hours=24),
+                            ).values(tokens_saved=ResponseCache.tokens_saved + ResponseCache.response_tokens)
+                                .returning(ResponseCache.response_text, ResponseCache.response_tokens))).one_or_none()
+                            if cached is not None:
+                                answer, tokens_saved = cached
+                                session.add(TaskLog(project_id=project.id, agent_id=config.id,
+                                                    operation="cache_tokens_saved", duration_seconds=0,
+                                                    status="success", tokens=tokens_saved))
+                            await session.commit()
                 if answer is not None:
                     result = AgentResult("success", answer)
                 else:
@@ -681,6 +700,18 @@ class Orchestrator:
         async with runtime.boundary:
             project, configs = await self.load(project_id)
             runtime.restore(project)
+            transitions = {
+                "confirm_completion": ("review_pending", "completed"),
+                "reopen_project": ("completed", "review_pending"),
+            }
+            if action in transitions:
+                source, target = transitions[action]
+                if project.status == target:
+                    return target
+                if project.status != source:
+                    raise ValueError("Действие недоступно в текущем статусе.")
+                await self.status(project_id, target)
+                return target
             if action in {"council", "regenerate_plan"} and project.status not in {"draft", "council"}:
                 if not configs:
                     raise ValueError("Добавьте хотя бы одного агента.")
@@ -921,13 +952,14 @@ class Orchestrator:
                     elif runtime.handoff is None:
                         runtime.handoff = (config.id, "")
                     status = project.status
-                    if status == "planning":
+                    reviewing = status in {"completed", "review_pending"}
+                    if status == "planning" or (reviewing and not previously_approved):
                         status = "awaiting_approval"
                         auto_approve = project.autonomy_mode == "autonomous"
-                    elif status == "completed":
+                    elif reviewing:
                         status = "paused"
                     resume = previously_approved and (
-                        project.status == "completed" and project.autonomy_mode != "step_by_step"
+                        reviewing and project.autonomy_mode != "step_by_step"
                         or runtime.pending_question is not None
                     )
                     if runtime.pending_question is not None:
@@ -1421,13 +1453,21 @@ class Orchestrator:
         if committed:
             await self.save_commit_state(project, bridge, runtime, complete)
             if complete:
-                await manager.publish_status(project.id, "completed")
+                await manager.publish_status(project.id, "review_pending")
             await manager.broadcast(project.id, {"type": "git_commit", "project_id": project.id})
         await self.notify(project.id, report, event_type="step_log", config=config, in_team_chat=True)
         if committed:
             if project.auto_push_mode == "after_each":
                 await self.publish_github_step(project, bridge, complete)
         if complete:
+            if not committed:
+                await self.status(project.id, "review_pending", turn_state=runtime.snapshot())
+            markup = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="Подтвердить завершение",
+                                     callback_data=f"project_action:{project.id}:confirm_completion"),
+                InlineKeyboardButton(text="Продолжить разработку", callback_data=f"review_continue:{project.id}"),
+            ]])
+            await self.notify(project.id, "Результат готов к проверке.", markup, event_type="review")
             return
         if project.autonomy_mode == "step_by_step":
             runtime.ready.clear()
@@ -1447,7 +1487,7 @@ class Orchestrator:
         async with async_session_factory() as session:
             agents = await session.scalars(select(AgentConfig).where(AgentConfig.project_id == project.id))
             state = {
-                "turn": runtime.snapshot(), "status": "completed" if complete else "paused",
+                "turn": runtime.snapshot(), "status": "review_pending" if complete else "paused",
                 "plan_digest": project.plan_digest, "approved_plan_digest": project.approved_plan_digest,
                 "history_state": project.history_state, "bounds": await self.history_bounds(session, project.id),
                 "agents": {str(agent.id): {
@@ -1460,7 +1500,7 @@ class Orchestrator:
             row = await session.get(Project, project.id)
             row.turn_state = state["turn"]
             if complete:
-                row.status = "completed"
+                row.status = "review_pending"
             await session.merge(CommitState(project_id=project.id, commit_hash=head, state=state))
             await session.commit()
 

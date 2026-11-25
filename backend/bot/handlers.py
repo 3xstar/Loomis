@@ -955,6 +955,17 @@ async def project_action(callback: CallbackQuery, session: AsyncSession, account
     run_project_action(callback.message, project, action)
 
 
+@router.callback_query(F.data.startswith("review_continue:"))
+async def review_continue(callback: CallbackQuery, state: FSMContext, session: AsyncSession, account: User | None):
+    project = await owned_project(session, account, int(callback.data.split(":")[1]))
+    if project is None or project.status != "review_pending":
+        await callback.answer(translate("Проект больше не ожидает проверки."), show_alert=True)
+        return
+    await callback.answer()
+    await select_project(callback.message, state, account, project.id)
+    await choose_team_target(callback.message, project, session, "plan")
+
+
 def run_project_action(message, project, action, **options):
     async def reply():
         try:
@@ -963,7 +974,12 @@ def run_project_action(message, project, action, **options):
             await answer_formatted(message, str(exc))
         else:
             text = "Последний шаг откачен." if action == "rollback" else f"Статус проекта — {status_label(project.status)}."
-            await message.answer(text, reply_markup=project_keyboard(project))
+            markup = project_keyboard(project)
+            if action == "confirm_completion":
+                markup.inline_keyboard.insert(0, inline_menu([[
+                    ("Вернуться к проекту", f"project_action:{project.id}:reopen_project"),
+                ]]).inline_keyboard[0])
+            await message.answer(text, reply_markup=markup)
 
     orchestrator.background_reply(reply())
 
@@ -1234,6 +1250,10 @@ async def show_plan(message, project):
             rows.append([("Отправить правки к плану", f"plan_feedback:{project.id}")])
     if project.status == "awaiting_approval":
         rows.append([("Утвердить план и запустить", action + "approve")])
+    if project.status == "review_pending":
+        rows.append([("Подтвердить завершение", action + "confirm_completion")])
+    elif project.status == "completed":
+        rows.append([("Вернуться к проекту", action + "reopen_project")])
     if project.status in {"paused", "completed"}:
         rows.append([("Откатить к прошлому коммиту", action + "rollback")])
     await message.answer(f"Обсуждение плана · {status_label(project.status)}", reply_markup=inline_menu(rows) if rows else None)

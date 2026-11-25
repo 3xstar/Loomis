@@ -28,7 +28,7 @@ from backend.core.orchestrator import count_tokens, history_visible, message_eve
 from backend.database.models import DEFAULT_PROJECTS_DIR, AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia, ResponseCache, SpecItem, TaskLog, User, UserModelPreset, utc_now
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
-from worker.git_bridge import GitBridge
+from worker.git_bridge import PROJECT_METADATA, GitBridge
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 hub_router = APIRouter(prefix="/api/hub", tags=["hub"])
@@ -276,7 +276,8 @@ async def add_project(data: ProjectCreateRequest, session: Session, user: Curren
 async def dashboard_usage(session: Session, user: CurrentUser):
     project_ids = select(Project.id).where(Project.owner_id == user.id)
     logs = (select(TaskLog.agent_id, func.sum(TaskLog.tokens).label("tokens"))
-            .where(TaskLog.project_id.in_(project_ids)).group_by(TaskLog.agent_id).subquery())
+            .where(TaskLog.project_id.in_(project_ids), TaskLog.operation != "cache_tokens_saved")
+            .group_by(TaskLog.agent_id).subquery())
     logged = func.coalesce(logs.c.tokens, 0)
     agent_tokens = await session.scalar(select(func.coalesce(func.sum(case(
         (AgentConfig.total_tokens_used > logged, AgentConfig.total_tokens_used), else_=logged,
@@ -732,7 +733,8 @@ async def retry_agent(project: OwnedProject, agent: OwnedAgent):
 
 
 class ProjectAction(BaseModel):
-    action: Literal["build_spec", "council", "regenerate_plan", "approve", "pause", "resume", "rollback"]
+    action: Literal["build_spec", "council", "regenerate_plan", "approve", "pause", "resume", "rollback",
+                    "confirm_completion", "reopen_project"]
 
 
 class AgentQuestion(BaseModel):
@@ -968,6 +970,21 @@ async def import_presets(data: HubImport, project: OwnedProject, session: Sessio
     return agents
 
 
+@router.get("/{project_id}/review-files")
+async def project_review_files(project: OwnedProject):
+    workspace = Path(project.workspace_path or default_workspace(project))
+    bridge = GitBridge(workspace, project.id)
+    if not (workspace / ".git").exists():
+        return []
+    try:
+        paths = await bridge.git("ls-files", "-z", "-t", "--cached", "--others", "--exclude-standard")
+    except (OSError, RuntimeError, TimeoutError) as exc:
+        raise HTTPException(409, "Не удалось получить список файлов проекта.") from exc
+    names = (entry[2:] for entry in paths.split("\0"))
+    return sorted({name for name in names
+                   if name and name not in PROJECT_METADATA and (workspace / name).is_file()})
+
+
 @router.get("/{project_id}/stats")
 async def project_stats(project: OwnedProject, session: Session):
     logs = (select(
@@ -976,13 +993,14 @@ async def project_stats(project: OwnedProject, session: Session):
             TaskLog.operation == "completed_step",
             (TaskLog.operation == "execute") & (TaskLog.status == "success"),
         ), 1), else_=0)).label("completed"),
-    ).where(TaskLog.project_id == project.id, history_visible(project, TaskLog))
+    ).where(TaskLog.project_id == project.id, history_visible(project, TaskLog),
+            TaskLog.operation != "cache_tokens_saved")
         .group_by(TaskLog.agent_id).subquery())
     logged_tokens = func.coalesce(logs.c.tokens, 0)
     rows = (await session.execute(select(
         AgentConfig.id, AgentConfig.name,
         case((AgentConfig.total_tokens_used > logged_tokens, AgentConfig.total_tokens_used), else_=logged_tokens),
-        func.coalesce(logs.c.completed, 0),
+        func.coalesce(logs.c.completed, 0), AgentConfig.model,
     ).outerjoin(logs, logs.c.agent_id == AgentConfig.id).where(
         AgentConfig.project_id == project.id
     ).order_by(AgentConfig.id))).all()
@@ -991,12 +1009,20 @@ async def project_stats(project: OwnedProject, session: Session):
     ))
     total = unassigned_tokens + sum(row[2] for row in rows)
     completed = sum(row[3] for row in rows)
+    duration, steps, saved_tokens = (await session.execute(select(
+        func.coalesce(func.sum(TaskLog.duration_seconds), 0),
+        func.coalesce(func.sum(case((TaskLog.operation == "completed_step", 1), else_=0)), 0),
+        func.sum(case((TaskLog.operation == "cache_tokens_saved", TaskLog.tokens))),
+    ).where(TaskLog.project_id == project.id, history_visible(project, TaskLog)))).one()
     return {
         "total_tokens": total,
+        "duration_seconds": duration,
+        "completed_steps": steps,
+        "tokens_saved": saved_tokens,
         "agents": [
-            {"agent_id": agent_id, "name": name, "tokens": tokens, "completed_tasks": tasks,
+            {"agent_id": agent_id, "name": name, "model": model, "tokens": tokens, "completed_tasks": tasks,
              "contribution_percent": round(100 * tasks / completed, 2) if completed else 0}
-            for agent_id, name, tokens, tasks in rows
+            for agent_id, name, tokens, tasks, model in rows
         ],
     }
 

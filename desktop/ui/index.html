@@ -113,6 +113,27 @@
         </div>
       </header>
 
+      <section id="completion-scene" class="completion-scene" inert aria-labelledby="completion-name">
+        <div class="completion-light" aria-hidden="true"></div>
+        <div id="completion-lighter-stage" class="completion-lighter-stage">
+          <div class="completion-fallback" aria-hidden="true"><i></i><span></span></div>
+          <canvas id="completion-lighter" aria-hidden="true"></canvas>
+          <button id="completion-extinguish" type="button" aria-label="Погасить зажигалку"></button>
+        </div>
+        <h1 id="completion-name" data-user-content></h1>
+        <dl class="completion-metrics">
+          <div class="completion-metric"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg><dt>Было потрачено времени</dt><dd id="completion-time">—</dd></div>
+          <div class="completion-metric"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg><dt>Было потрачено токенов</dt><dd id="completion-tokens">—</dd></div>
+          <div class="completion-metric"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M3 12h5m8 0h5"/></svg><dt>Выполнено коммитов / шагов</dt><dd id="completion-commits">—</dd></div>
+          <div class="completion-metric"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6" r="2"/><circle cx="5" cy="17" r="2"/><circle cx="19" cy="17" r="2"/><path d="m11 8-5 7m7-7 5 7M7 17h10"/></svg><dt>Команда / Сэкономлено кэшем</dt><dd id="completion-team">—</dd></div>
+        </dl>
+        <div id="completion-actions" class="completion-actions" inert>
+          <button id="completion-home" class="button" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3Z"/></svg> В главное меню</button>
+          <button id="completion-stats" class="button" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg> Статистика проекта</button>
+          <button id="completion-return" class="button" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5-6 6 6 6M3 11h12a5 5 0 0 1 5 5v3"/></svg> Вернуться к проекту</button>
+        </div>
+      </section>
+
       <section id="welcome-dashboard" class="welcome-dashboard" aria-labelledby="welcome-title">
         <div id="welcome-widgets" class="welcome-content" inert>
           <div class="welcome-scroll">
@@ -244,6 +265,15 @@
             </div>
             <div id="terminal" class="terminal hidden" role="log" aria-label="Вывод агента"></div>
           </div>
+          <section id="project-review" class="glass-panel project-review hidden" aria-labelledby="project-review-title">
+            <h3 id="project-review-title">Готовые файлы</h3>
+            <ul id="project-review-files"></ul>
+            <div class="review-actions">
+              <button id="review-folder" class="button secondary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg> Открыть в Проводнике</button>
+              <button id="review-continue" class="button secondary" type="button">Продолжить разработку</button>
+              <button id="review-complete" class="button primary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5L19 8"/></svg> Завершить проект</button>
+            </div>
+          </section>
           <form id="message-form" class="composer">
             <div id="team-controls" class="composer-top">
               <button id="plan-mode" class="choice-chip" type="button" aria-pressed="false">Режим: Обсуждение</button>
@@ -584,6 +614,14 @@
         <label id="hub-cli-field" class="field hidden"><span>Команда запуска</span><input name="command"></label>
         <button class="button primary wide" type="submit">Сохранить модель</button>
       </form>
+    </div>
+    <div id="completion-confirm-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="completion-confirm-title" aria-describedby="completion-confirm-description">
+      <h3 id="completion-confirm-title"></h3>
+      <p id="completion-confirm-description"></p>
+      <div class="modal-actions">
+        <button class="button secondary close-modal" type="button">Отмена</button>
+        <button id="completion-confirm-button" class="button primary" type="button"></button>
+      </div>
     </div>
     <div id="stats-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="stats-modal-title">
       <div class="modal-head"><h3 id="stats-modal-title">Статистика проекта</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>

@@ -611,6 +611,7 @@ function selectView(next) {
   byId("terminal-controls").classList.toggle("hidden", view !== "terminal");
   byId("clear-chat").classList.toggle("hidden", view !== "team");
   byId("message-form").classList.toggle("hidden", view !== "team");
+  byId("project-review").classList.toggle("hidden", view !== "team" || project?.status !== "review_pending");
   refreshStream(view, true);
 }
 const workCenter = byId("work-center");
@@ -618,6 +619,7 @@ workCenter.querySelectorAll("[data-view]").forEach((button) => button.onclick = 
 selectView(view);
 
 function setStatus(status) {
+  const previousStatus = project?.status;
   const enteringDraft = status === "draft" && byId("spec-panel").classList.contains("hidden");
   if (project) {
     project.status = status;
@@ -637,10 +639,10 @@ function setStatus(status) {
   byId("project-status").textContent = ({
     draft: "Черновик", planning: "Планирование", council: "Обсуждение плана",
     awaiting_approval: "План на утверждении",
-    running: "В работе", paused: "Пауза", completed: "Завершён", deleted: "Удалён",
+    running: "В работе", paused: "Пауза", review_pending: "На проверке", completed: "Готово", deleted: "Удалён",
   })[status] || status;
   const step = {draft: 1, planning: 2, council: 2, awaiting_approval: 2,
-    running: 3, paused: 3, completed: 4}[status];
+    running: 3, paused: 3, review_pending: 4, completed: 4}[status];
   all("#project-stepper li").forEach((item, index) => {
     const active = index + 1 === step;
     item.classList.toggle("active", active);
@@ -652,6 +654,11 @@ function setStatus(status) {
   renderProjectControls();
   renderGitPush();
   if (gitCommitsVisible()) loadGitCommits();
+  syncCompletionScreen();
+  byId("project-review").classList.toggle("hidden", view !== "team" || status !== "review_pending");
+  if (status === "review_pending" && (previousStatus !== status || !byId("project-review-files").childElementCount)) {
+    loadReviewFiles(project.id, selection);
+  }
   if (enteringDraft) loadSpecItems(project.id, selection).catch((error) => notify(error.message));
 }
 
@@ -929,6 +936,7 @@ async function selectProject(item) {
   const current = ++selection;
   closeContextMenu();
   byId("git-commits").replaceChildren();
+  byId("project-review-files").replaceChildren();
   if (item) localStorage.setItem(activeProjectKey, item.id);
   else if (token) localStorage.removeItem(activeProjectKey);
   historyRequest = undefined;
@@ -971,8 +979,17 @@ async function selectProject(item) {
   byId("stats-button").disabled = byId("add-agent-button").disabled = !item;
   renderDeadline();
   if (!item) return;
+  const revision = statusRevision;
   connect(item.id, current);
-  await Promise.all([loadAgents(item.id, current), loadHistory(item.id, current)]);
+  await Promise.all([
+    loadAgents(item.id, current),
+    loadHistory(item.id, current),
+    api(`projects/${item.id}`).then((latest) => {
+      if (selection === current && statusRevision === revision && latest.status !== project.status) {
+        setStatus(latest.status);
+      }
+    }),
+  ]);
 }
 
 async function loadAgents(projectId, current) {
@@ -2764,6 +2781,119 @@ hubForm.onsubmit = async (event) => {
   }
 };
 
+async function loadReviewFiles(id, current) {
+  const list = byId("project-review-files");
+  list.replaceChildren(element("li", "", "Загрузка файлов…"));
+  try {
+    const paths = await api(`projects/${id}/review-files`);
+    if (current !== selection || project.status !== "review_pending") return;
+    list.replaceChildren(...paths.map((path) => {
+      const item = element("li", "", path);
+      item.dataset.userContent = "";
+      return item;
+    }));
+    if (!paths.length) list.append(element("li", "", "Готовых файлов пока нет."));
+  } catch (error) {
+    if (current === selection && project.status === "review_pending") {
+      list.replaceChildren(element("li", "", error.message));
+    }
+  }
+}
+
+function openProjectFolder() {
+  return api(`projects/${project.id}/open-folder`, undefined, token, "POST").catch((error) => notify(error.message));
+}
+
+function statsFormat(value) {
+  return value == null ? "—" : new Intl.NumberFormat(document.documentElement.lang).format(value);
+}
+
+function durationFormat(seconds) {
+  if (!Number.isFinite(seconds)) return "—";
+  const total = Math.round(seconds);
+  const parts = [Math.floor(total / 3600), Math.floor(total / 60) % 60, total % 60];
+  return parts.map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+async function completionStats(id) {
+  const [stats, commits] = await Promise.all([
+    api(`projects/${id}/stats`),
+    api(`projects/${id}/commits`).catch(() => null),
+  ]);
+  return {stats, commits};
+}
+
+function syncCompletionScreen() {
+  const scene = byId("completion-scene");
+  const active = project?.status === "completed";
+  const id = active ? String(project.id) : "";
+  const page = byId("project-page");
+  const changed = scene.dataset.project !== id;
+  scene.dataset.project = id;
+  scene.inert = !active;
+  page.classList.toggle("show-completion", active);
+  for (const panel of page.children) {
+    if (panel !== scene) panel.inert = active;
+  }
+  if (!changed) return;
+  scene.classList.remove("completion-lit", "completion-out");
+  const actions = byId("completion-actions");
+  actions.inert = true;
+  byId("completion-extinguish").disabled = false;
+  if (!active) return;
+  const current = selection;
+  byId("completion-name").textContent = project.name;
+  for (const metric of ["time", "commits", "tokens", "team"]) byId("completion-" + metric).textContent = "—";
+  completionStats(project.id).then(({stats, commits}) => {
+    if (current !== selection || scene.dataset.project !== id) return;
+    byId("completion-time").textContent = durationFormat(stats.duration_seconds);
+    byId("completion-commits").textContent = `${statsFormat(commits?.length)} / ${statsFormat(stats.completed_steps)}`;
+    byId("completion-tokens").textContent = statsFormat(stats.total_tokens);
+    byId("completion-team").textContent = `${statsFormat(stats.agents.length)} / ${statsFormat(stats.tokens_saved)}`;
+  }).catch((error) => {
+    if (scene.dataset.project === id) notify(error.message);
+  });
+}
+
+function confirmCompletionAction(reopen) {
+  const id = project.id;
+  const button = byId("completion-confirm-button");
+  byId("completion-confirm-title").textContent = reopen ? "Вернуться к проекту?" : "Завершить проект?";
+  byId("completion-confirm-description").textContent = reopen
+    ? "Вернуться на этап перед завершением и продолжить разработку?"
+    : "После подтверждения откроется экран итогов, но при необходимости вы сможете вернуться к доработке.";
+  button.textContent = reopen ? "Вернуться к проекту" : "Подтвердить завершение";
+  button.disabled = false;
+  showModal("completion-confirm-modal");
+  const revision = modalRevision;
+  const current = selection;
+  const statusVersion = statusRevision;
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      const {status} = await api(`projects/${id}/actions`, {action: reopen ? "reopen_project" : "confirm_completion"});
+      if (revision === modalRevision) showModal();
+      if (current === selection && statusVersion === statusRevision) setStatus(status);
+      if (reopen && current === selection && project.status === "review_pending") {
+        selectView("team");
+        byId("message-input").focus();
+      }
+    } catch (error) {
+      if (revision === modalRevision) {
+        button.disabled = false;
+        notify(error.message);
+      }
+    }
+  };
+}
+
+byId("review-folder").onclick = openProjectFolder;
+byId("review-continue").onclick = () => byId("message-input").focus();
+byId("review-complete").onclick = () => confirmCompletionAction(false);
+byId("completion-home").onclick = byId("dashboard-button").onclick;
+byId("completion-stats").onclick = () => byId("stats-button").onclick();
+byId("completion-return").onclick = () => confirmCompletionAction(true);
+
 const statsNumber = new Intl.NumberFormat("ru");
 byId("stats-button").onclick = async () => {
   if (!project) return;
@@ -2772,11 +2902,65 @@ byId("stats-button").onclick = async () => {
   const body = byId("stats-body");
   body.textContent = "Загрузка статистики…";
   try {
-    const stats = await api("projects/" + project.id + "/stats");
-    if (revision !== modalRevision) return;
+    const selected = project;
+    const current = selection;
+    const completed = selected.status === "completed";
+    const {stats, commits} = completed ? await completionStats(selected.id)
+      : {stats: await api(`projects/${selected.id}/stats`)};
+    if (revision !== modalRevision || current !== selection) return;
     const total = element("p", "stats-total");
     total.append(element("strong", "", statsNumber.format(stats.total_tokens)), " токенов по проекту");
     body.replaceChildren(total);
+    if (completed) {
+      total.replaceChildren(element("strong", "", statsFormat(stats.total_tokens)), " ", element("span", "", "Токены"));
+      const summary = element("dl", "completion-stats-summary");
+      for (const [label, value] of [
+        ["Было потрачено времени", durationFormat(stats.duration_seconds)],
+        ["Выполнено коммитов / шагов", `${statsFormat(commits?.length)} / ${statsFormat(stats.completed_steps)}`],
+        ["Команда / Сэкономлено кэшем", `${statsFormat(stats.agents.length)} / ${statsFormat(stats.tokens_saved)}`],
+      ]) summary.append(element("dt", "", label), element("dd", "", value));
+      const links = element("div", "review-actions");
+      const folder = element("button", "button secondary", "Открыть в Проводнике");
+      folder.type = "button";
+      folder.onclick = openProjectFolder;
+      folder.title = selected.workspace_path || "";
+      links.append(folder);
+      const repository = selected.git_repo_url && URL.canParse(selected.git_repo_url)
+        ? new URL(selected.git_repo_url) : null;
+      if (repository?.protocol === "https:" && repository.hostname === "github.com") {
+        const github = element("a", "button secondary", "GitHub");
+        github.href = repository.href;
+        github.target = "_blank";
+        github.rel = "noopener noreferrer";
+        links.append(github);
+      }
+      if (selected.auto_push_mode === "manual_finish" && selected.git_repo_url) {
+        const push = element("button", "button secondary", "Push в Git");
+        push.type = "button";
+        push.onclick = async () => {
+          push.disabled = true;
+          try {
+            if (current === selection) await byId("git-push").onclick();
+          } finally {
+            push.disabled = false;
+          }
+        };
+        links.append(push);
+      }
+      body.append(summary, links);
+      if (commits?.length) {
+        const history = element("details", "completion-stats-history");
+        const list = element("ol");
+        for (const commit of commits) {
+          const item = element("li");
+          item.dataset.userContent = "";
+          item.append(element("code", "", commit.short_hash), " ", commit.message);
+          list.append(item);
+        }
+        history.append(element("summary", "", "История коммитов"), list);
+        body.append(history);
+      }
+    }
     if (!stats.agents.length) {
       body.append(element("p", "hint", "В проекте пока нет агентов."));
       return;
@@ -2791,7 +2975,7 @@ byId("stats-button").onclick = async () => {
     const rows = table.createTBody();
     for (const agent of stats.agents) {
       const row = rows.insertRow();
-      const name = element("th", "", agent.name);
+      const name = element("th", "", completed && agent.model ? `${agent.name} · ${agent.model}` : agent.name);
       name.dataset.userContent = "";
       name.scope = "row";
       row.append(name);

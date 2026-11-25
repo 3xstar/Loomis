@@ -249,7 +249,10 @@ syncProjectCount();
 reducedMotion.addEventListener("change", scheduleFrame);
 syncVisibility();
 
-function createLighter(THREE) {
+function createLighter(THREE, completionStage) {
+  const cinematic = Boolean(completionStage);
+  const stage = completionStage || document.querySelector(".lighter-stage");
+  const canvas = stage.querySelector("canvas");
   let renderer;
   try {
     renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: "high-performance" });
@@ -271,9 +274,9 @@ function createLighter(THREE) {
   let height = 0;
   let surfaceOffset = 0;
   let yawTarget = 0;
-  let angle = burning ? THREE.MathUtils.degToRad(105) : 0;
+  let angle = cinematic || burning ? THREE.MathUtils.degToRad(105) : 0;
   let velocity = 0;
-  let fire = 0;
+  let fire = cinematic ? 1 : 0;
   let bend = 0;
   let depth = 0;
   let sparkTimer = 0;
@@ -283,14 +286,14 @@ function createLighter(THREE) {
 
   function resize() {
     const { width: nextWidth, height: nextHeight } = canvas.getBoundingClientRect();
-    const nextOffset = parseFloat(getComputedStyle(toggle).bottom) + 8;
+    const nextOffset = cinematic ? 0 : parseFloat(getComputedStyle(toggle).bottom) + 8;
     if (!nextWidth || !nextHeight || (width === nextWidth && height === nextHeight && surfaceOffset === nextOffset)) return;
     width = nextWidth;
     height = nextHeight;
     surfaceOffset = nextOffset;
-    const viewHeight = Math.min(3.85, Math.max(3.2, height * 3.85 / 326));
+    const viewHeight = cinematic ? 2.7 : Math.min(3.85, Math.max(3.2, height * 3.85 / 326));
     const halfWidth = viewHeight * width / height / 2;
-    const verticalOffset = viewHeight * (.5 - surfaceOffset / height) - lighterGroup.position.y;
+    const verticalOffset = cinematic ? 1.83 : viewHeight * (.5 - surfaceOffset / height) - lighterGroup.position.y;
     Object.assign(camera, { left: -halfWidth, right: halfWidth, top: verticalOffset + viewHeight / 2, bottom: verticalOffset - viewHeight / 2, near: .1, far: 30 });
     camera.position.z = 7;
     camera.position.y = lighterGroup.position.y;
@@ -298,6 +301,7 @@ function createLighter(THREE) {
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
     renderer.setSize(width, height, false);
+    if (cinematic) return;
     body.updateWorldMatrix(true, false);
     const baseY = new THREE.Box3().setFromObject(body).min.y;
     const projectedBase = projection.set(0, baseY, 0).project(camera);
@@ -391,7 +395,7 @@ function createLighter(THREE) {
     return new THREE.Mesh(geometry, material);
   }
 
-  const body = roundedBox(1.10, 1.32, .43, .095, .04, metal);
+  const body = roundedBox(1.10, 1.32, .43, .095, .04, cinematic ? metal.clone() : metal);
   body.position.y = .67;
   lighterGroup.add(body);
   const pivot = new THREE.Group();
@@ -521,7 +525,7 @@ function createLighter(THREE) {
     const rect = canvas.getBoundingClientRect();
     rayPoint.set((point.x - rect.left) * 2 / rect.width - 1, 1 - (point.y - rect.top) * 2 / rect.height);
     raycaster.setFromCamera(rayPoint, camera);
-    return raycaster.intersectObjects(open ? hitMeshes : peekMeshes, false).length > 0;
+    return raycaster.intersectObjects(cinematic ? [body] : open ? hitMeshes : peekMeshes, false).length > 0;
   }
 
   function projectPoint(x, y, z) {
@@ -535,9 +539,11 @@ function createLighter(THREE) {
   }
 
   function reset() {
-    angle = velocity = fire = bend = depth = sparkTimer = 0;
+    velocity = bend = depth = sparkTimer = 0;
+    angle = cinematic ? THREE.MathUtils.degToRad(105) : 0;
+    fire = Number(cinematic);
     yawTarget = lighterGroup.rotation.y = 0;
-    pivot.rotation.z = 0;
+    pivot.rotation.z = angle;
     for (const spark of sparks) {
       spark.life = 0;
       spark.mesh.visible = false;
@@ -546,16 +552,20 @@ function createLighter(THREE) {
 
   canvas.addEventListener("webglcontextlost", event => {
     event.preventDefault();
-    surfaceLine.style.removeProperty("top");
+    if (!cinematic) surfaceLine.style.removeProperty("top");
     stage.removeAttribute("data-webgl");
     stage.setAttribute("data-webgl-fallback", "");
-    model = undefined;
-    scheduleFrame();
+    if (!cinematic) {
+      model = undefined;
+      scheduleFrame();
+    }
   });
   canvas.addEventListener("webglcontextrestored", () => {
     width = 0;
-    model = lighter;
-    scheduleFrame();
+    if (!cinematic) {
+      model = lighter;
+      scheduleFrame();
+    }
   });
   const lighter = {
     hitTest, reset,
@@ -566,12 +576,13 @@ function createLighter(THREE) {
       yawTarget += dx * (2 * Math.PI / 240);
       scheduleFrame();
     },
-    draw(time, dt, open, lit) {
+    draw(time, dt, open, lit, bodyGlow = 0) {
       resize();
-      const light = document.documentElement.dataset.theme === "light";
+      const light = !cinematic && document.documentElement.dataset.theme === "light";
       if (theme !== light) {
         theme = light;
         metal.color.setHex(light ? 0xc2c7d0 : 0x53565f);
+        if (cinematic) body.material.color.copy(metal.color);
         badge.material.color.setHex(light ? 0x252932 : 0xe5e8f1);
       }
       const still = reducedMotion.matches;
@@ -586,8 +597,16 @@ function createLighter(THREE) {
         layer.material.uniforms.color.value.lerpColors(palettes[lower][index], palettes[upper][index], blend);
       }
       fireLight.color.lerpColors(palettes[lower][3], palettes[upper][3], blend);
+      if (cinematic) {
+        for (const [index, layer] of layers.entries()) {
+          layer.material.uniforms.color.value.setHex([0xa4a4a4, 0xe0e0e0, 0xffffff][index]);
+        }
+        fireLight.color.setHex(0xffffff);
+        body.material.emissive.setHex(0xffffff);
+        body.material.emissiveIntensity = bodyGlow;
+      }
       scene.updateMatrixWorld();
-      const hit = Boolean(!drag?.moved && pointer?.onToggle && hitTest(pointer, open));
+      const hit = Boolean(!cinematic && !drag?.moved && pointer?.onToggle && hitTest(pointer, open));
       stage.toggleAttribute("data-hit", hit);
       const goal = THREE.MathUtils.degToRad(open ? 105 : hit ? 15 : 0);
       velocity += ((goal - angle) * 130 - velocity * 17) * dt;
@@ -600,9 +619,9 @@ function createLighter(THREE) {
       fire = still ? Number(lit) : THREE.MathUtils.damp(fire, Number(lit), lit ? 10 : 20, dt);
 
       const source = projectPoint(0, .29, 0);
-      const dx = pointer ? pointer.x - source.x : 0;
-      const dy = pointer ? pointer.y - source.y : 0;
-      const distance = pointer ? Math.hypot(dx, dy) : Infinity;
+      const dx = !cinematic && pointer ? pointer.x - source.x : 0;
+      const dy = !cinematic && pointer ? pointer.y - source.y : 0;
+      const distance = !cinematic && pointer ? Math.hypot(dx, dy) : Infinity;
       const influence = Math.max(0, 1 - distance / 102);
       const proximity = Math.max(0, 1 - distance / 23);
       bend = THREE.MathUtils.damp(bend, dx * influence * .017, 8, dt);
@@ -635,7 +654,7 @@ function createLighter(THREE) {
         spark.mesh.material.opacity = Math.min(1, spark.life * 3);
       }
       renderer.render(scene, camera);
-      if (!stage.hasAttribute("data-webgl")) {
+      if (!renderer.getContext().isContextLost() && !stage.hasAttribute("data-webgl")) {
         // Resolve the hidden canvas style before starting the first transition.
         getComputedStyle(canvas).opacity;
         stage.removeAttribute("data-webgl-fallback");
@@ -648,3 +667,86 @@ function createLighter(THREE) {
   };
   return lighter;
 }
+
+
+const completionScene = document.querySelector("#completion-scene");
+const completionStage = document.querySelector("#completion-lighter-stage");
+const extinguish = document.querySelector("#completion-extinguish");
+const finalActions = document.querySelector("#completion-actions");
+let completionModel;
+let completionLoad;
+let completionProject;
+let completionFrame = 0;
+let previousCompletionTime = 0;
+let entranceEnd = Infinity;
+let closedAt = Infinity;
+
+function drawCompletion(now) {
+  completionFrame = 0;
+  if (completionScene.inert || document.hidden) return;
+  const dt = Math.min(.033, (now - previousCompletionTime) / 1000) || .016;
+  previousCompletionTime = now;
+  const open = closedAt === Infinity;
+  const breathing = Math.max(0, (now - entranceEnd - 5000) / 1000);
+  const glow = open && !reducedMotion.matches ? .20 * (1 - Math.cos(breathing * 1.8)) : 0;
+  completionModel?.draw(now / 1000, dt, open, open, glow);
+  if (open || now - closedAt < 1400) completionFrame = requestAnimationFrame(drawCompletion);
+}
+
+function syncCompletion() {
+  const id = completionScene.dataset.project;
+  if (id !== completionProject) {
+    completionProject = id;
+    cancelAnimationFrame(completionFrame);
+    completionFrame = 0;
+    previousCompletionTime = 0;
+    entranceEnd = Infinity;
+    closedAt = Infinity;
+    completionStage.classList.remove("completion-breathing");
+    completionModel?.reset();
+  }
+  if (!id || document.hidden) return;
+  completionLoad ??= import("./vendor/three.module.min.js").then(THREE => {
+    completionModel = createLighter(THREE, completionStage);
+  }).catch(error => console.warn("Loomis completion lighter:", error));
+  completionLoad.then(() => {
+    if (completionScene.dataset.project !== id || document.hidden || closedAt !== Infinity) return;
+    if (!completionScene.classList.contains("completion-lit")) {
+      completionScene.classList.add("completion-lit");
+      if (reducedMotion.matches) entranceEnd = performance.now();
+    }
+    if (!completionFrame) completionFrame = requestAnimationFrame(drawCompletion);
+  });
+}
+
+completionStage.addEventListener("animationend", (event) => {
+  if (event.animationName !== "completion-rise") return;
+  entranceEnd = performance.now();
+  completionStage.classList.add("completion-breathing");
+  const focused = document.activeElement;
+  if (!extinguish.closest("[inert]") && !extinguish.disabled &&
+      (focused === document.body || focused.matches('.project-button[aria-current="true"]'))) {
+    extinguish.focus({preventScroll: true});
+  }
+});
+
+extinguish.addEventListener("click", (event) => {
+  if (completionScene.inert || closedAt !== Infinity) return;
+  if (event.detail && completionStage.hasAttribute("data-webgl") &&
+      !completionModel.hitTest({x: event.clientX, y: event.clientY}, true)) return;
+  closedAt = performance.now();
+  extinguish.disabled = true;
+  completionScene.classList.add("completion-out");
+});
+
+finalActions.addEventListener("animationend", (event) => {
+  if (event.target !== finalActions || !completionScene.classList.contains("completion-out")) return;
+  finalActions.inert = false;
+  finalActions.querySelector("button").focus({preventScroll: true});
+});
+
+new MutationObserver(syncCompletion).observe(completionScene, {
+  attributes: true, attributeFilter: ["data-project"],
+});
+document.addEventListener("visibilitychange", syncCompletion);
+syncCompletion();
