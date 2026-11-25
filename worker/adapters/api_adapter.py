@@ -8,7 +8,9 @@ import json
 import os
 import re
 from pathlib import Path
-import stat
+import subprocess
+import sys
+from tempfile import TemporaryFile
 from time import monotonic
 from uuid import uuid4
 from urllib.parse import urlsplit
@@ -25,7 +27,7 @@ from .media import audio_payload, refuses_media
 
 
 COMMAND_INSTRUCTION = (
-    "В рабочей папке проекта доступно выполнение команд в изолированной среде Linux без сети. "
+    "В рабочей папке проекта доступно выполнение команд локально на компьютере, где запущен воркер. "
     "Используй run_cmd или отдельную строку RUN_CMD: <команда> для запуска скриптов, тестов и сборки "
     "файлов. После каждой команды ты получишь код выхода и вывод терминала в том же диалоге. "
     "Разбирай ошибки, исправляй их и проверяй, что итоговые файлы созданы, прежде чем завершить задачу."
@@ -53,67 +55,41 @@ WEB_TOOLS = [
 SEARCH_CACHE = OrderedDict()
 
 
+COMMAND_EXECUTABLE = re.compile(
+    r"""(?:"[^"\r\n]*"|'[^'\r\n]*')|(^|[&|;\r\n(])([ \t]*)(python3?|pip)(?=[ \t])""",
+    re.IGNORECASE,
+)
+
+
+def use_worker_python(command: str) -> str:
+    def replace(match: re.Match) -> str:
+        prefix, indent, executable = match.groups()
+        if executable is None:
+            return match[0]
+        module = " -m pip" if executable.lower() == "pip" else ""
+        return f'{prefix}{indent}"{sys.executable}"{module}'
+
+    return COMMAND_EXECUTABLE.sub(replace, command)
+
+
 async def run_workspace_command(workspace: Path, command: str) -> str:
     if not isinstance(command, str) or not command.strip() or len(command) > 16000 or "\0" in command:
         raise ValueError("Expected one nonempty shell command up to 16000 characters")
-    root = workspace.resolve(strict=True)
-    if "," in str(root) or root == Path(root.anchor):
-        raise ValueError("Unsupported path for the command workspace")
-    for directory, folders, files in os.walk(root):
-        for name in folders + files:
-            path = Path(directory) / name
-            info = path.lstat()
-            if (stat.S_ISLNK(info.st_mode) or
-                getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or
-                (not stat.S_ISDIR(info.st_mode) and
-                 (not stat.S_ISREG(info.st_mode) or info.st_nlink > 1))):
-                raise PermissionError(f"Unsupported file or link in the command workspace: {path.relative_to(root)}")
-            if name.casefold() == ".git":
-                if path != root / ".git" or name not in folders:
-                    raise PermissionError("Command execution requires a standalone Git checkout")
-                folders.remove(name)
+    workspace_path = workspace.resolve(strict=True)
+    return await asyncio.to_thread(run_host_command, workspace_path, use_worker_python(command))
 
-    image = os.getenv("LOOMIS_COMMAND_IMAGE", "python:3.12-slim")
-    if image.startswith("-"):
-        raise ValueError("Invalid command image")
-    name = f"loomis-command-{uuid4().hex}"
-    user = ("65534:65534" if os.name == "nt" else f"{os.geteuid()}:{os.getegid()}")
-    process = await asyncio.create_subprocess_exec(
-        "docker", "run", "--rm", "--name", name, "--pull", "never",
-        "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-        "--user", user, "--pids-limit", "64", "--memory", "512m", "--cpus", "1",
-        "--mount", f"type=bind,source={root},target=/workspace,bind-recursive=disabled",
-        "--tmpfs", "/workspace/.git:ro,nosuid,nodev,noexec", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
-        "--env", "HOME=/tmp", "--workdir", "/workspace", "--entrypoint", "/bin/sh", image, "-c", command,
-        cwd=root, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    output = bytearray()
-    try:
-        async with asyncio.timeout(60):
-            while chunk := await process.stdout.read(8192):
-                output.extend(chunk[:max(0, 16000 - len(output))])
-            code = await process.wait()
-            return f"Exit code {code}\n{output.decode(errors='replace')}"
-    except (TimeoutError, asyncio.CancelledError):
-        if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-        cleanup = await asyncio.create_subprocess_exec(
-            "docker", "rm", "-f", name,
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        )
+
+def run_host_command(workspace_path: Path, command: str) -> str:
+    with TemporaryFile() as output:
         try:
-            await asyncio.wait_for(cleanup.wait(), 5)
-        except TimeoutError:
-            cleanup.kill()
-            await cleanup.wait()
-        await process.communicate()
-        if asyncio.current_task().cancelling():
-            raise
-        return "Command timed out after 60 seconds"
+            process = subprocess.run(
+                command, shell=True, cwd=workspace_path, timeout=120,
+                stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return "Command timed out after 120 seconds"
+        output.seek(0)
+        return f"Exit code {process.returncode}\n{output.read(16000).decode(errors='replace')}"
 
 
 async def web_search(query: str, max_results: int = 5):
@@ -319,7 +295,7 @@ class ApiAgent(BaseAgent):
         options = {"tools": [*WEB_TOOLS, *(file_tools() if workspace is not None else ())]}
         if workspace is not None:
             options["tools"].append({"type": "function", "function": {
-                "name": "run_cmd", "description": "Run a shell command in the isolated project workspace.",
+                "name": "run_cmd", "description": "Run a shell command on the worker host in the project directory.",
                 "parameters": {"type": "object", "properties": {"command": {"type": "string"}},
                                "required": ["command"], "additionalProperties": False},
             }})
