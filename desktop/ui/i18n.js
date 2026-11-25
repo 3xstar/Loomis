@@ -16,7 +16,7 @@ const LoomisI18n = (() => {
     ". Код действует 5 минут.": ". The code expires in 5 minutes.",
     "Введите код": "Enter the code",
     "Изображение": "Image",
-    "Собрать SPEC.md и перейти к планированию": "Build SPEC.md and start planning",
+    "Собрать ТЗ проекта и перейти к планированию": "Build the project specification and start planning",
     "Создать пустой проект": "Create an empty project",
     "Статистика": "Statistics",
     "Удалить": "Delete",
@@ -31,7 +31,9 @@ const LoomisI18n = (() => {
     "Telegram-бот": "Telegram bot",
     "Авто-передача": "Automatic handoff",
     "Автономный": "Autonomous",
-    "безопасная точка": "restore point",
+    "Открыть папку в Проводнике": "Open folder in File Explorer",
+    "Открыть на GitHub": "Open on GitHub",
+    "Удалить проект": "Delete project",
     "Бот пришлёт карточку с подтверждением. Пароль не нужен.": "The bot will send an approval prompt. No password required.",
     "Буфер пока пуст.": "The buffer is empty.",
     "Буфер ТЗ": "Specification buffer",
@@ -54,7 +56,7 @@ const LoomisI18n = (() => {
     "Добро пожаловать в Loomis": "Welcome to Loomis",
     "Доработка репозитория": "Repository change",
     "Доступ к репозиторию": "Repository access",
-    "Запустить консилиум": "Start council",
+    "Составить план": "Create a plan",
     "Из хаба": "From the Hub",
     "Изменения в существующем коде": "Changes to existing code",
     "ИИ-агенты": "AI agents",
@@ -64,7 +66,6 @@ const LoomisI18n = (() => {
     "Команда запуска": "Launch command",
     "Команды, диалоги и уведомления": "Commands, conversations, and notifications",
     "Коммиты Git": "Git commits",
-    "Консилиум и План": "Council and plan",
     "Кратко по сути": "Concise",
     "Краткость отчётов нейросетей": "Agent report detail",
     "Личная папка проекта": "Project folder",
@@ -92,8 +93,8 @@ const LoomisI18n = (() => {
     "Одним коммитом в конце": "One commit at the end",
     "Ожидаем подтверждение…": "Waiting for approval…",
     "Отвязать": "Disconnect",
-    "Откатить Git-шаг": "Roll back Git step",
-    "Откатить последний Git-шаг?": "Roll back the last Git step?",
+    "Откатить к прошлому коммиту": "Roll back to the previous commit",
+    "Откатить к прошлому коммиту?": "Roll back to the previous commit?",
     "Откатить": "Roll back",
     "Откатиться до этого коммита (файлы + контекст ИИ)": "Roll back to this commit (files and AI context)",
     "Откройте Telegram и нажмите «Подтвердить вход».": "Open Telegram and approve the sign-in.",
@@ -125,7 +126,7 @@ const LoomisI18n = (() => {
     "Приватный": "Private",
     "Привязать Telegram": "Link Telegram",
     "Прикрепить документ": "Attach document",
-    "Проекты, ИИ-агенты и консилиумы — в одном приватном окне.": "Projects, AI agents, and councils in one private window.",
+    "Проекты, ИИ-агенты и обсуждения планов — в одном приватном окне.": "Projects, AI agents, and plan discussions in one private window.",
     "Проекты": "Projects",
     "Публичный": "Public",
     "Рабочие логи в Telegram": "Work logs in Telegram",
@@ -222,16 +223,16 @@ const LoomisI18n = (() => {
     "Не удалось подключить отдельное окно рабочей области.": "Could not connect the separate workspace window.",
     "Черновик": "Draft",
     "Планирование": "Planning",
-    "Консилиум": "Council",
+    "Обсуждение плана": "Plan discussion",
     "План на утверждении": "Awaiting plan approval",
     "В работе": "In progress",
     "Завершён": "Completed",
     "Удалён": "Deleted",
     "Продолжить": "Resume",
     "Подключите ИИ-агента, чтобы обсудить задачу и подготовить план.": "Connect an AI agent to discuss the task and prepare a plan.",
-    "Добавьте материалы в буфер и соберите ТЗ, чтобы открыть консилиум.": "Add materials to the buffer and build the specification to open the council.",
+    "Добавьте материалы в буфер и соберите ТЗ, чтобы открыть обсуждение плана.": "Add materials to the buffer and build the specification to start discussing the plan.",
     "Перейти к ТЗ": "Open specification",
-    "Запустите консилиум, чтобы агенты обсудили ТЗ и подготовили план.": "Start the council so agents can discuss the specification and prepare a plan.",
+    "Начните обсуждение, чтобы агенты подготовили план по ТЗ.": "Start the discussion so agents can prepare a plan from the specification.",
     "План готов. Утвердите его, чтобы начать разработку.": "The plan is ready. Approve it to start development.",
     "Агенты готовят план. Сообщения появятся здесь.": "Agents are preparing the plan. Messages will appear here.",
     "Задайте агентам вопрос о проекте.": "Ask the agents a question about the project.",
@@ -329,7 +330,7 @@ const LoomisI18n = (() => {
     "Выполнение шага разработки": "Running development step",
     "Приём задачи от агента": "Receiving agent handoff",
     "Добавлена запись в буфер ТЗ.": "Entry added to the specification buffer.",
-    "Собран SPEC.md.": "SPEC.md built.",
+    "ТЗ проекта собрано.": "Project specification built.",
     "Укажите допустимый путь к папке проектов.": "Enter a valid projects folder path.",
     "Telegram уже привязан.": "Telegram is already linked.",
     "Telegram-бот недоступен. Проверьте BOT_TOKEN в .env.": "The Telegram bot is unavailable. Check BOT_TOKEN in .env.",
@@ -377,7 +378,7 @@ const LoomisI18n = (() => {
     "Сначала приостановите проект.": "Pause the project first.",
     "Агент не найден.": "Agent not found.",
     "Не удалось сохранить агента. Проверьте имя и проект.": "Could not save the agent. Check the name and project.",
-    "Дождитесь завершения консилиума.": "Wait for the council to finish.",
+    "Дождитесь завершения обсуждения плана.": "Wait for the plan discussion to finish.",
     "Поля агента не могут быть пустыми.": "Agent fields cannot be empty.",
     "Добавьте хотя бы одну запись в буфер ТЗ.": "Add at least one entry to the specification buffer.",
     "Пресет не найден.": "Preset not found.",
@@ -413,16 +414,23 @@ const LoomisI18n = (() => {
   const documents = new Set();
   let language = "ru";
 
+  const serverLabels = Object.assign(Object.create(null), {
+    "Собран SPEC.md.": "ТЗ проекта собрано.",
+    "Дождитесь завершения консилиума.": "Дождитесь завершения обсуждения плана.",
+  });
+
   function translate(value) {
-    if (language === "ru" || !value) return value;
-    const key = value.trim();
+    if (!value) return value;
+    const original = value.trim();
+    const key = serverLabels[original] ?? original;
+    if (language === "ru") return value.replace(original, () => key);
     if (!/[А-Яа-яЁё]/.test(key)) return value;
     let result = Object.hasOwn(messages.en, key) ? messages.en[key] : key;
     if (result === key) {
       const pattern = patterns.find(([expression]) => expression.test(key));
       if (pattern) result = key.replace(...pattern);
     }
-    return result === key ? value : value.replace(key, () => result);
+    return result === original ? value : value.replace(original, () => result);
   }
 
   function localize(node, key) {

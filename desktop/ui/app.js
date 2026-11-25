@@ -635,7 +635,7 @@ function setStatus(status) {
     }
   }
   byId("project-status").textContent = ({
-    draft: "Черновик", planning: "Планирование", council: "Консилиум",
+    draft: "Черновик", planning: "Планирование", council: "Обсуждение плана",
     awaiting_approval: "План на утверждении",
     running: "В работе", paused: "Пауза", completed: "Завершён", deleted: "Удалён",
   })[status] || status;
@@ -700,12 +700,12 @@ function renderTeamEmpty() {
     label = "Добавить агента";
     action = () => openAgentModal();
   } else if (status === "draft") {
-    copy = "Добавьте материалы в буфер и соберите ТЗ, чтобы открыть консилиум.";
+    copy = "Добавьте материалы в буфер и соберите ТЗ, чтобы открыть обсуждение плана.";
     label = "Перейти к ТЗ";
     action = () => byId("spec-text").focus();
   } else if (status === "planning") {
-    copy = "Запустите консилиум, чтобы агенты обсудили ТЗ и подготовили план.";
-    label = "Запустить консилиум";
+    copy = "Начните обсуждение, чтобы агенты подготовили план по ТЗ.";
+    label = "Составить план";
     action = () => document.querySelector('[data-action="council"]').click();
   } else if (status === "awaiting_approval") {
     copy = "План готов. Утвердите его, чтобы начать разработку.";
@@ -1227,7 +1227,7 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
   byId("welcome-dashboard").dataset.projectCount = projects.length;
   const buttons = projects.map((item) => {
     const button = document.createElement("button");
-    button.className = "project-button";
+    button.className = "project-button project-item";
     button.dataset.id = item.id;
     button.dataset.userContent = "";
     button.type = "button";
@@ -1236,9 +1236,7 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
     button.append(element("span", "project-name", item.name),
       element("span", "project-acronym", projectAcronym(item.name)));
     button.lastElementChild.setAttribute("aria-hidden", "true");
-    button.oncontextmenu = (event) => {
-      openContextMenu(event, {kind: "project", item, path: "projects/" + item.id});
-    };
+    button.addEventListener("contextmenu", (event) => openProjectContextMenu(event, item));
     button.onclick = () => {
       document.querySelector(".sidebar").classList.remove("open");
       showHubPage(false);
@@ -1250,6 +1248,7 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
     };
     return button;
   });
+  closeProjectContextMenu();
   byId("project-list").replaceChildren(...(buttons.length ? buttons : [element("span", "project-list-empty", "Нет проектов")]));
   const active = preserveSelection && projects.find((item) => item.id === project?.id);
   if (active) {
@@ -1461,23 +1460,28 @@ function openContextMenu(event, target) {
   event.preventDefault();
   contextTrigger = event.currentTarget;
   contextTarget = target;
+  closeProjectContextMenu();
   const edit = byId("context-edit");
   edit.innerHTML = icon('<path d="m14 5 5 5M4 20l1-5L16 4a2 2 0 0 1 3 0l1 1a2 2 0 0 1 0 3L9 19l-5 1Z"/>');
-  edit.append(target.kind === "project" ? "Переименовать" : "Редактировать");
+  edit.append("Редактировать");
   const commitMenu = target.kind === "commit";
   edit.hidden = byId("context-delete").hidden = commitMenu;
   const rollback = byId("context-rollback-commit");
   const copy = byId("context-copy-commit");
   rollback.hidden = copy.hidden = !commitMenu;
   rollback.disabled = gitRollbackPending || ["running", "council"].includes(project?.status);
-  const margin = 8;
-  const anchor = contextTrigger.getBoundingClientRect();
-  const x = event.clientX || (event.clientY ? 0 : anchor.left);
-  const y = event.clientY || (event.clientX ? 0 : anchor.bottom);
-  contextMenu.style.left = Math.max(margin, Math.min(x, innerWidth - contextMenu.offsetWidth - margin)) + "px";
-  contextMenu.style.top = Math.max(margin, Math.min(y, innerHeight - contextMenu.offsetHeight - margin)) + "px";
+  positionContextMenu(contextMenu, event, contextTrigger);
   contextMenu.inert = false;
   contextMenu.querySelector("button:not([hidden]):enabled").focus({preventScroll: true});
+}
+
+function positionContextMenu(menu, event, trigger) {
+  const margin = 8;
+  const anchor = trigger.getBoundingClientRect();
+  const x = event.clientX || (event.clientY ? 0 : anchor.left);
+  const y = event.clientY || (event.clientX ? 0 : anchor.bottom);
+  menu.style.left = Math.max(margin, Math.min(x, innerWidth - menu.offsetWidth - margin)) + "px";
+  menu.style.top = Math.max(margin, Math.min(y, innerHeight - menu.offsetHeight - margin)) + "px";
 }
 
 function closeContextMenu(restoreFocus = false) {
@@ -1501,31 +1505,35 @@ contextMenu.addEventListener("keydown", (event) => {
 byId("context-edit").onclick = () => {
   const target = contextTarget;
   closeContextMenu(true);
-  if (target.kind === "agent") {
-    openAgentModal(target);
-  } else {
-    byId("rename-name").value = target.item.name;
-    showModal("rename-modal");
-    byId("rename-form").onsubmit = (event) => {
-      event.preventDefault();
-      const name = byId("rename-name").value.trim();
-      if (!name) {
-        showCursorToast("Введите название проекта.", event);
-        return;
-      }
-      mutateFromModal(event.submitter, target, "PATCH", {name});
-    };
-  }
+  openAgentModal(target);
 };
+
+function renameProject(target) {
+  byId("rename-name").value = target.item.name;
+  showModal("rename-modal");
+  byId("rename-form").onsubmit = (event) => {
+    event.preventDefault();
+    const name = byId("rename-name").value.trim();
+    if (!name) {
+      showCursorToast("Введите название проекта.", event);
+      return;
+    }
+    mutateFromModal(event.submitter, target, "PATCH", {name});
+  };
+}
 
 byId("context-delete").onclick = () => {
   const target = contextTarget;
   closeContextMenu(true);
+  confirmContextDeletion(target);
+};
+
+function confirmContextDeletion(target) {
   const kind = target.kind === "project" ? "проект" : "агента";
   byId("delete-title").textContent = `Удалить ${kind} «${target.item.name}»?`;
   showModal("delete-modal");
   byId("confirm-delete").onclick = ({currentTarget}) => mutateFromModal(currentTarget, target, "DELETE");
-};
+}
 
 function removeAgentHistory({id, name}) {
   deletedAgents.add(id);
@@ -2844,4 +2852,60 @@ async function restoreSession() {
     byId("auth-screen").dataset.sessionChecked = "";
   }
 }
+const projectContextMenu = byId("project-context-menu");
+const projectGitHubAction = projectContextMenu.querySelector('[data-project-action="github"]');
+let projectMenuTarget, projectMenuTrigger, projectMenuRepo;
+
+function openProjectContextMenu(event, item) {
+  event.preventDefault();
+  closeContextMenu();
+  projectMenuTrigger = event.currentTarget;
+  projectMenuTarget = {kind: "project", item, path: "projects/" + item.id};
+  const repo = item.github_repo_url || item.git_repo_url;
+  const url = repo ? URL.parse(repo) : null;
+  projectMenuRepo = url?.protocol === "https:" && url.hostname === "github.com" ? url.href : null;
+  projectGitHubAction.disabled = !projectMenuRepo;
+  positionContextMenu(projectContextMenu, event, projectMenuTrigger);
+  projectContextMenu.inert = false;
+  projectContextMenu.querySelector("button").focus({preventScroll: true});
+}
+
+function closeProjectContextMenu(restoreFocus = false) {
+  projectContextMenu.inert = true;
+  if (restoreFocus) projectMenuTrigger?.focus({preventScroll: true});
+  projectMenuTarget = projectMenuTrigger = projectMenuRepo = null;
+}
+
+projectContextMenu.addEventListener("click", (event) => {
+  const action = event.target.closest("[data-project-action]")?.dataset.projectAction;
+  if (!action || !projectMenuTarget) return;
+  const target = projectMenuTarget;
+  const repo = projectMenuRepo;
+  closeProjectContextMenu(true);
+  if (action === "folder") {
+    api(target.path + "/open-folder", undefined, token, "POST").catch((error) => notify(error.message));
+  } else if (action === "github" && repo) {
+    window.open(repo, "_blank", "noopener,noreferrer");
+  } else if (action === "rename") {
+    renameProject(target);
+  } else if (action === "delete") {
+    confirmContextDeletion(target);
+  }
+});
+
+projectContextMenu.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeProjectContextMenu(true);
+  }
+});
+projectContextMenu.addEventListener("focusout", (event) => {
+  if (!projectContextMenu.contains(event.relatedTarget)) closeProjectContextMenu();
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!projectContextMenu.contains(event.target)) closeProjectContextMenu();
+});
+window.addEventListener("resize", () => closeProjectContextMenu());
+
 restoreSession();

@@ -18,7 +18,7 @@
         </div>
         <button class="theme-switch" type="button" aria-label="Светлая тема"></button>
       </div>
-      <p class="auth-lead">Проекты, ИИ-агенты и консилиумы — в одном приватном окне.</p>
+      <p class="auth-lead">Проекты, ИИ-агенты и обсуждения планов — в одном приватном окне.</p>
 
       <div class="glass-tabs" aria-label="Способ входа">
         <button class="tab active" aria-pressed="true" data-auth-tab="password" type="button">Пароль</button>
@@ -160,7 +160,7 @@
 
       <ol id="project-stepper" class="project-stepper glass-panel hidden" aria-label="Этапы проекта">
         <li><span>1</span>Сбор ТЗ</li>
-        <li><span>2</span>Консилиум и План</li>
+        <li><span>2</span>Обсуждение плана</li>
         <li><span>3</span>Разработка</li>
         <li><span>4</span>Финал / Git</li>
       </ol>
@@ -182,10 +182,10 @@
               <p id="cycle-empty" class="hint">Действия цикла пока недоступны.</p>
               <div id="project-controls" class="hidden">
                 <div class="controls-grid">
-                  <button class="control-button" data-action="council"><svg class="control-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/></svg><span><strong>Запустить консилиум</strong><small>стартовый план</small></span></button>
+                  <button class="control-button" data-action="council"><svg class="control-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/></svg><span><strong>Составить план</strong><small>стартовый план</small></span></button>
                   <button class="control-button" data-action="approve"><svg class="control-icon" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg><span><strong>Утвердить план</strong><small>начать исполнение</small></span></button>
                   <button class="control-button" data-action="pause"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg><span><strong>Пауза</strong></span></button>
-                  <button class="control-button danger" data-action="rollback"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h10a6 6 0 0 1 6 6"/></svg><span><strong>Откатить Git-шаг</strong><small>безопасная точка</small></span></button>
+                  <button class="control-button danger" data-action="rollback"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h10a6 6 0 0 1 6 6"/></svg><span><strong>Откатить к прошлому коммиту</strong></span></button>
                 </div>
               </div>
             </section>
@@ -218,7 +218,7 @@
           </form>
           <p id="spec-empty" aria-live="polite">Буфер пока пуст.</p>
           <ul id="spec-items" class="spec-items" aria-label="Элементы ТЗ"></ul>
-          <button class="button primary wide" type="button" data-action="build_spec"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg> Собрать SPEC.md и перейти к планированию</button>
+          <button class="button primary wide" type="button" data-action="build_spec"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg> Собрать ТЗ проекта и перейти к планированию</button>
         </section>
         <section id="work-center" hidden class="work-center glass-panel">
           <div class="work-header">
@@ -591,7 +591,7 @@
     </div>
     <div id="rollback-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="rollback-title">
       <div class="modal-head">
-        <h3 id="rollback-title">Откатить последний Git-шаг?</h3>
+        <h3 id="rollback-title">Откатить к прошлому коммиту?</h3>
         <button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
       </div>
       <p id="rollback-pause-note" class="hidden">Перед откатом Loomis приостановит выполнение проекта.</p>
@@ -603,6 +603,12 @@
   </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="project-context-menu" class="context-menu glass-panel" role="menu" aria-label="Действия" inert>
+    <button type="button" role="menuitem" data-project-action="folder">Открыть папку в Проводнике</button>
+    <button type="button" role="menuitem" data-project-action="github">Открыть на GitHub</button>
+    <button type="button" role="menuitem" data-project-action="rename">Переименовать</button>
+    <button type="button" role="menuitem" data-project-action="delete" class="danger">Удалить проект</button>
+  </div>
   <script src="/static/i18n.js?v=latest"></script>
   <script src="/app.js?v=latest"></script>
   <script type="module" src="/static/lighter3d.js?v=latest"></script>
