@@ -52,7 +52,7 @@ from .keyboards import (
     PROJECT_BUTTONS, PROJECT_ROWS, agent_chat_keyboard, cancel_keyboard, first_project_keyboard, inline_menu,
     main_menu, profile_keyboard, project_keyboard, project_reply_keyboard, projects_keyboard, spec_keyboard,
 )
-from .i18n import bot_language, status_label, translate
+from .i18n import RUSSIAN_LABELS, bot_language, status_label, translate
 from .middlewares import AccountMiddleware
 from .states import AccountSetup, AgentInteraction, HubSetup, ProjectSettings, ProjectSetup
 
@@ -84,9 +84,15 @@ async def leave_project(message, state, account):
         await message.answer("Главное меню", reply_markup=ReplyKeyboardRemove())
 
 
-@router.message(F.text.func(lambda value: isinstance(value, str) and value.strip() in PROJECT_BUTTONS))
+PROJECT_NAVIGATION = {
+    **PROJECT_BUTTONS,
+    **{RUSSIAN_LABELS.get(label, label): action for label, action in PROJECT_BUTTONS.items()},
+}
+
+
+@router.message(F.text.func(lambda value: isinstance(value, str) and value.strip() in PROJECT_NAVIGATION))
 async def project_navigation(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
-    label = PROJECT_BUTTONS[message.text.strip()]
+    label = PROJECT_NAVIGATION[message.text.strip()]
     if label == PROJECT_ROWS[3][1]:
         if account:
             orchestrator.telegram_projects.pop(account.id, None)
@@ -589,7 +595,7 @@ async def view_spec(callback: CallbackQuery, session: AsyncSession, account: Use
         await callback.message.answer("Проект не найден.")
         return
     if not project.spec_content:
-        await callback.message.answer("SPEC.md пока не собран.")
+        await callback.message.answer("ТЗ проекта пока не собрано.")
     else:
         for part in telegram_html(project.spec_content):
             await callback.message.answer(part, parse_mode="HTML")
@@ -911,12 +917,12 @@ async def finish_spec(callback: CallbackQuery, state: FSMContext, session: Async
     except Exception:
         await session.rollback()
         logger.exception("Could not assemble SPEC.md for project %s", project_id)
-        await callback.message.answer("Не удалось собрать SPEC.md. Можно повторить сборку.")
+        await callback.message.answer("Не удалось собрать ТЗ проекта. Можно повторить сборку.")
         return
     await state.set_state(None)
     await manager.publish_status(project.id, project.status)
-    await manager.publish_log(project.id, "Собран SPEC.md.")
-    await callback.message.answer("SPEC.md собран. Проект переведён в планирование.", reply_markup=project_keyboard(project))
+    await manager.publish_log(project.id, "ТЗ проекта собрано.")
+    await callback.message.answer("ТЗ проекта собрано. Проект переведён в планирование.", reply_markup=project_keyboard(project))
 
 
 @router.callback_query(F.data.startswith("cancel_project:"))
@@ -1229,8 +1235,8 @@ async def show_plan(message, project):
     if project.status == "awaiting_approval":
         rows.append([("Утвердить план и запустить", action + "approve")])
     if project.status in {"paused", "completed"}:
-        rows.append([("Откатить последний Git-шаг", action + "rollback")])
-    await message.answer(f"План и консилиум · {status_label(project.status)}", reply_markup=inline_menu(rows) if rows else None)
+        rows.append([("Откатить к прошлому коммиту", action + "rollback")])
+    await message.answer(f"Обсуждение плана · {status_label(project.status)}", reply_markup=inline_menu(rows) if rows else None)
 
 
 @router.callback_query(F.data.startswith("plan_feedback:"))

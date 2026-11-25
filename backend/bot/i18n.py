@@ -328,7 +328,7 @@ EN = {
 STATUS = {
     "draft": ("Черновик", "Draft"),
     "planning": ("Планирование", "Planning"),
-    "council": ("Консилиум", "Council"),
+    "council": ("Обсуждение плана", "Council"),
     "awaiting_approval": ("План на утверждении", "Awaiting plan approval"),
     "running": ("В работе", "In progress"),
     "paused": ("Пауза", "Paused"),
@@ -340,6 +340,29 @@ STATUS = {
     "error": ("Ошибка", "Error"),
     "disabled": ("Выключен", "Disabled"),
 }
+RUSSIAN_LABELS = {
+    "План и Консилиум": "Обсуждение плана",
+    "✅ ТЗ загружено — собрать SPEC.md": "✅ Собрать ТЗ проекта",
+    "Запустить стартовый консилиум": "Составить план",
+    "⏪ Откатить шаг": "⏪ Откатить к прошлому коммиту",
+    "Посмотреть SPEC.md": "Посмотреть ТЗ проекта",
+    "SPEC.md пока не собран.": "ТЗ проекта пока не собрано.",
+    "SPEC.md пуст.": "ТЗ проекта пустое.",
+    "Не удалось собрать SPEC.md. Можно повторить сборку.": "Не удалось собрать ТЗ проекта. Можно повторить сборку.",
+    "SPEC.md собран. Проект переведён в планирование.": "ТЗ проекта собрано. Проект переведён в планирование.",
+    "Откатить последний Git-шаг": "Откатить к прошлому коммиту",
+    "План и консилиум · {}": "Обсуждение плана · {}",
+    "Ошибка консилиума. {}": "Не удалось обсудить план. {}",
+    "Дождитесь завершения консилиума.": "Дождитесь завершения обсуждения плана.",
+    "Оркестратор": "Система",
+    "Оркестрация": "Управление работой",
+    "Откатить Git-шаг": "Откатить к прошлому коммиту",
+}
+EN.update({label: EN[source] for source, label in RUSSIAN_LABELS.items() if source in EN})
+RUSSIAN_TEMPLATES = [
+    (re.compile(re.escape(source).replace(r"\{\}", "(.+?)")), target)
+    for source, target in RUSSIAN_LABELS.items() if "{}" in source
+]
 TEMPLATES = [
     (re.compile(re.escape(source).replace(r"\{\}", "(.+?)")), target)
     for source, target in EN.items() if "{}" in source
@@ -352,15 +375,17 @@ def status_label(status, language=None):
 
 
 def translate(text, language=None):
-    if (language or bot_language.get()) != "en" or not text:
+    if not text:
         return text
+    english = (language or bot_language.get()) == "en"
+    labels, templates = (EN, TEMPLATES) if english else (RUSSIAN_LABELS, RUSSIAN_TEMPLATES)
 
     def translate_line(line):
         if line.startswith("✓ "):
             return "✓ " + translate_line(line[2:])
-        if line in EN:
-            return EN[line]
-        for pattern, target in TEMPLATES:
+        if line in labels:
+            return labels[line]
+        for pattern, target in templates:
             if match := pattern.fullmatch(line):
                 return target.format(*match.groups())
         return line
@@ -369,8 +394,6 @@ def translate(text, language=None):
 
 
 def localize_markup(markup, language=None):
-    if (language or bot_language.get()) != "en":
-        return markup
     if isinstance(markup, InlineKeyboardMarkup):
         field = "inline_keyboard"
     elif isinstance(markup, ReplyKeyboardMarkup):
@@ -378,7 +401,7 @@ def localize_markup(markup, language=None):
     else:
         return markup
     rows = [
-        [button.model_copy(update={"text": translate(button.text, "en")}) for button in row]
+        [button.model_copy(update={"text": translate(button.text, language)}) for button in row]
         for row in getattr(markup, field)
     ]
     return markup.model_copy(update={field: rows})
@@ -386,7 +409,7 @@ def localize_markup(markup, language=None):
 
 class LocalizeTelegram(BaseRequestMiddleware):
     async def __call__(self, make_request, bot, method):
-        if bot_language.get() == "en" and isinstance(method, (SendMessage, EditMessageText, AnswerCallbackQuery)):
+        if isinstance(method, (SendMessage, EditMessageText, AnswerCallbackQuery)):
             fields = {"text": translate(method.text)}
             if hasattr(method, "reply_markup"):
                 fields["reply_markup"] = localize_markup(method.reply_markup)

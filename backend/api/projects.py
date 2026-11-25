@@ -1,6 +1,8 @@
 import asyncio
 import os
 import re
+import subprocess
+import sys
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
@@ -287,6 +289,21 @@ async def dashboard_usage(session: Session, user: CurrentUser):
 @router.get("/{project_id}", response_model=ProjectDetail)
 async def get_project(project: OwnedProject):
     return ProjectDetail(**ProjectView.model_validate(project).model_dump(), has_plan=bool(project.plan_content))
+
+
+@router.post("/{project_id}/open-folder", status_code=204)
+async def open_project_folder(project: OwnedProject):
+    path = Path(project.workspace_path or default_workspace(project)).absolute()
+    if not await asyncio.to_thread(path.is_dir):
+        raise HTTPException(404, "Папка проекта не найдена.")
+    try:
+        if sys.platform == "win32":
+            await asyncio.to_thread(os.startfile, str(path))
+        else:
+            command = "open" if sys.platform == "darwin" else "xdg-open"
+            await asyncio.to_thread(subprocess.run, [command, str(path)], check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise HTTPException(500, "Не удалось открыть папку проекта.") from exc
 
 
 @router.get("/{project_id}/spec-items", response_model=list[SpecItemView])
