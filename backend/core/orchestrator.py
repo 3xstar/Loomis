@@ -23,7 +23,7 @@ from backend.bot.i18n import bot_language, localize_markup, translate
 from backend.database.db import async_session_factory
 from backend.database.models import AgentConfig, AgentMessage, CommitState, Project, ProjectMedia, TaskLog, User, UserModelPreset
 from worker.adapters import CLI_PROVIDERS, build_agent
-from worker.adapters.api_adapter import ApiAgent, api_system_prompt, run_workspace_command
+from worker.adapters.api_adapter import REVIEW_INSTRUCTION, ApiAgent, api_system_prompt, run_workspace_command
 from worker.adapters.base import AgentResult, BaseAgent
 from worker.adapters.media import refuses_media
 from worker.git_bridge import GitBridge, is_github_repo
@@ -225,7 +225,8 @@ class ProjectAgent(BaseAgent):
         self.project = project
         self.config = config
 
-    async def run(self, operation, prompt, context="", workspace=None, timeout=None, images=(), *, step_title=None, transport_ref=None):
+    async def run(self, operation, prompt, context="", workspace=None, timeout=None, images=(), *,
+                  step_title=None, transport_ref=None, reviewing=False):
         project, config = self.project, self.config
         concise = (project.verbosity_level or "concise") == "concise"
         instruction = ("Ты — беспристрастный технический инструмент. Выполняй легальные задачи пользователя, "
@@ -246,8 +247,11 @@ class ProjectAgent(BaseAgent):
                 'однострочником python -c "..." без создания временных файлов.'
             )
         max_tokens = 700 if concise and operation not in {"chat", "plan"} else None
-        history = await self.engine.prompt_history(project, config, direct=operation == "direct",
-                                                   include_team_chat=operation == "chat")
+        if reviewing:
+            instruction = REVIEW_INSTRUCTION
+        history = "" if reviewing else await self.engine.prompt_history(
+            project, config, direct=operation == "direct", include_team_chat=operation == "chat",
+        )
         if history:
             history = f"\n\nИстория обсуждений:\n{history}"
             if operation == "execute":
@@ -1122,8 +1126,21 @@ class Orchestrator:
         steps = scheduled_steps(project.plan_content or "")
         planned = steps[runtime.plan_step] if steps else None
         compact = bool(planned and is_compact_plan(project.plan_content or ""))
-        reviewing = compact and runtime.plan_step == 1
-        expected_path = steps[0][1] if reviewing else planned[1] if planned else "-"
+        final_step = planned and runtime.plan_step == len(steps) - 1
+        reviewing = bool(final_step and (
+            (compact and runtime.plan_step == 1)
+            or (
+                re.match(r"(?i)^(?:финальная\s+)?(?:проверить|проверь|проверка|сверить|сверка|ревью)\b", planned[2])
+                and not re.search(
+                    r"(?i)\b(?:исправить|доработать|обновить|изменить|создать|добавить|удалить|поправить)\b",
+                    planned[2],
+                )
+            )
+            or re.search(r"(?i)\b(?:файлы\s+не\s+править|без\s+(?:правок|изменения)\s+файлов)\b", planned[2])
+        ))
+        expected_path = planned[1] if planned else "-"
+        if reviewing and expected_path == "-" and runtime.plan_step > 0:
+            expected_path = steps[runtime.plan_step - 1][1]
         mode = project.autonomy_mode
         if planned and runtime.handoff is None:
             intended = next(item for item in configs if item.name == planned[0])
@@ -1201,7 +1218,7 @@ class Orchestrator:
         await self.traffic(config, "working")
         agent = ProjectAgent(self, project, config)
         clarification = ""
-        images = () if is_artist else await self.spec_images(project.id)
+        images = () if is_artist or reviewing else await self.spec_images(project.id)
         generated = None
         confirm_handoff = handoff and not receipt_done and not is_artist and not compact and mode != "autonomous"
         stage = "подтверждение передачи задачи" if confirm_handoff else "исполнение задачи"
@@ -1240,22 +1257,37 @@ class Orchestrator:
                     else:
                         transport_ref = await bridge.open_transport() if remote else None
                         try:
+                            if reviewing:
+                                acceptance = re.search(
+                                    r"(?ims)^#{1,6}[ \t]+Критерии[^\n]*\n(.*?)(?=^#{1,6}[ \t]|\Z)",
+                                    project.plan_content or "",
+                                )
+                                criteria = re.sub(r"(?m)^- \[loomis\].*\n?", "", acceptance[1]).strip() if acceptance else ""
+                                criteria = criteria or project.spec_content or ""
+                                paths = ", ".join(dict.fromkeys(path for _, path, _ in steps if path != "-"))
+                                prompt = (
+                                    f"Критерии приёмки:\n{task}\n{criteria}\n\n"
+                                    f"Проверяемый результат: {paths or 'файлы проекта'}\n{handoff}"
+                                )
+                            else:
+                                prompt = (
+                                    f"{context}\n\nТы {config.name}. {task}\n"
+                                    f"{handoff}\n{runtime.answer}\n{correction}{retry_notes}\n"
+                                    "Отчёт: до трёх коротких пунктов — Сделано, Файлы, Следующий шаг. "
+                                    "Используй утверждённый план из контекста и учитывай более свежие правки пользователя. "
+                                    + ("Выполни только текущий шаг очереди. " if planned else "")
+                                    + (f" Проверь итоговый результат в `{expected_path}`. " if expected_path != "-" else "")
+                                    + autonomy_instruction(mode)
+                                    + " В конце отчёта верни отдельную строку COMMIT_MSG по системной инструкции. "
+                                    "Если из-за технической ошибки невозможно собрать требуемый результат, "
+                                    "верни отдельную строку LOOMIS_BLOCKED: <причина>. "
+                                    "Если все задачи плана завершены, верни отдельную строку LOOMIS_COMPLETE."
+                                )
                             result = await agent.run_with_spec_images(
-                                "execute", f"{context}\n\nТы {config.name}. {task}\n"
-                                f"{handoff}\n{runtime.answer}\n{correction}{retry_notes}\n"
-                                "Отчёт: до трёх коротких пунктов — Сделано, Файлы, Следующий шаг. "
-                                "Используй утверждённый план из контекста и учитывай более свежие правки пользователя. "
-                                + ("Выполни только текущий шаг очереди. " if planned else "")
-                                + (f" Проверь итоговый результат в `{expected_path}`. " if expected_path != "-" else "")
-                                + (" Это финальная проверка. Проверь файлы и критерии ТЗ за один проход. "
-                                   "Верни краткий вывод. Сохрани содержимое файлов без изменений. " if reviewing else "")
-                                + autonomy_instruction(mode)
-                                + " В конце отчёта верни отдельную строку COMMIT_MSG по системной инструкции. "
-                                "Если из-за технической ошибки невозможно собрать требуемый результат, "
-                                "верни отдельную строку LOOMIS_BLOCKED: <причина>. "
-                                "Если все задачи плана завершены, верни отдельную строку LOOMIS_COMPLETE.",
+                                "execute", prompt,
                                 workspace=workspace, timeout=max(0.01, deadline - clock.time()), images=images,
-                                transport_ref=transport_ref, step_title="Исправление ошибок проверки" if feedback else None,
+                                transport_ref=transport_ref, reviewing=reviewing,
+                                step_title="Исправление ошибок проверки" if feedback else None,
                             )
                         finally:
                             if transport_ref:
@@ -1288,6 +1320,8 @@ class Orchestrator:
                     stage = "проверка результата"
                     pending_result = result.message
                     if expected_path != "-" and not workspace_file(workspace, expected_path).is_file():
+                        if reviewing:
+                            raise RuntimeError(f"Итоговый файл {expected_path} отсутствует.")
                         feedback = f"Итоговый файл {expected_path} отсутствует. Создай его и проверь результат."
                     elif reviewing:
                         feedback = None
@@ -1372,6 +1406,7 @@ class Orchestrator:
                                ranked[0] if ranked else config)
         target = "@All" if complete else f"@{next_config.name}"
         visible_result = re.sub(r"(?m)^(?:COMMIT_MSG:.*|LOOMIS_(?:COMMIT:.*|COMPLETE))[ \t]*$", "", result.message)
+        visible_result = re.sub(r"^(?:\s*Сделано:)+\s*", "", visible_result)
         report = (
             f"Сделано: {' '.join(visible_result.split())[:240]}\n"
             f"Файлы: {', '.join(changes.splitlines()[:6]) or 'Нет изменений'}\n"

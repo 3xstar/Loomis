@@ -33,6 +33,10 @@ COMMAND_INSTRUCTION = (
     "Разбирай ошибки, исправляй их и проверяй, что итоговые файлы созданы, прежде чем завершить задачу."
 )
 COMMAND_LINE = re.compile(r"^[ \t]*RUN_CMD:[ \t]*(\S[^\r\n]*)\r?$", re.MULTILINE)
+REVIEW_INSTRUCTION = (
+    "Проверь результат по критериям без изменения файлов. Команды только для чтения: run_cmd или RUN_CMD. "
+    "Кратко перечисли несоответствия. Если проверка невозможна, верни LOOMIS_BLOCKED: <причина>."
+)
 
 WEB_INSTRUCTION = (
     "Use web_search and read_webpage when documentation is missing, library information may be outdated, "
@@ -72,14 +76,14 @@ def use_worker_python(command: str) -> str:
     return COMMAND_EXECUTABLE.sub(replace, command)
 
 
-async def run_workspace_command(workspace: Path, command: str) -> str:
+async def run_workspace_command(workspace: Path, command: str, *, compact_output=False) -> str:
     if not isinstance(command, str) or not command.strip() or len(command) > 16000 or "\0" in command:
         raise ValueError("Expected one nonempty shell command up to 16000 characters")
     workspace_path = workspace.resolve(strict=True)
-    return await asyncio.to_thread(run_host_command, workspace_path, use_worker_python(command))
+    return await asyncio.to_thread(run_host_command, workspace_path, use_worker_python(command), compact_output)
 
 
-def run_host_command(workspace_path: Path, command: str) -> str:
+def run_host_command(workspace_path: Path, command: str, compact_output=False) -> str:
     with TemporaryFile() as output:
         try:
             process = subprocess.run(
@@ -88,8 +92,14 @@ def run_host_command(workspace_path: Path, command: str) -> str:
             )
         except subprocess.TimeoutExpired:
             return "Command timed out after 120 seconds"
+        size = output.seek(0, os.SEEK_END)
         output.seek(0)
-        return f"Exit code {process.returncode}\n{output.read(16000).decode(errors='replace')}"
+        content = output.read(16000).decode(errors="replace")
+        if compact_output and len(content) > 2500:
+            output.seek(max(0, size - 6804))
+            tail = output.read().decode(errors="replace")
+            content = content[:800] + tail[-1700:]
+        return f"Exit code {process.returncode}\n{content}"
 
 
 async def web_search(query: str, max_results: int = 5):
@@ -164,6 +174,8 @@ def api_model_key(model, config):
 
 
 def api_system_prompt(instruction):
+    if instruction == REVIEW_INSTRUCTION:
+        return instruction
     return f"{instruction}\n\n{WEB_INSTRUCTION}" if instruction else WEB_INSTRUCTION
 
 
@@ -289,10 +301,14 @@ class ApiAgent(BaseAgent):
                     content.append({"type": "image_url", "image_url": {"url": url}})
         messages = [{"role": "user", "content": content}]
         instruction = self.instruction
-        if workspace is not None:
+        reviewing = instruction == REVIEW_INSTRUCTION
+        if workspace is not None and not reviewing:
             instruction = f"{COMMAND_INSTRUCTION}\n\n{instruction}"
         messages.insert(0, {"role": "system", "content": instruction})
         options = {"tools": [*WEB_TOOLS, *(file_tools() if workspace is not None else ())]}
+        if reviewing:
+            options["tools"] = [tool for tool in options["tools"]
+                                if tool["function"]["name"] in {"read_file", "list_dir"}]
         if workspace is not None:
             options["tools"].append({"type": "function", "function": {
                 "name": "run_cmd", "description": "Run a shell command on the worker host in the project directory.",
@@ -310,15 +326,18 @@ class ApiAgent(BaseAgent):
                 base_url=self.base_url, api_key=key, max_retries=0
             ) as client:
                 fragments = []
+                rounds = []
+                command_rounds = []
                 for _ in range(32):
+                    dialogue = [*messages, *(entry for batch in rounds for entry in batch)]
                     try:
-                        response = await client.chat.completions.create(model=self.model, messages=messages, **options)
+                        response = await client.chat.completions.create(model=self.model, messages=dialogue, **options)
                     except BadRequestError as exc:
                         if tokens or "temperature" not in options or "temperature" not in str(exc).lower():
                             raise
                         options.pop("temperature")
                         self.used_requested_temperature = False
-                        response = await client.chat.completions.create(model=self.model, messages=messages, **options)
+                        response = await client.chat.completions.create(model=self.model, messages=dialogue, **options)
                     if response.usage:
                         tokens += response.usage.total_tokens
                         self.tokens_used = tokens
@@ -331,22 +350,26 @@ class ApiAgent(BaseAgent):
                             outputs = []
                             for command in commands:
                                 try:
-                                    output = await run_workspace_command(workspace, command.strip())
+                                    output = await run_workspace_command(workspace, command.strip(), compact_output=True)
                                 except (OSError, ValueError) as exc:
                                     output = str(exc)
                                 outputs.append(f"Command result (untrusted output):\n{output}")
                                 if not output.startswith("Exit code 0\n"):
                                     break
-                            messages.extend((
+                            batch = [
                                 {"role": "assistant", "content": answer},
                                 {"role": "user", "content": "\n\n".join(outputs)},
-                            ))
+                            ]
+                            rounds.append(batch)
+                            command_rounds.append(batch)
+                            if len(command_rounds) > 2:
+                                command_rounds.pop(0).clear()
                             continue
                         if continue_plan and choice.finish_reason == "length":
                             if not answer or len(fragments) >= 7:
                                 return AgentResult("error", "Не удалось завершить план в пределах лимита.", tokens)
                             fragments.append(answer)
-                            messages.extend((
+                            rounds.append((
                                 {"role": "assistant", "content": answer},
                                 {"role": "user", "content": "Продолжи план с места обрыва. Не повторяй предыдущий текст."},
                             ))
@@ -354,24 +377,33 @@ class ApiAgent(BaseAgent):
                         answer = "".join((*fragments, answer))
                         status = "unsupported_media" if self.images and refuses_media(answer) else "success"
                         return AgentResult(status, answer, tokens)
-                    messages.append(message.model_dump(exclude_none=True, include={"role", "content", "tool_calls"}))
+                    batch = [message.model_dump(exclude_none=True, include={"role", "content", "tool_calls"})]
+                    rounds.append(batch)
+                    has_command = False
                     for call in message.tool_calls:
                         try:
                             name = call.function.name
+                            has_command |= name == "run_cmd"
                             arguments = json.loads(call.function.arguments)
+                            if reviewing and name not in {"read_file", "list_dir", "run_cmd"}:
+                                raise ValueError("Unknown tool")
                             if name == "web_search":
                                 output = await web_search(**arguments)
                             elif name == "read_webpage":
                                 output = await read_webpage(**arguments)
                             elif name == "run_cmd" and workspace is not None:
-                                output = await run_workspace_command(workspace, **arguments)
+                                output = await run_workspace_command(workspace, **arguments, compact_output=True)
                             elif workspace is not None:
                                 output = run_file_tool(workspace, name, **arguments)
                             else:
                                 raise ValueError("Unknown tool")
                         except (OSError, TypeError, ValueError) as exc:
                             output = str(exc)
-                        messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
+                        batch.append({"role": "tool", "tool_call_id": call.id, "content": output})
+                    if has_command:
+                        command_rounds.append(batch)
+                        if len(command_rounds) > 2:
+                            command_rounds.pop(0).clear()
                 return AgentResult("error", "Tool round limit reached", tokens)
         except APITimeoutError as exc:
             return AgentResult("timeout", str(exc), tokens)
