@@ -45,7 +45,9 @@ class DesktopAPI:
         SESSION_PATH.unlink(missing_ok=True)
 
     def select_folder(self) -> str | None:
-        folders = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        file_dialog = getattr(webview, "FileDialog", None)
+        folder_dialog = file_dialog.FOLDER if file_dialog is not None else webview.FOLDER_DIALOG
+        folders = self._window.create_file_dialog(folder_dialog)
         if isinstance(folders, str):
             return folders or None
         return folders[0] if folders else None
