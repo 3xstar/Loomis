@@ -64,27 +64,30 @@
   </section>
 
   <section id="app-screen" class="screen app-screen hidden" inert>
-    <aside class="sidebar glass-panel">
+    <aside id="sidebar" class="sidebar glass-panel">
       <div class="sidebar-head">
         <div class="brand-row"><span class="logo-mark small" aria-hidden="true"><img class="logo-dark" src="/static/logo-dark.png" alt=""><img class="logo-light" src="/static/logo-light.png" alt=""></span><div><strong>Loomis</strong></div></div>
-        <button id="settings-button" class="icon-button" type="button" title="Настройки" aria-label="Настройки"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m10 3-.7 2.2-1.9 1.1-2.3-.5-2 3.4 1.6 1.7v2.2l-1.6 1.7 2 3.4 2.3-.5 1.9 1.1.7 2.2h4l.7-2.2 1.9-1.1 2.3.5 2-3.4-1.6-1.7v-2.2l1.6-1.7-2-3.4-2.3.5-1.9-1.1L14 3Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        <button id="sidebar-toggle" class="icon-button" type="button" title="Свернуть в значки" aria-label="Свернуть в значки" aria-controls="sidebar" aria-expanded="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14m7-10-3 3 3 3"/></svg></button>
       </div>
 
       <div class="user-card">
         <div id="user-avatar" class="avatar">L</div>
         <div class="user-copy"><strong id="user-name">—</strong><span>Локальная сессия</span></div>
-        <button id="logout-button" class="icon-button subtle" title="Выйти" aria-label="Выйти"><svg viewBox="0 0 24 24"><path d="M10 5H5v14h5"/><path d="m13 8 4 4-4 4"/><path d="M17 12H9"/></svg></button>
       </div>
 
-      <button id="hub-button" class="button secondary" type="button" aria-label="Хаб нейросетей" aria-controls="hub-page project-page">
-        <span class="hub-nav-label hub-nav-models" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m7.3 11 8.4-4m-8.4 6 8.4 4"/></svg>Хаб нейросетей</span>
-        <span class="hub-nav-label hub-nav-projects" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>Проекты</span>
+      <button id="hub-button" class="button secondary" type="button" title="Хаб нейросетей" aria-label="Хаб нейросетей" aria-controls="hub-page project-page">
+        <span class="hub-nav-label hub-nav-models" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m7.3 11 8.4-4m-8.4 6 8.4 4"/></svg><span>Хаб нейросетей</span></span>
+        <span class="hub-nav-label hub-nav-projects" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg><span>Проекты</span></span>
       </button>
-      <div class="section-label"><span>Проекты</span><button id="new-project-button" class="text-action">+ Создать</button></div>
+      <div class="section-label"><span>Проекты</span><button id="new-project-button" class="text-action" type="button" title="Создать проект" aria-label="Создать проект"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>Создать</span></button></div>
       <nav id="project-list" class="project-list" aria-label="Проекты"></nav>
       <div class="integration-alerts">
         <button id="telegram-alert" class="icon-button integration-alert" type="button" title="Telegram не привязан" aria-label="Telegram не привязан" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 18-7-4 18-6-5-3 3 1-6 8-6-10 5Z"/></svg><span aria-hidden="true">!</span></button>
         <button id="github-alert" class="icon-button integration-alert" type="button" title="GitHub не привязан" aria-label="GitHub не привязан" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.86c-2.78.6-3.37-1.18-3.37-1.18-.45-1.15-1.11-1.46-1.11-1.46-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.64-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></svg><span aria-hidden="true">!</span></button>
+      </div>
+      <div class="sidebar-actions">
+        <button id="settings-button" class="icon-button" type="button" title="Настройки" aria-label="Настройки"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m10 3-.7 2.2-1.9 1.1-2.3-.5-2 3.4 1.6 1.7v2.2l-1.6 1.7 2 3.4 2.3-.5 1.9 1.1.7 2.2h4l.7-2.2 1.9-1.1 2.3.5 2-3.4-1.6-1.7v-2.2l1.6-1.7-2-3.4-2.3.5-1.9-1.1L14 3Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        <button id="logout-button" class="icon-button subtle" type="button" title="Выйти" aria-label="Выйти"><svg viewBox="0 0 24 24"><path d="M10 5H5v14h5"/><path d="m13 8 4 4-4 4"/><path d="M17 12H9"/></svg></button>
       </div>
     </aside>
 
@@ -165,25 +168,31 @@
         <details id="workspace-controls" class="glass-panel">
           <summary>Управление проектом</summary>
           <div class="workspace-controls-body">
-            <section class="agents-section">
+            <div class="glass-tabs workspace-tabs" role="tablist" aria-label="Управление проектом">
+              <button id="workspace-team-tab" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="workspace-team">Команда</button>
+              <button id="workspace-cycle-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="workspace-cycle" tabindex="-1">Цикл</button>
+              <button id="workspace-git-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="git-panel" tabindex="-1">Коммиты Git</button>
+            </div>
+            <section id="workspace-team" class="agents-section" role="tabpanel" aria-labelledby="workspace-team-tab">
               <div class="section-head"><div><h3>ИИ-агенты</h3></div><button id="add-agent-button" class="button secondary small">Добавить агента</button></div>
               <div id="agent-grid" class="agent-grid"></div>
             </section>
 
-            <section id="project-controls" class="controls-panel glass-panel hidden">
-              <div class="controls-copy"><h3>Цикл проекта</h3></div>
-              <div class="controls-grid">
-                <button class="control-button" data-action="council"><svg class="control-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/></svg><span><strong>Запустить консилиум</strong><small>стартовый план</small></span></button>
-                <button class="control-button" data-action="approve"><svg class="control-icon" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg><span><strong>Утвердить план</strong><small>начать исполнение</small></span></button>
-                <button class="control-button" data-action="pause"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg><span><strong>Пауза</strong></span></button>
-                <button class="control-button danger" data-action="rollback"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h10a6 6 0 0 1 6 6"/></svg><span><strong>Откатить Git-шаг</strong><small>безопасная точка</small></span></button>
+            <section id="workspace-cycle" role="tabpanel" aria-labelledby="workspace-cycle-tab" hidden>
+              <p id="cycle-empty" class="hint">Действия цикла пока недоступны.</p>
+              <div id="project-controls" class="hidden">
+                <div class="controls-grid">
+                  <button class="control-button" data-action="council"><svg class="control-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/></svg><span><strong>Запустить консилиум</strong><small>стартовый план</small></span></button>
+                  <button class="control-button" data-action="approve"><svg class="control-icon" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg><span><strong>Утвердить план</strong><small>начать исполнение</small></span></button>
+                  <button class="control-button" data-action="pause"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg><span><strong>Пауза</strong></span></button>
+                  <button class="control-button danger" data-action="rollback"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h10a6 6 0 0 1 6 6"/></svg><span><strong>Откатить Git-шаг</strong><small>безопасная точка</small></span></button>
+                </div>
               </div>
             </section>
 
-            <details id="git-panel" class="glass-panel">
-              <summary>Коммиты Git</summary>
+            <section id="git-panel" role="tabpanel" aria-labelledby="workspace-git-tab" hidden>
               <div id="git-commits" class="stack" aria-live="polite"></div>
-            </details>
+            </section>
 
           </div>
         </details>
@@ -259,8 +268,13 @@
         <header class="direct-header">
           <h3 id="direct-heading">Личные чаты</h3>
           <button id="close-direct" class="button secondary small" type="button" aria-controls="direct-panel" aria-expanded="true">Свернуть</button>
+          <div id="direct-agent-picker" class="button secondary small" hidden>
+            <span id="direct-agent-light" class="traffic-light" role="img"></span>
+            <span id="direct-agent-name" data-user-content></span>
+            <span aria-hidden="true">▾</span>
+            <select id="direct-agent-select" aria-label="Агенты личного чата" aria-describedby="direct-agent-light"></select>
+          </div>
         </header>
-        <div id="direct-tabs" role="group" aria-label="Агенты личного чата"></div>
         <button id="clear-direct" class="text-action" type="button">Очистить экран</button>
         <p id="direct-empty">Нет активных агентов</p>
         <div id="direct" class="chat-stream" role="log" aria-label="Личный чат"></div>
@@ -308,6 +322,13 @@
     <button id="context-delete" class="danger" type="button" role="menuitem"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7l1-3h4l1 3"/></svg> Удалить</button>
   </div>
   <div id="modal-backdrop" class="modal-backdrop hidden" inert>
+    <div id="logout-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="logout-title">
+      <h3 id="logout-title">Выйти из аккаунта?</h3>
+      <div class="modal-actions">
+        <button id="logout-confirm" class="button secondary danger" type="button">Выйти</button>
+        <button class="button secondary close-modal" type="button">Отмена</button>
+      </div>
+    </div>
     <div id="project-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true">
       <div class="modal-head"><h3>Создать проект</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <form id="project-form" class="stack">

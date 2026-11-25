@@ -651,7 +651,7 @@ function setStatus(status) {
   pause.querySelector("strong").textContent = status === "paused" ? "Продолжить" : "Пауза";
   renderProjectControls();
   renderGitPush();
-  if (byId("git-panel").open) loadGitCommits();
+  if (gitCommitsVisible()) loadGitCommits();
   if (enteringDraft) loadSpecItems(project.id, selection).catch((error) => notify(error.message));
 }
 
@@ -663,7 +663,9 @@ function renderProjectControls() {
   }[status] || [];
   byId("spec-panel").classList.toggle("hidden", status !== "draft");
   workCenter.hidden = !project || status === "draft";
-  byId("project-controls").classList.toggle("hidden", !available.length || status === "draft");
+  const hasCycleActions = available.length && status !== "draft";
+  byId("project-controls").classList.toggle("hidden", !hasCycleActions);
+  byId("cycle-empty").hidden = Boolean(hasCycleActions);
   all("[data-action]").forEach((button) => {
     const action = button.dataset.action;
     if (action === "regenerate_plan") return;
@@ -926,7 +928,6 @@ function connect(projectId, current) {
 async function selectProject(item) {
   const current = ++selection;
   closeContextMenu();
-  byId("git-panel").open = false;
   byId("git-commits").replaceChildren();
   if (item) localStorage.setItem(activeProjectKey, item.id);
   else if (token) localStorage.removeItem(activeProjectKey);
@@ -938,6 +939,7 @@ async function selectProject(item) {
     composers[channel].busy = false;
   }
   byId("workspace-controls").open = false;
+  selectWorkspaceTab(workspaceTabs[0]);
   planMode = false;
   deletedAgents.clear();
   project = item;
@@ -960,7 +962,7 @@ async function selectProject(item) {
   renderTerminalTabs();
   byId("agent-grid").replaceChildren();
   selectedAgent = undefined;
-  renderDirectTabs([]);
+  renderDirectAgents([]);
   renderProjectTitle();
   renderProjectModes();
   selectView("team");
@@ -1001,7 +1003,7 @@ async function loadAgents(projectId, current) {
     light.onclick = () => {
       if (!agent.enabled) return;
       selectAgent(agent);
-      renderDirectTabs(agentsInProject);
+      renderDirectAgents(agentsInProject);
       setDirectOpen(true);
       byId("direct-message-input").focus();
     };
@@ -1032,7 +1034,7 @@ async function loadAgents(projectId, current) {
     return card;
   });
   byId("agent-grid").replaceChildren(...(cards.length ? cards : ["В проекте пока нет агентов."]));
-  renderDirectTabs(agents);
+  renderDirectAgents(agents);
   renderTerminalTabs();
   renderProjectControls();
 }
@@ -1050,7 +1052,9 @@ function updateLight(id) {
   retry.disabled = "pending" in retry.dataset || !canRetry;
   retry.title = canRetry ? "Перезапустить" : "Нет сохранённого контекста для перезапуска";
   light.dataset.state = status;
-  light.title = labels[status] || "Состояние неизвестно";
+  const label = labels[status] || "Состояние неизвестно";
+  light.title = label;
+  if (selectedAgent?.id === id) renderDirectAgentLight(status, label);
   light.setAttribute("aria-label", agent.name + " · " + light.title);
   light.innerHTML = status === "asking"
     ? icon('<path d="M9 9a3 3 0 1 1 4 2.83c-.67.24-1 .86-1 1.67M12 17h.01"/>')
@@ -1159,24 +1163,45 @@ function selectAgent(agent) {
   refreshStream("direct", true);
 }
 
-function renderDirectTabs(agents) {
+const directAgentSelect = byId("direct-agent-select");
+
+function renderDirectAgentLight(status, label) {
+  const light = byId("direct-agent-light");
+  light.dataset.state = status;
+  light.title = label;
+  light.setAttribute("aria-label", label);
+}
+
+function showDirectAgent(agent) {
+  selectAgent(agent);
+  byId("direct-agent-name").textContent = agent?.name || "";
+  if (agent) updateLight(agent.id);
+}
+
+function renderDirectAgents(agents) {
   const enabled = agents.filter((agent) => agent.enabled);
   const next = enabled.find((agent) => agent.id === selectedAgent?.id) || enabled[0];
-  selectAgent(next);
-  byId("direct-empty").classList.toggle("hidden", Boolean(next));
-  const tabs = byId("direct-tabs");
-  tabs.replaceChildren(...enabled.map((agent) => {
-    const button = element("button", "tab", agent.name);
-    button.type = "button";
-    button.dataset.userContent = "";
-    button.setAttribute("aria-pressed", String(agent === next));
-    button.onclick = () => {
-      tabs.querySelector('[aria-pressed="true"]')?.setAttribute("aria-pressed", "false");
-      button.setAttribute("aria-pressed", "true");
-      selectAgent(agent);
-    };
-    return button;
+  directAgentSelect.replaceChildren(...enabled.map((agent) => {
+    const option = new Option(agent.name, agent.id);
+    option.dataset.userContent = "";
+    return option;
   }));
+  directAgentSelect.value = next?.id ?? "";
+  byId("direct-agent-picker").hidden = !next;
+  byId("direct-empty").classList.toggle("hidden", Boolean(next));
+  showDirectAgent(next);
+}
+
+directAgentSelect.onchange = () => {
+  showDirectAgent(agentsInProject.find((agent) => agent.enabled && String(agent.id) === directAgentSelect.value));
+};
+
+function projectAcronym(name) {
+  const capitals = name.match(/\p{Lu}/gu) || [];
+  const initials = capitals.length >= 2
+    ? name.match(/[\p{Lu}\p{Nd}]/gu)
+    : (name.match(/[\p{L}\p{Nd}]/gu) || []);
+  return initials.slice(0, 3).join("").toUpperCase() || "—";
 }
 
 let dashboardUsageRequest = 0;
@@ -1205,7 +1230,12 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
     button.className = "project-button";
     button.dataset.id = item.id;
     button.dataset.userContent = "";
-    button.textContent = item.name;
+    button.type = "button";
+    button.title = item.name;
+    button.setAttribute("aria-label", item.name);
+    button.append(element("span", "project-name", item.name),
+      element("span", "project-acronym", projectAcronym(item.name)));
+    button.lastElementChild.setAttribute("aria-hidden", "true");
     button.oncontextmenu = (event) => {
       openContextMenu(event, {kind: "project", item, path: "projects/" + item.id});
     };
@@ -1220,7 +1250,7 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
     };
     return button;
   });
-  byId("project-list").replaceChildren(...(buttons.length ? buttons : ["Нет проектов"]));
+  byId("project-list").replaceChildren(...(buttons.length ? buttons : [element("span", "project-list-empty", "Нет проектов")]));
   const active = preserveSelection && projects.find((item) => item.id === project?.id);
   if (active) {
     project.name = active.name;
@@ -1524,7 +1554,7 @@ async function mutateFromModal(button, target, method, body, onError = (error) =
         if (method === "DELETE") {
           removeAgentHistory(target.item);
           agentsInProject = agentsInProject.filter((agent) => agent.id !== target.item.id);
-          renderDirectTabs(agentsInProject);
+          renderDirectAgents(agentsInProject);
                   renderTerminalTabs();
         }
         await loadAgents(target.projectId, target.current);
@@ -1644,6 +1674,23 @@ document.addEventListener("keydown", (event) => {
   if (!contextMenu.inert) closeContextMenu(true);
   else showModal();
 });
+const sidebarToggle = byId("sidebar-toggle");
+const sidebarRailKey = "loomis-sidebar-rail";
+
+function setSidebarRail(collapsed) {
+  byId("app-screen").classList.toggle("icon-rail", collapsed);
+  sidebarToggle.title = collapsed ? "Развернуть" : "Свернуть в значки";
+  sidebarToggle.setAttribute("aria-label", sidebarToggle.title);
+  sidebarToggle.setAttribute("aria-expanded", String(!collapsed));
+}
+
+setSidebarRail(localStorage.getItem(sidebarRailKey) === "true");
+sidebarToggle.onclick = () => {
+  const collapsed = sidebarToggle.getAttribute("aria-expanded") === "true";
+  setSidebarRail(collapsed);
+  localStorage.setItem(sidebarRailKey, String(collapsed));
+};
+
 byId("hub-mobile-menu").onclick = byId("mobile-menu").onclick = () => document.querySelector(".sidebar").classList.toggle("open");
 
 const agentFields = {
@@ -1777,7 +1824,40 @@ byId("dashboard-button").onclick = () => {
   loadDashboardUsage();
 };
 
+const workspaceControls = byId("workspace-controls");
+const workspaceTabs = [...all(".workspace-tabs .tab")];
 const gitPanel = byId("git-panel");
+
+function gitCommitsVisible() {
+  return workspaceControls.open && !gitPanel.hidden;
+}
+
+function selectWorkspaceTab(activeTab) {
+  for (const tab of workspaceTabs) {
+    const active = tab === activeTab;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+    byId(tab.getAttribute("aria-controls")).hidden = !active;
+  }
+  if (gitCommitsVisible()) loadGitCommits();
+  else if (contextTarget?.kind === "commit") closeContextMenu();
+}
+
+for (const [index, tab] of workspaceTabs.entries()) {
+  tab.onclick = () => selectWorkspaceTab(tab);
+  tab.onkeydown = (event) => {
+    const count = workspaceTabs.length;
+    const next = {
+      ArrowLeft: (index + count - 1) % count, ArrowRight: (index + 1) % count,
+      Home: 0, End: count - 1,
+    }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    selectWorkspaceTab(workspaceTabs[next]);
+    workspaceTabs[next].focus();
+  };
+}
 let gitRequest = 0;
 let gitPushPending = false;
 let gitRollbackPending = false;
@@ -1806,13 +1886,13 @@ byId("git-push").onclick = async () => {
   }
 };
 
-gitPanel.ontoggle = () => {
-  if (gitPanel.open) loadGitCommits();
-  else closeContextMenu();
+workspaceControls.ontoggle = () => {
+  if (gitCommitsVisible()) loadGitCommits();
+  else if (contextTarget?.kind === "commit") closeContextMenu();
 };
 
 async function loadGitCommits() {
-  if (!project || !gitPanel.open) return;
+  if (!project || !gitCommitsVisible()) return;
   const current = selection;
   const path = "projects/" + project.id;
   const request = ++gitRequest;
@@ -1820,7 +1900,7 @@ async function loadGitCommits() {
   if (!list.childElementCount) list.replaceChildren(element("p", "", "Загрузка коммитов…"));
   try {
     const commits = await api(path + "/commits");
-    if (current !== selection || request !== gitRequest || !gitPanel.open) return;
+    if (current !== selection || request !== gitRequest || !gitCommitsVisible()) return;
     if (contextTarget?.kind === "commit") closeContextMenu();
     list.replaceChildren(...(commits.length ? commits.map((commit) => {
       const row = element("div", "git-commit glass-card");
@@ -1833,7 +1913,7 @@ async function loadGitCommits() {
       return row;
     }) : [element("p", "", "Коммитов пока нет.")]));
   } catch (error) {
-    if (current === selection && request === gitRequest) list.replaceChildren(element("p", "", error.message));
+    if (current === selection && request === gitRequest && gitCommitsVisible()) list.replaceChildren(element("p", "", error.message));
   }
 }
 
@@ -2628,7 +2708,8 @@ function showHubPage(open) {
   byId("hub-page").classList.toggle("hidden", !open);
   const button = byId("hub-button");
   button.classList.toggle("shows-projects", open);
-  button.setAttribute("aria-label", open ? "Проекты" : "Хаб нейросетей");
+  button.title = open ? "Проекты" : "Хаб нейросетей";
+  button.setAttribute("aria-label", button.title);
 }
 
 hubSearch.oninput = hubSort.onchange = renderHubModels;
@@ -2719,8 +2800,13 @@ byId("stats-button").onclick = async () => {
   }
 };
 
-byId("logout-button").onclick = async () => {
+byId("logout-button").onclick = () => {
+  if (token) showModal("logout-modal");
+};
+
+byId("logout-confirm").onclick = async () => {
   if (!token) return;
+  showModal();
   token = null;
   applyLanguage("ru");
   githubUsername = null;
