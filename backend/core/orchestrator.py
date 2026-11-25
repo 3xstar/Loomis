@@ -30,7 +30,9 @@ from worker.git_bridge import GitBridge, is_github_repo
 from worker.quality_gate import check_quality
 from worker.sandbox import workspace_file
 
-from .council import autonomy_instruction, periodic_meeting, scheduled_steps, starting_council, validate_steps
+from .council import (
+    autonomy_instruction, is_compact_plan, periodic_meeting, scheduled_steps, starting_council, validate_steps,
+)
 from .github import github_token
 from .model_performance import cache_response, cached_response, model_key, prompt_digest, rank_configs, record_model_result
 
@@ -801,9 +803,6 @@ class Orchestrator:
             await self.notify(project_id, f"{config.name}\n\n{content}", event_type="step_log", config=config,
                               in_team_chat=True)
 
-        async def ask(agent, prompt, context, step_title):
-            return await agent.ask_question(prompt, context, step_title=step_title)
-
         async def synthesize(agent, prompt, context, step_title):
             images = await self.spec_images(project_id)
             return await agent.run_with_spec_images("plan", prompt, context, images=images, step_title=step_title)
@@ -822,7 +821,7 @@ class Orchestrator:
             plan = await starting_council(
                 self.workspace(project), agents, feedback, spec=project.spec_content or "",
                 previous=project.plan_content or "", publish=publish,
-                roster=[item.name for item in configs], synthesize=synthesize, rank=rank_members, ask=ask,
+                roster=[item.name for item in configs], synthesize=synthesize, rank=rank_members,
                 artists=[item.name for item in configs if item.agent_role_type == "image_gen"],
                 autonomy_mode=project.autonomy_mode,
             )
@@ -1087,6 +1086,10 @@ class Orchestrator:
         workspace = self.workspace(project)
         steps = scheduled_steps(project.plan_content or "")
         planned = steps[runtime.plan_step] if steps else None
+        compact = bool(planned and is_compact_plan(project.plan_content or ""))
+        reviewing = compact and runtime.plan_step == 1
+        expected_path = steps[0][1] if reviewing else planned[1] if planned else "-"
+        mode = project.autonomy_mode
         if planned and runtime.handoff is None:
             intended = next(item for item in configs if item.name == planned[0])
             runtime.handoff = (intended.id, "")
@@ -1115,7 +1118,7 @@ class Orchestrator:
         interval = project.meeting_interval_minutes * 60
         if runtime.next_meeting is None:
             runtime.next_meeting = monotonic() + interval
-        if text_agents and runtime.retry_agent is None and monotonic() >= runtime.next_meeting:
+        if not compact and text_agents and runtime.retry_agent is None and monotonic() >= runtime.next_meeting:
             diff = await bridge.diff(runtime.meeting_base) if runtime.meeting_base else ""
             summary = await periodic_meeting(project.context_content or "", [
                 (item.name, ProjectAgent(self, project, item)) for item in text_agents
@@ -1165,16 +1168,16 @@ class Orchestrator:
         clarification = ""
         images = () if is_artist else await self.spec_images(project.id)
         generated = None
-        stage = "подтверждение передачи задачи" if handoff and not receipt_done else "исполнение задачи"
+        confirm_handoff = handoff and not receipt_done and not is_artist and not compact and mode != "autonomous"
+        stage = "подтверждение передачи задачи" if confirm_handoff else "исполнение задачи"
         recent = ""
         complete = False
         committed = False
         rejected_question = False
-        mode = project.autonomy_mode
         question_allowed = mode in {"consultative", "with_questions"}
         try:
             async with asyncio.timeout_at(deadline):
-                if handoff and not receipt_done and not is_artist:
+                if confirm_handoff:
                     receipt = await agent.run(
                         "handoff", f"Ты {config.name}. Кратко сообщи команде, какую работу начнёшь. {task}",
                         f"{handoff}\n{runtime.answer}", timeout=max(0.01, deadline - clock.time()),
@@ -1183,10 +1186,9 @@ class Orchestrator:
                         raise TimeoutError(receipt.message)
                     if receipt.status != "success" or not receipt.message.strip():
                         raise RuntimeError(receipt.message.strip() or "Агент не подтвердил передачу задачи.")
-                    if mode != "autonomous" or "LOOMIS_QUESTION" not in receipt.message:
-                        await self.message(project.id, config.name, "@All", "team_chat",
-                                           f"Принял передачу.\n{receipt.message}", config,
-                                           step_title=STEP_TITLES["handoff"])
+                    await self.message(project.id, config.name, "@All", "team_chat",
+                                       f"Принял передачу.\n{receipt.message}", config,
+                                       step_title=STEP_TITLES["handoff"])
                     receipt_done = True
                 while True:
                     stage = "исполнение задачи"
@@ -1209,6 +1211,9 @@ class Orchestrator:
                                 "Отчёт: до трёх коротких пунктов — Сделано, Файлы, Следующий шаг. "
                                 "Используй утверждённый план из контекста и учитывай более свежие правки пользователя. "
                                 + ("Выполни только текущий шаг очереди. " if planned else "")
+                                + (f" Проверь итоговый результат в `{expected_path}`. " if expected_path != "-" else "")
+                                + (" Это финальная проверка. Проверь файлы и критерии ТЗ за один проход. "
+                                   "Верни краткий вывод. Сохрани содержимое файлов без изменений. " if reviewing else "")
                                 + autonomy_instruction(mode)
                                 + " Добавь отдельную строку LOOMIS_COMMIT: <тип>: <суть изменений>. "
                                 "Используй техническое описание выполненной работы без имён агентов и моделей. "
@@ -1239,7 +1244,7 @@ class Orchestrator:
                             clarification = question[1]
                             break
                         recent = ""
-                        if rejected_question:
+                        if rejected_question and mode != "autonomous":
                             raise RuntimeError("Исполнитель повторно нарушил протокол текущего режима.")
                         rejected_question = True
                         feedback = "Продолжи текущую задачу с разумным допущением и подготовь файлы."
@@ -1248,7 +1253,11 @@ class Orchestrator:
                     self.require_plan(project, configs, approved=True)
                     stage = "проверка результата"
                     pending_result = result.message
-                    if project.test_command and not is_artist and config.provider.lower() not in CLI_PROVIDERS:
+                    if expected_path != "-" and not workspace_file(workspace, expected_path).is_file():
+                        feedback = f"Итоговый файл {expected_path} отсутствует. Создай его и проверь результат."
+                    elif reviewing:
+                        feedback = None
+                    elif project.test_command and not is_artist and config.provider.lower() not in CLI_PROVIDERS:
                         output = await run_workspace_command(workspace, project.test_command)
                         feedback = None if output.startswith("Exit code 0\n") else output
                     else:

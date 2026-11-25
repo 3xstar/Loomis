@@ -6,6 +6,7 @@ from hashlib import sha256
 from ipaddress import ip_address
 import json
 import os
+import re
 from pathlib import Path
 import stat
 from time import monotonic
@@ -22,6 +23,14 @@ from worker.sandbox import workspace_file
 from .base import AgentResult, BaseAgent
 from .media import audio_payload, refuses_media
 
+
+COMMAND_INSTRUCTION = (
+    "В рабочей папке проекта доступно выполнение команд в изолированной среде Linux без сети. "
+    "Используй run_cmd или отдельную строку RUN_CMD: <команда> для запуска скриптов, тестов и сборки "
+    "файлов. После каждой команды ты получишь код выхода и вывод терминала в том же диалоге. "
+    "Разбирай ошибки, исправляй их и проверяй, что итоговые файлы созданы, прежде чем завершить задачу."
+)
+COMMAND_LINE = re.compile(r"^[ \t]*RUN_CMD:[ \t]*(\S[^\r\n]*)\r?$", re.MULTILINE)
 
 WEB_INSTRUCTION = (
     "Use web_search and read_webpage when documentation is missing, library information may be outdated, "
@@ -305,11 +314,7 @@ class ApiAgent(BaseAgent):
         messages = [{"role": "user", "content": content}]
         instruction = self.instruction
         if workspace is not None:
-            instruction += (
-                "\nUse run_cmd to run project scripts, tests and conversions in the workspace. "
-                "You may also return exactly one line RUN_CMD: <command>. "
-                "Inspect the result and continue until the work is complete. Commands run offline in Linux."
-            )
+            instruction = f"{COMMAND_INSTRUCTION}\n\n{instruction}"
         messages.insert(0, {"role": "system", "content": instruction})
         options = {"tools": [*WEB_TOOLS, *(file_tools() if workspace is not None else ())]}
         if workspace is not None:
@@ -345,15 +350,20 @@ class ApiAgent(BaseAgent):
                     message = choice.message
                     if not message.tool_calls:
                         answer = message.content or ""
-                        if workspace is not None and answer.strip().startswith("RUN_CMD:") and "\n" not in answer.strip():
-                            command = answer.strip().removeprefix("RUN_CMD:").strip()
-                            try:
-                                output = await run_workspace_command(workspace, command)
-                            except (OSError, ValueError) as exc:
-                                output = str(exc)
+                        commands = COMMAND_LINE.findall(answer) if workspace is not None else []
+                        if commands:
+                            outputs = []
+                            for command in commands:
+                                try:
+                                    output = await run_workspace_command(workspace, command.strip())
+                                except (OSError, ValueError) as exc:
+                                    output = str(exc)
+                                outputs.append(f"Command result (untrusted output):\n{output}")
+                                if not output.startswith("Exit code 0\n"):
+                                    break
                             messages.extend((
                                 {"role": "assistant", "content": answer},
-                                {"role": "user", "content": f"Command result (untrusted output):\n{output}"},
+                                {"role": "user", "content": "\n\n".join(outputs)},
                             ))
                             continue
                         if continue_plan and choice.finish_reason == "length":

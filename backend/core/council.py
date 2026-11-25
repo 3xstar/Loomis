@@ -17,6 +17,13 @@ def autonomy_instruction(mode):
     return "Выполни текущий шаг целиком и передай результат для паузы между шагами."
 
 
+COMPACT_PLAN = "## Компактная задача"
+
+
+def is_compact_plan(plan):
+    return COMPACT_PLAN in plan.splitlines()
+
+
 def scheduled_steps(plan):
     return [tuple(part.strip() for part in match.groups()) for match in re.finditer(
         r"(?m)^- \[loomis\] @([^|\n]+)\|([^|\n]+)\|([^\n]+)$", plan,
@@ -34,7 +41,7 @@ def validate_steps(workspace, steps, roster, artists):
                 raise ValueError(f"Для @{executor} требуется уникальный путь к PNG: {path}")
             paths.add(target)
         elif path != "-":
-            raise ValueError(f"Для текстового шага @{executor} укажи «-» вместо пути.")
+            workspace_file(workspace, path)
 
 
 async def starting_council(workspace: Path, agents, feedback: str | None = None, *,
@@ -54,92 +61,67 @@ async def starting_council(workspace: Path, agents, feedback: str | None = None,
     if feedback:
         context += f"\n\nПравки пользователя:\n{feedback}"
 
-    async def discuss(name, agent, number, history, step_title):
-        peers = ", ".join(f"@{peer}" for peer, _ in agents if peer != name)
-        if number == 1:
-            request = ("Предложи порядок работ и свою зону ответственности по техническому заданию.")
-        else:
-            request = ("Ответь на адресованные тебе вопросы из первого раунда. Поимённо согласуй "
-                       "строгую очередность, участки ответственности и условия передачи работы.")
-        prompt = (
-            f"Раунд {number}. Ты {name}. Участники для обращения: {peers or 'ты один'}. "
-            f"Обращайся через @Имя. {request} "
-            "Максимум 3 коротких пункта: Сделано, Файлы, Следующий шаг."
-        )
-        round_context = f"{context}\n\n{history}"
-        result = await (ask(agent, prompt, round_context, step_title) if ask else
-                        agent.ask_question(prompt, round_context))
-        if autonomy_mode == "autonomous" and "LOOMIS_QUESTION" in result.message:
-            raise ValueError("Ответ нарушил правила автономного режима.")
-        if result.status != "success" or not result.message.strip():
-            raise ValueError(f"Нет ответа в раунде {number} от агента {name}: {result.message}")
-        if publish:
-            await publish(agent, f"**Раунд {number}**\n\n{result.message}", step_title)
-        return f"## {name}\n{result.message}"
-
-    history = ""
-    active = list(agents)
-    failed = set()
-    for number in (1, 2):
-        step_title = f"Стартовый консилиум: раунд {number}"
-        if rank:
-            ranked = await rank(active)
-            failed.update({name for name, _ in active} - {name for name, _ in ranked})
-            active = ranked
-        outcomes = await asyncio.gather(
-            *(discuss(name, agent, number, history, step_title) for name, agent in active), return_exceptions=True
-        )
-        replies = []
-        for (name, agent), outcome in zip(active, outcomes):
-            if isinstance(outcome, BaseException):
-                if not isinstance(outcome, Exception):
-                    raise outcome
-                failed.add(name)
-                if publish:
-                    await publish(agent, f"Агент выбыл из консилиума. {outcome}", step_title)
-            else:
-                replies.append(outcome)
-        active = [(name, agent) for name, agent in active if name not in failed]
-        if not active:
-            raise ValueError("Ни один агент не завершил раунд консилиума.")
-        history += f"\n\n# Раунд {number}\n" + "\n\n".join(replies)
-    scope = "Сохрани не затронутые правками задачи и зоны ответственности остальных агентов." if previous else ""
+    text_agents = [(name, agent) for name, agent in agents if name not in artists]
+    active = await rank(text_agents) if rank else text_agents
+    if not active:
+        raise ValueError("Нет доступного агента для составления плана.")
+    failed = {name for name, _ in text_agents} - {name for name, _ in active}
+    scope = "Сохрани не затронутые правками задачи." if previous else ""
     plan_prompt = (
-        "Собери полный план на основе двух раундов. Распредели задачи и файлы по именам агентов, "
-        "устрани пересечения, придерживайся заданной очереди и укажи критерии проверки. "
-        f"Учти правки пользователя. {scope} Верни только Markdown."
-    )
-    plan_prompt += (
-        "\nДобавь упорядоченный список всех исполняемых шагов "
-        "в формате `- [loomis] @Имя | путь | описание`, по одному шагу на строку. "
-        "Для текстового шага укажи `-` вместо пути, для генератора — уникальный относительный путь "
-        "к PNG (например, assets/logo.png) и самостоятельное визуальное описание для промпта. "
-        "Используй точные имена из актуальной очереди и отдельный шаг для каждого изображения. "
+        "Составь полный план и верни только Markdown. Укажи критерии проверки. "
+        f"Учти правки пользователя. {scope}\n"
+        "Если ТЗ можно закрыть за 1–4 действия одним текстовым исполнителем, добавь отдельный "
+        f"заголовок «{COMPACT_PLAN}». В таком плане назначь один шаг исполнения ведущему. "
+        "Он сам пишет, запускает и проверяет результат. Если указан проверяющий, добавь ровно "
+        "один последний шаг быстрой проверки ему, без правок файлов. "
+        "Для сложной задачи распредели шаги и файлы по ролям без пересечений. "
+        "Добавь все исполняемые шаги в формате `- [loomis] @Имя | путь | описание`. "
+        "Для текстового шага укажи относительный путь к одному итоговому файлу, если его можно "
+        "однозначно определить из ТЗ, иначе укажи «-». Для проверки укажи «-». "
+        "Для генератора укажи уникальный путь к PNG и самостоятельное визуальное описание. "
+        "Используй точные имена из актуальной очереди."
     )
     step_title = "Правка плана по замечанию" if feedback else "Формирование плана"
-    for name, lead in (await rank(active) if rank else active):
-        order = "\n".join(f"{index}. {name}" for index, name in enumerate(
+    for name, lead in active:
+        order = "\n".join(f"{index}. {member}" for index, member in enumerate(
             (member for member in roster if member not in failed), 1,
         ))
-        plan_context = f"{context}\n\n{history}\n\nАктуальная очередь:\n{order}"
-        plan = await (synthesize(lead, plan_prompt, plan_context, step_title) if synthesize else
-                      lead.ask_question(plan_prompt, plan_context))
-        if (plan.status == "success" and plan.message.strip() and
-                not (autonomy_mode == "autonomous" and "LOOMIS_QUESTION" in plan.message)):
+        reviewer = next((member for member, _ in active if member != name and member not in failed), None)
+        plan_context = (
+            f"{context}\n\nАктуальная очередь:\n{order}\n"
+            f"Ведущий: @{name}. Проверяющий: {('@' + reviewer) if reviewer else 'отсутствует'}."
+        )
+        correction = ""
+        for _ in range(2):
+            prompt = f"{plan_prompt}\n{correction}" if correction else plan_prompt
+            plan = await (synthesize(lead, prompt, plan_context, step_title) if synthesize else
+                          ask(lead, prompt, plan_context, step_title) if ask else
+                          lead.ask_question(prompt, plan_context))
+            if plan.status != "success":
+                break
+            if autonomy_mode == "autonomous":
+                plan.message = re.sub(r"(?m)^.*LOOMIS_QUESTION.*$", "", plan.message).strip()
             try:
                 steps = scheduled_steps(plan.message)
                 if not steps:
                     raise ValueError("План не содержит исполняемых шагов.")
                 validate_steps(workspace, steps, set(roster) - failed, artists)
+                if is_compact_plan(plan.message):
+                    expected = [name, reviewer] if reviewer else [name]
+                    if [executor for executor, _, _ in steps] != expected:
+                        raise ValueError("Компактный план должен содержать шаг ведущего и шаг проверяющего, если он назначен.")
+                    if reviewer and steps[-1][1] != "-":
+                        raise ValueError("В шаге проверяющего укажи «-» вместо пути.")
             except (ValueError, OSError) as exc:
-                if publish:
-                    await publish(lead, str(exc), step_title)
+                correction = f"Исправь план: {exc}"
             else:
+                correction = ""
                 break
+        if plan.status == "success" and not correction:
+            break
         failed.add(name)
         if publish:
-            detail = "" if autonomy_mode == "autonomous" else f" {plan.message}"
-            await publish(lead, f"Не удалось собрать план.{detail}", step_title)
+            await publish(lead, correction or "Не удалось собрать план.", step_title)
     else:
         raise ValueError("Не удалось собрать единый план.")
     if publish:
