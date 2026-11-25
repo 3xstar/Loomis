@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, computed_field, field_serializer
+from pydantic import BeforeValidator, BaseModel, ConfigDict, Field, StringConstraints, ValidationError, computed_field, field_serializer
 from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,7 +35,8 @@ GitRepoURL = Annotated[str, StringConstraints(strip_whitespace=True, min_length=
                                                pattern=r"^[^\x00-\x1f\x7f]+$")]
 AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=100, pattern=r"^[^\r\n]+$")]
 ProviderName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
-AutonomyMode = Literal["autonomous", "consultative", "step_by_step"]
+AutonomyMode = Annotated[Literal["autonomous", "consultative", "step_by_step"],
+                         BeforeValidator(lambda value: "consultative" if value == "with_questions" else value)]
 FailoverMode = Literal["auto", "manual"]
 CommitMode = Literal["sequential", "single_preset"]
 AutoPushMode = Literal["after_each", "manual_finish"]
@@ -768,9 +769,9 @@ async def agent_question(project: OwnedProject, agent: OwnedAgent, data: ChatMes
 @router.post("/{project_id}/council/feedback")
 async def council_feedback(project: OwnedProject, data: CouncilFeedback):
     try:
-        return {"status": await orchestrator.action(
-            project.id, "regenerate_plan", feedback=data.feedback, target_agent_ids=data.target_agent_ids
-        )}
+        responses = await orchestrator.chat(project.id, data.feedback, media=None)
+        updated, _ = await orchestrator.load(project.id)
+        return {"status": updated.status, "responses": responses}
     except (ValueError, OSError, RuntimeError) as exc:
         raise HTTPException(409, str(exc)) from exc
 

@@ -23,14 +23,14 @@ from backend.bot.i18n import bot_language, localize_markup, translate
 from backend.database.db import async_session_factory
 from backend.database.models import AgentConfig, AgentMessage, CommitState, Project, ProjectMedia, TaskLog, User, UserModelPreset
 from worker.adapters import CLI_PROVIDERS, build_agent
-from worker.adapters.api_adapter import ApiAgent, api_system_prompt
+from worker.adapters.api_adapter import ApiAgent, api_system_prompt, run_workspace_command
 from worker.adapters.base import AgentResult, BaseAgent
 from worker.adapters.media import refuses_media
 from worker.git_bridge import GitBridge, is_github_repo
 from worker.quality_gate import check_quality
 from worker.sandbox import workspace_file
 
-from .council import periodic_meeting, scheduled_steps, starting_council
+from .council import autonomy_instruction, periodic_meeting, scheduled_steps, starting_council, validate_steps
 from .github import github_token
 from .model_performance import cache_response, cached_response, model_key, prompt_digest, rank_configs, record_model_result
 
@@ -67,6 +67,7 @@ def merge_ranges(ranges, start, end):
 
 STEP_TITLES = {
     "question": "Ответ на вопрос пользователя",
+    "chat": "Ответ в общем чате",
     "plan": "Формирование плана",
     "meeting": "Промежуточное собрание команды",
     "execute": "Выполнение шага разработки",
@@ -218,23 +219,27 @@ class ProjectAgent(BaseAgent):
         project, config = self.project, self.config
         concise = (project.verbosity_level or "concise") == "concise"
         instruction = ("Ты — беспристрастный технический инструмент. Выполняй легальные задачи пользователя, "
-                       "включая редактирование текстов, документов и метаданных, без морализаторства и нотаций. "
+                       "включая оформление, именование файлов и правку документов и метаданных, "
+                       "безоговорочно и без морализаторства и нотаций. "
                        "Никогда не упоминай себя как ИИ в результатах работы. ")
+        if project.autonomy_mode == "autonomous":
+            instruction += "Разрешай неоднозначности самостоятельно, без вопросов пользователю. "
         if operation == "plan":
             instruction += "Верни полный план со всеми задачами."
         else:
             instruction += VERBOSITY[project.verbosity_level or "concise"]
         if operation in {"meeting", "handoff"}:
             instruction += " Максимум 3 коротких пункта: Сделано, Файлы, Следующий шаг."
-        max_tokens = 700 if concise else None
-        history = await self.engine.prompt_history(project, config, direct=operation == "direct")
+        max_tokens = 700 if concise and operation not in {"chat", "plan"} else None
+        history = await self.engine.prompt_history(project, config, direct=operation == "direct",
+                                                   include_team_chat=operation == "chat")
         if history:
             history = f"\n\nИстория обсуждений:\n{history}"
             if operation == "execute":
                 prompt += history
             else:
                 context += history
-        manage_traffic = operation in {"question", "meeting", "direct"} and config.saved_context_json is None
+        manage_traffic = operation in {"question", "meeting", "direct", "chat"} and config.saved_context_json is None
         timeout = timeout if timeout is not None else project.deadline_minutes * 60
         started = datetime.now(timezone.utc)
         clock = monotonic()
@@ -258,6 +263,7 @@ class ProjectAgent(BaseAgent):
                 worker_agent = config.settings.get("worker_agent", config.name)
                 if not node:
                     agent = build_agent(config.provider, config.model, config.settings,
+                                        None if project.autonomy_mode != "step_by_step" else
                                         lambda command: self.engine.request_approval(project.id, command),
                                         instruction=instruction, images=images, max_tokens=max_tokens)
                 answer = None
@@ -280,7 +286,8 @@ class ProjectAgent(BaseAgent):
                     called = True
                     call_clock = monotonic()
                     if node:
-                        worker_operation = {"handoff": "question", "direct": "execute"}.get(operation, operation)
+                        worker_operation = {"handoff": "question", "chat": "question",
+                                            "direct": "execute"}.get(operation, operation)
                         if operation == "direct":
                             prompt = f"{context}\n\n{prompt}"
                         result = await workers.dispatch(node, worker_agent,
@@ -330,10 +337,14 @@ class ProjectAgent(BaseAgent):
                             minutes=max(1, int(config.settings.get("cooldown_minutes", 5)))
                         )
                 await session.commit()
-            await self.engine.message(
-                project.id, config.name, "@All", "terminal", result.terminal or result.message, config,
-                step_title=step_title or STEP_TITLES[operation],
-            )
+            terminal = result.terminal or result.message
+            if operation != "chat" and not (
+                project.autonomy_mode == "autonomous" and "LOOMIS_QUESTION" in terminal
+            ):
+                await self.engine.message(
+                    project.id, config.name, "@All", "terminal", terminal, config,
+                    step_title=step_title or STEP_TITLES[operation],
+                )
         if manage_traffic:
             await self.engine.traffic(
                 config, "waiting" if result.status in {"success", "unsupported_media"} else "error",
@@ -425,7 +436,7 @@ class Orchestrator:
                 ))
         return rows[0].media_id
 
-    async def prompt_history(self, project, config, *, direct=False):
+    async def prompt_history(self, project, config, *, direct=False, include_team_chat=False):
         query = select(AgentMessage).where(
             AgentMessage.project_id == project.id, history_visible(project, AgentMessage),
         )
@@ -433,6 +444,9 @@ class Orchestrator:
             query = query.where(AgentMessage.channel == "direct", AgentMessage.agent_id == config.id)
         else:
             query = query.where(AgentMessage.channel == "team_chat").limit(40)
+            if not include_team_chat:
+                query = query.where(or_(AgentMessage.step_title.is_(None),
+                                        AgentMessage.step_title != STEP_TITLES["chat"]))
         async with async_session_factory() as session:
             rows = list(await session.scalars(query.order_by(AgentMessage.id.desc())))
         if direct:
@@ -566,6 +580,10 @@ class Orchestrator:
                     bot_language.reset(locale)
 
     async def request_approval(self, project_id, command, *, kind="command", config=None):
+        if kind == "command":
+            project, _ = await self.load(project_id)
+            if project.autonomy_mode != "step_by_step":
+                return False
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
         key = uuid4().hex
@@ -607,7 +625,7 @@ class Orchestrator:
             runtime.restore(project)
             config = next((item for item in configs if item.id == agent_id), None)
             saved = config.saved_context_json if config else None
-            if not saved or config.traffic_state != "error" or project.status not in {"paused", "running"}:
+            if not saved or config.traffic_state != "error" or project.status not in {"paused", "running", "error"}:
                 raise ValueError("У агента нет прерванного шага для повтора.")
             digest = self.require_plan(project, configs, approved=True)
             if saved["plan_digest"] != digest or saved.get("plan_step", runtime.plan_step) != runtime.plan_step:
@@ -636,6 +654,10 @@ class Orchestrator:
             return "running"
 
     async def action(self, project_id, action, *, feedback=None, target_agent_ids=None):
+        if action == "regenerate_plan" and feedback is not None:
+            await self.chat(project_id, feedback)
+            project, _ = await self.load(project_id)
+            return project.status
         runtime = self.runtime(project_id)
         async with runtime.boundary:
             project, configs = await self.load(project_id)
@@ -678,7 +700,10 @@ class Orchestrator:
                         await self.traffic(config, "waiting")
                 self.require_plan(project, configs, approved=False)
             elif action == "resume" and project.status == "paused":
-                if runtime.pending_question is not None:
+                if project.autonomy_mode == "autonomous":
+                    runtime.pending_question = None
+                    await self.cancel_gate(runtime)
+                elif runtime.pending_question is not None:
                     raise ValueError("Ответьте агенту в личном чате.")
                 if runtime.gate and not runtime.gate.done():
                     raise ValueError("Подтвердите действие в чате.")
@@ -710,15 +735,12 @@ class Orchestrator:
                 return "paused"
             else:
                 raise ValueError("Действие недоступно в текущем статусе.")
-            if runtime.pending_failover and project.failover_mode == "manual":
+            if (runtime.pending_failover and project.failover_mode == "manual"
+                    and project.autonomy_mode == "step_by_step"):
                 return await self.pause_for_approval(
                     project, runtime, runtime.pending_failover, "failover"
                 )
             runtime.pending_failover = None
-            if project.autonomy_mode == "step_by_step":
-                return await self.pause_for_approval(
-                    project, runtime, "Выполнить следующий шаг плана?", "step", digest=digest
-                )
             return await self.start_running(project_id, runtime, digest)
 
     async def start_running(self, project_id, runtime, digest):
@@ -766,8 +788,14 @@ class Orchestrator:
         return selected
 
     async def plan(self, project_id, project, configs, selected, feedback, targeted):
+        lead = None
+
         async def publish(agent, content, step_title):
+            nonlocal lead
+            if project.autonomy_mode == "autonomous" and "LOOMIS_QUESTION" in content:
+                return
             config = agent.config
+            lead = config.id
             await self.message(project_id, config.name, "@All", "team_chat", content, config,
                                mirror="direct" if targeted else None, step_title=step_title)
             await self.notify(project_id, f"{config.name}\n\n{content}", event_type="step_log", config=config,
@@ -796,9 +824,16 @@ class Orchestrator:
                 previous=project.plan_content or "", publish=publish,
                 roster=[item.name for item in configs], synthesize=synthesize, rank=rank_members, ask=ask,
                 artists=[item.name for item in configs if item.agent_role_type == "image_gen"],
+                autonomy_mode=project.autonomy_mode,
             )
             project.plan_content = plan
-            await self.status(project_id, "awaiting_approval", plan_content=plan, plan_digest=self.plan_digest(project))
+            runtime = self.runtime(project_id)
+            runtime.last_agent = lead or 0
+            await self.status(project_id, "awaiting_approval", plan_content=plan, plan_digest=self.plan_digest(project),
+                              turn_state=runtime.snapshot())
+            if project.autonomy_mode == "autonomous":
+                await self.action(project_id, "approve")
+                return
             from backend.bot.keyboards import project_keyboard
 
             project.status = "awaiting_approval"
@@ -809,6 +844,7 @@ class Orchestrator:
 
     async def chat(self, project_id, question, target_agent_ids=None, *, media=None):
         runtime = self.runtime(project_id)
+        auto_approve = False
         async with runtime.boundary:
             project, configs = await self.load(project_id)
             if project.status in {"draft", "council"}:
@@ -818,18 +854,84 @@ class Orchestrator:
             if not candidates:
                 raise ValueError("Добавьте универсального агента для общего чата.")
             config = next((item for item in candidates if item.id == runtime.last_agent), candidates[0])
-            await self.message(project_id, "User", f"@{config.name}", "team_chat", question, config, media=media)
+            await self.message(project_id, "User", f"@{config.name}", "team_chat", question, config, media=media,
+                               step_title=STEP_TITLES["chat"])
             context = self.context(project)
-            context += ("\n\nТы координируешь работу команды. Ответь на сообщение пользователя по существу "
-                        "и, если нужны действия команды, укажи ближайший шаг и исполнителя.")
-            response = await self.ask(project, config, question, context, media)
+            context += (
+                "\n\nОтветь пользователю по существу максимально кратко. Обычный вопрос требует "
+                "только ответа. Если сообщение меняет ТЗ, формат или задачи, после ответа добавь "
+                "отдельную строку LOOMIS_PLAN, затем полный обновлённый план Markdown, затем строку "
+                "LOOMIS_HANDOFF и краткую сводку для ближайшего исполнителя. "
+                f"Сохрани первые {runtime.plan_step} уже выполненных шагов очереди буквально. "
+                "Сохрани формат очереди и используй только доступных исполнителей: "
+                + ", ".join(item.name for item in configs)
+            )
+            if project.autonomy_mode == "autonomous":
+                context += "\nПри обсуждении проекта не запрашивай у пользователя решений о ходе работ."
+            response = await self.ask(project, config, question, context, media, team_chat=True)
+            reply, marker, update_text = response.message.replace("\r\n", "\n").partition("\nLOOMIS_PLAN\n")
+            if marker and response.status == "success":
+                revised, separator, summary = update_text.partition("\nLOOMIS_HANDOFF\n")
+                revised, summary = revised.strip(), summary.strip()
+                old_plan = project.plan_content or ""
+                old_steps = scheduled_steps(old_plan)
+                steps = scheduled_steps(revised)
+                by_name = {item.name: item for item in configs}
+                complete_prefix = runtime.plan_step
+                try:
+                    validate_steps(self.workspace(project), steps, by_name, {
+                        item.name for item in configs if item.agent_role_type == "image_gen"
+                    })
+                    valid = True
+                except (ValueError, OSError):
+                    valid = False
+                if (not separator or not revised or not summary or revised == old_plan.strip()
+                        or ((old_steps or not old_plan) and not steps)
+                        or (steps and (len(steps) <= complete_prefix
+                                       or steps[:complete_prefix] != old_steps[:complete_prefix]))
+                        or not valid):
+                    reply = "Не удалось применить правки к плану. Сообщение сохранено в чате."
+                else:
+                    previously_approved = (
+                        project.approved_plan_digest is not None
+                        and project.approved_plan_digest == project.plan_digest == self.plan_digest(project)
+                    )
+                    project.plan_content = revised
+                    digest = self.plan_digest(project)
+                    runtime.answer = f"Уточнение пользователя: {question}\nСледующее действие: {summary}"
+                    runtime.retry_agent = None
+                    if steps:
+                        runtime.handoff = (by_name[steps[complete_prefix][0]].id, "")
+                    elif runtime.handoff is None:
+                        runtime.handoff = (config.id, "")
+                    status = project.status
+                    if status == "planning":
+                        status = "awaiting_approval"
+                        auto_approve = project.autonomy_mode == "autonomous"
+                    elif status == "completed":
+                        status = "paused"
+                    resume = previously_approved and (
+                        project.status == "completed" and project.autonomy_mode != "step_by_step"
+                        or runtime.pending_question is not None
+                    )
+                    if runtime.pending_question is not None:
+                        asking = next((item for item in configs if item.id == runtime.pending_question), None)
+                        if asking:
+                            await self.traffic(asking, "waiting")
+                        runtime.pending_question = None
+                    await self.status(project_id, status, plan_content=revised, plan_digest=digest,
+                                      approved_plan_digest=digest if previously_approved else None,
+                                      turn_state=runtime.snapshot())
+                    if resume:
+                        await self.start_running(project_id, runtime, digest)
+            response.message = re.sub(r"(?m)^.*LOOMIS_QUESTION.*$", "", reply).strip()
             media_id = await self.message(project_id, config.name, "@User", "team_chat", response.message, config,
-                                          step_title=STEP_TITLES["question"])
-            if response.status == "success" and project.status in {"running", "paused"}:
-                runtime.answer += f"\nСообщение пользователя: {question}\nКоординация: {response.message}"
-                await self.save_turn(project_id, runtime)
-            return [{"media_id": media_id, "agent_id": config.id, "status": response.status,
-                     "message": response.message, "tokens": response.tokens}]
+                                          step_title=STEP_TITLES["chat"])
+            responses = [{"media_id": media_id, "agent_id": config.id, "status": response.status,
+                          "message": response.message, "tokens": response.tokens}]
+        if auto_approve:
+            await self.action(project_id, "approve")
+        return responses
 
     async def generate_image(self, project, config, prompt, path):
         await image_agent(config, self.workspace(project)).generate_image(prompt, path)
@@ -855,9 +957,10 @@ class Orchestrator:
         except (OSError, ValueError, RuntimeError) as exc:
             return AgentResult("error", str(exc)), None
 
-    async def ask(self, project, config, question, context, media=None, *, workspace=None, transport_ref=None):
+    async def ask(self, project, config, question, context, media=None, *, workspace=None, transport_ref=None,
+                  team_chat=False):
         agent = ProjectAgent(self, project, config)
-        operation = "direct" if workspace is not None else "question"
+        operation = "chat" if team_chat else ("direct" if workspace is not None else "question")
         images = [(media.mime_type, media.data)] if media else ()
         result = await agent.run(operation, question, context, workspace=workspace, images=images,
                                  transport_ref=transport_ref)
@@ -934,7 +1037,11 @@ class Orchestrator:
                     runtime.answer += f"\nОтвет пользователя: {question}"
                     runtime.pending_question = None
                     await self.traffic(config, "waiting")
-                    await self.save_turn(project_id, runtime)
+                    if project.autonomy_mode in {"with_questions", "consultative"}:
+                        digest = self.require_plan(project, configs, approved=True)
+                        await self.start_running(project_id, runtime, digest)
+                    else:
+                        await self.save_turn(project_id, runtime)
                 media_id = await self.message(project_id, config.name, "@User", "direct", result.message, config,
                                    step_title=STEP_TITLES["question"], media=generated)
                 return {"status": result.status, "message": result.message, "tokens": result.tokens, "media_id": media_id}
@@ -965,9 +1072,12 @@ class Orchestrator:
                 await asyncio.sleep(0.1)
         except Exception as exc:
             runtime.ready.clear()
-            await self.status(project_id, "paused", turn_state=runtime.snapshot())
-            await self.message(project_id, "Loomis", "@All", "team_chat", f"Разработка приостановлена. {exc}")
-            await self.notify(project_id, f"Разработка приостановлена. {exc}", critical=True, in_team_chat=True)
+            project, _ = await self.load(project_id)
+            autonomous = project.autonomy_mode == "autonomous"
+            await self.status(project_id, "error" if autonomous else "paused", turn_state=runtime.snapshot())
+            report = f"{'Ошибка разработки' if autonomous else 'Разработка приостановлена'}. {exc}"
+            await self.message(project_id, "Loomis", "@All", "team_chat", report)
+            await self.notify(project_id, report, critical=True, in_team_chat=True)
 
     async def turn(self, project, configs, runtime):
         now = datetime.now(timezone.utc)
@@ -975,8 +1085,7 @@ class Orchestrator:
             item for item in configs if item.traffic_state != "error" and outside_cooldown(item, now)
         ])
         workspace = self.workspace(project)
-        artists = {item.name for item in configs if item.agent_role_type == "image_gen"}
-        steps = scheduled_steps(project.plan_content or "", artists)
+        steps = scheduled_steps(project.plan_content or "")
         planned = steps[runtime.plan_step] if steps else None
         if planned and runtime.handoff is None:
             intended = next(item for item in configs if item.name == planned[0])
@@ -994,8 +1103,9 @@ class Orchestrator:
             config = text_agents[0] if text_agents else None
         if config is None:
             runtime.ready.clear()
-            await self.status(project.id, "paused", turn_state=runtime.snapshot())
-            await self.notify(project.id, "Нет доступного исполнителя. Проверьте агентов перед возобновлением.", critical=True)
+            await self.status(project.id, "error" if project.autonomy_mode == "autonomous" else "paused",
+                              turn_state=runtime.snapshot())
+            await self.notify(project.id, "Нет доступного исполнителя.", critical=True)
             return
         is_artist = config.agent_role_type == "image_gen"
         if is_artist and (not planned or planned[0] != config.name):
@@ -1009,7 +1119,7 @@ class Orchestrator:
             diff = await bridge.diff(runtime.meeting_base) if runtime.meeting_base else ""
             summary = await periodic_meeting(project.context_content or "", [
                 (item.name, ProjectAgent(self, project, item)) for item in text_agents
-            ], diff, config.name)
+            ], diff, config.name, autonomous=project.autonomy_mode == "autonomous")
             project.context_content = summary
             async with async_session_factory() as session:
                 await session.execute(update(Project).where(Project.id == project.id).values(context_content=summary))
@@ -1059,6 +1169,9 @@ class Orchestrator:
         recent = ""
         complete = False
         committed = False
+        rejected_question = False
+        mode = project.autonomy_mode
+        question_allowed = mode in {"consultative", "with_questions"}
         try:
             async with asyncio.timeout_at(deadline):
                 if handoff and not receipt_done and not is_artist:
@@ -1070,9 +1183,10 @@ class Orchestrator:
                         raise TimeoutError(receipt.message)
                     if receipt.status != "success" or not receipt.message.strip():
                         raise RuntimeError(receipt.message.strip() or "Агент не подтвердил передачу задачи.")
-                    await self.message(project.id, config.name, "@All", "team_chat",
-                                       f"Принял передачу.\n{receipt.message}", config,
-                                       step_title=STEP_TITLES["handoff"])
+                    if mode != "autonomous" or "LOOMIS_QUESTION" not in receipt.message:
+                        await self.message(project.id, config.name, "@All", "team_chat",
+                                           f"Принял передачу.\n{receipt.message}", config,
+                                           step_title=STEP_TITLES["handoff"])
                     receipt_done = True
                 while True:
                     stage = "исполнение задачи"
@@ -1093,11 +1207,13 @@ class Orchestrator:
                                 "execute", f"{context}\n\nТы {config.name}. {task}\n"
                                 f"{handoff}\n{runtime.answer}\n{correction}{retry_notes}\n"
                                 "Отчёт: до трёх коротких пунктов — Сделано, Файлы, Следующий шаг. "
-                                "Используй утверждённый план из контекста. "
+                                "Используй утверждённый план из контекста и учитывай более свежие правки пользователя. "
                                 + ("Выполни только текущий шаг очереди. " if planned else "")
-                                + ("При неоднозначных требованиях также используй LOOMIS_QUESTION. "
-                                   if project.autonomy_mode == "consultative" else "")
-                                + "Если данных не хватает для продолжения, верни только LOOMIS_QUESTION: <вопрос>. "
+                                + autonomy_instruction(mode)
+                                + " Добавь отдельную строку LOOMIS_COMMIT: <тип>: <суть изменений>. "
+                                "Используй техническое описание выполненной работы без имён агентов и моделей. "
+                                "Если из-за технической ошибки невозможно собрать требуемый результат, "
+                                "верни отдельную строку LOOMIS_BLOCKED: <причина>. "
                                 "Если все задачи плана завершены, верни отдельную строку LOOMIS_COMPLETE.",
                                 workspace=workspace, timeout=max(0.01, deadline - clock.time()), images=images,
                                 transport_ref=transport_ref, step_title="Исправление ошибок проверки" if feedback else None,
@@ -1112,17 +1228,34 @@ class Orchestrator:
                     if result.status != "success":
                         raise RuntimeError(result.message or result.status)
                     response = result.message.strip()
-                    if response.startswith("LOOMIS_QUESTION:"):
-                        clarification = response.removeprefix("LOOMIS_QUESTION:").strip()
-                        if clarification:
+                    if not response:
+                        raise RuntimeError("Исполнитель не вернул результат.")
+                    blocked = re.search(r"(?m)^LOOMIS_BLOCKED:[ \t]*(.+)$", response)
+                    if blocked:
+                        raise RuntimeError(blocked[1])
+                    if "LOOMIS_QUESTION" in response:
+                        question = re.fullmatch(r"LOOMIS_QUESTION:[ \t]*(\S[^\r\n]*)", response)
+                        if question_allowed and question:
+                            clarification = question[1]
                             break
+                        recent = ""
+                        if rejected_question:
+                            raise RuntimeError("Исполнитель повторно нарушил протокол текущего режима.")
+                        rejected_question = True
+                        feedback = "Продолжи текущую задачу с разумным допущением и подготовь файлы."
+                        pending_result = None
+                        continue
                     self.require_plan(project, configs, approved=True)
                     stage = "проверка результата"
                     pending_result = result.message
-                    feedback = None if is_artist else await check_quality(
-                        project.test_command, workspace, max(0.01, deadline - clock.time()),
-                        lambda command: self.request_approval(project.id, command),
-                    )
+                    if project.test_command and not is_artist and config.provider.lower() not in CLI_PROVIDERS:
+                        output = await run_workspace_command(workspace, project.test_command)
+                        feedback = None if output.startswith("Exit code 0\n") else output
+                    else:
+                        feedback = None if is_artist else await check_quality(
+                            project.test_command, workspace, max(0.01, deadline - clock.time()),
+                            None if mode != "step_by_step" else lambda command: self.request_approval(project.id, command),
+                        )
                     if feedback is None:
                         stage = "сохранение результата"
                         await bridge.clean_project_metadata()
@@ -1131,7 +1264,9 @@ class Orchestrator:
                         complete = (runtime.plan_step + 1 == len(steps) if planned else
                                     "LOOMIS_COMPLETE" in result.message.splitlines())
                         if project.commit_mode == "sequential" or complete:
-                            committed = await bridge.commit()
+                            subject = re.search(r"(?m)^LOOMIS_COMMIT:[ \t]*(.+)$", result.message)
+                            names = {name for item in configs for name in (item.name, item.model, item.provider)}
+                            committed = await bridge.commit(subject[1] if subject else None, forbidden_names=names)
                         break
                     pending_result = None
                     await self.message(project.id, config.name, "@All", "terminal", feedback, config,
@@ -1188,8 +1323,9 @@ class Orchestrator:
             next_config = next((item for item in ranked if item.id not in runtime.successful_agents),
                                ranked[0] if ranked else config)
         target = "@All" if complete else f"@{next_config.name}"
+        visible_result = re.sub(r"(?m)^LOOMIS_(?:COMMIT:.*|COMPLETE)\s*$", "", result.message)
         report = (
-            f"Сделано: {' '.join(result.message.split())[:240]}\n"
+            f"Сделано: {' '.join(visible_result.split())[:240]}\n"
             f"Файлы: {', '.join(changes.splitlines()[:6]) or 'Нет изменений'}\n"
             f"Следующий шаг: {'Завершено' if complete else target}"
         )
@@ -1210,7 +1346,8 @@ class Orchestrator:
             await self.status(project.id, "completed", turn_state=runtime.snapshot())
             return
         if project.autonomy_mode == "step_by_step":
-            await self.pause_for_approval(project, runtime, f"Следующий шаг: @{next_config.name}.", "step", next_config)
+            runtime.ready.clear()
+            await self.status(project.id, "paused", turn_state=runtime.snapshot())
         else:
             await self.save_turn(project.id, runtime)
 
@@ -1441,7 +1578,8 @@ class Orchestrator:
         if successor is None:
             runtime.handoff = (broken.id, f"{instruction}\n{diagnostic}\n{handoff}\n{partial_diff}")
             runtime.ready.clear()
-            await self.status(project.id, "paused", turn_state=runtime.snapshot())
+            await self.status(project.id, "error" if project.autonomy_mode == "autonomous" else "paused",
+                              turn_state=runtime.snapshot())
             report = f"{broken.name}: {error}\n{diagnostic}\nНет доступного агента для передачи задачи."
             await self.message(project.id, broken.name, "@All", "team_chat", report, broken)
             await self.notify(project.id, report, event_type="step_log", config=broken, critical=True,
@@ -1454,7 +1592,7 @@ class Orchestrator:
         if partial_diff:
             context += f"\n\nGit diff на момент сбоя:\n{partial_diff}"
         runtime.handoff = (successor.id, context)
-        if project.failover_mode == "manual":
+        if project.failover_mode == "manual" and project.autonomy_mode == "step_by_step":
             runtime.pending_failover = f"{broken.name}: {error}\nПередать задачу @{successor.name}?"
             await self.pause_for_approval(project, runtime, runtime.pending_failover, "failover", broken)
         else:

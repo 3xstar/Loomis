@@ -7,6 +7,7 @@ from ipaddress import ip_address
 import json
 import os
 from pathlib import Path
+import stat
 from time import monotonic
 from uuid import uuid4
 from urllib.parse import urlsplit
@@ -41,6 +42,69 @@ WEB_TOOLS = [
     )
 ]
 SEARCH_CACHE = OrderedDict()
+
+
+async def run_workspace_command(workspace: Path, command: str) -> str:
+    if not isinstance(command, str) or not command.strip() or len(command) > 16000 or "\0" in command:
+        raise ValueError("Expected one nonempty shell command up to 16000 characters")
+    root = workspace.resolve(strict=True)
+    if "," in str(root) or root == Path(root.anchor):
+        raise ValueError("Unsupported path for the command workspace")
+    for directory, folders, files in os.walk(root):
+        for name in folders + files:
+            path = Path(directory) / name
+            info = path.lstat()
+            if (stat.S_ISLNK(info.st_mode) or
+                getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or
+                (not stat.S_ISDIR(info.st_mode) and
+                 (not stat.S_ISREG(info.st_mode) or info.st_nlink > 1))):
+                raise PermissionError(f"Unsupported file or link in the command workspace: {path.relative_to(root)}")
+            if name.casefold() == ".git":
+                if path != root / ".git" or name not in folders:
+                    raise PermissionError("Command execution requires a standalone Git checkout")
+                folders.remove(name)
+
+    image = os.getenv("LOOMIS_COMMAND_IMAGE", "python:3.12-slim")
+    if image.startswith("-"):
+        raise ValueError("Invalid command image")
+    name = f"loomis-command-{uuid4().hex}"
+    user = ("65534:65534" if os.name == "nt" else f"{os.geteuid()}:{os.getegid()}")
+    process = await asyncio.create_subprocess_exec(
+        "docker", "run", "--rm", "--name", name, "--pull", "never",
+        "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+        "--user", user, "--pids-limit", "64", "--memory", "512m", "--cpus", "1",
+        "--mount", f"type=bind,source={root},target=/workspace,bind-recursive=disabled",
+        "--tmpfs", "/workspace/.git:ro,nosuid,nodev,noexec", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
+        "--env", "HOME=/tmp", "--workdir", "/workspace", "--entrypoint", "/bin/sh", image, "-c", command,
+        cwd=root, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    output = bytearray()
+    try:
+        async with asyncio.timeout(60):
+            while chunk := await process.stdout.read(8192):
+                output.extend(chunk[:max(0, 16000 - len(output))])
+            code = await process.wait()
+            return f"Exit code {code}\n{output.decode(errors='replace')}"
+    except (TimeoutError, asyncio.CancelledError):
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        cleanup = await asyncio.create_subprocess_exec(
+            "docker", "rm", "-f", name,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(cleanup.wait(), 5)
+        except TimeoutError:
+            cleanup.kill()
+            await cleanup.wait()
+        await process.communicate()
+        if asyncio.current_task().cancelling():
+            raise
+        return "Command timed out after 60 seconds"
 
 
 async def web_search(query: str, max_results: int = 5):
@@ -239,8 +303,21 @@ class ApiAgent(BaseAgent):
                     url = f"data:{mime_type};base64,{b64encode(data).decode('ascii')}"
                     content.append({"type": "image_url", "image_url": {"url": url}})
         messages = [{"role": "user", "content": content}]
-        messages.insert(0, {"role": "system", "content": self.instruction})
+        instruction = self.instruction
+        if workspace is not None:
+            instruction += (
+                "\nUse run_cmd to run project scripts, tests and conversions in the workspace. "
+                "You may also return exactly one line RUN_CMD: <command>. "
+                "Inspect the result and continue until the work is complete. Commands run offline in Linux."
+            )
+        messages.insert(0, {"role": "system", "content": instruction})
         options = {"tools": [*WEB_TOOLS, *(file_tools() if workspace is not None else ())]}
+        if workspace is not None:
+            options["tools"].append({"type": "function", "function": {
+                "name": "run_cmd", "description": "Run a shell command in the isolated project workspace.",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}},
+                               "required": ["command"], "additionalProperties": False},
+            }})
         if self.max_tokens is not None:
             options["max_tokens"] = self.max_tokens
         if workspace is None and self.temperature is not None:
@@ -268,6 +345,17 @@ class ApiAgent(BaseAgent):
                     message = choice.message
                     if not message.tool_calls:
                         answer = message.content or ""
+                        if workspace is not None and answer.strip().startswith("RUN_CMD:") and "\n" not in answer.strip():
+                            command = answer.strip().removeprefix("RUN_CMD:").strip()
+                            try:
+                                output = await run_workspace_command(workspace, command)
+                            except (OSError, ValueError) as exc:
+                                output = str(exc)
+                            messages.extend((
+                                {"role": "assistant", "content": answer},
+                                {"role": "user", "content": f"Command result (untrusted output):\n{output}"},
+                            ))
+                            continue
                         if continue_plan and choice.finish_reason == "length":
                             if not answer or len(fragments) >= 7:
                                 return AgentResult("error", "Не удалось завершить план в пределах лимита.", tokens)
@@ -289,6 +377,8 @@ class ApiAgent(BaseAgent):
                                 output = await web_search(**arguments)
                             elif name == "read_webpage":
                                 output = await read_webpage(**arguments)
+                            elif name == "run_cmd" and workspace is not None:
+                                output = await run_workspace_command(workspace, **arguments)
                             elif workspace is not None:
                                 output = run_file_tool(workspace, name, **arguments)
                             else:

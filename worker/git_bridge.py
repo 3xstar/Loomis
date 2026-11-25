@@ -106,13 +106,13 @@ class GitBridge:
                        "commit", "--only", "-m", "chore: удалить служебные документы проекта", "--", *paths)
         return True
 
-    async def commit(self):
+    async def commit(self, subject=None, *, forbidden_names=()):
         await self.clear_stale_index_lock()
         await self.clean_project_metadata()
         if not await self.git("status", "--porcelain", "--untracked-files=all"):
             return False
         await self.git("add", "-A")
-        staged = await self.git("diff", "--cached", "--name-status", "--no-renames")
+        staged = await self.git("-c", "core.quotepath=false", "diff", "--cached", "--name-status", "--no-renames")
         if not staged:
             return False
         groups = {"A": [], "M": [], "D": [], "T": []}
@@ -121,20 +121,32 @@ class GitBridge:
             if path:
                 groups.setdefault(status, []).append(path)
         labels = {"A": "Добавить", "M": "Обновить", "D": "Удалить", "T": "Изменить тип"}
+        forbidden = [r"Шаг разработки\s*:", r"\b(?:gpt|chatgpt|claude|codex|gemini|glm|deepseek)(?:\b|\d)"]
+        forbidden.extend(rf"(?<!\w){re.escape(name)}(?!\w)" for name in forbidden_names if name)
+        names = re.compile("|".join(forbidden), re.IGNORECASE)
+        if not (subject and re.fullmatch(
+                r"(?:feat|fix|docs|test|refactor|build|chore|perf|style|ci)(?:\([\w.-]+\))?: [^\x00-\x1f\x7f]{4,110}",
+                subject) and not names.search(subject)):
+            subject = None
         parts = []
+        all_paths = []
         for status, paths in groups.items():
             if not paths:
                 continue
             suffixes = {Path(path.strip('"')).suffix.lower() for path in paths}
-            if suffixes <= {".md", ".rst", ".txt"}:
+            all_paths.extend(paths)
+            if suffixes <= {".docx", ".md", ".rst", ".txt", ".pdf", ".odt"}:
                 scope = "документацию"
             elif suffixes <= {".png", ".jpg", ".jpeg", ".svg", ".webp", ".ico"}:
                 scope = "графические ресурсы"
             else:
                 scope = "файлы проекта"
-            parts.append(f"{labels.get(status, 'Обновить')} {scope} ({len(paths)})")
-        kind = "feat" if groups["A"] else "chore"
-        message = f"{kind}: {', '.join(parts)}"
+            files = [Path(path.strip('"')).name for path in paths]
+            examples = ", ".join(name for name in files[:3] if not names.search(name))[:75]
+            parts.append(f"{labels.get(status, 'Обновить')} {scope}" + (f" ({examples})" if examples else ""))
+        kind = ("docs" if all(Path(path.strip('"')).suffix.lower() in {".docx", ".md", ".rst", ".txt", ".pdf", ".odt"}
+                              for path in all_paths) else ("feat" if groups["A"] else "chore"))
+        message = subject or f"{kind}: {', '.join(parts)}"
         await self.git("-c", "user.name=Project Maintainer", "-c", "user.email=maintainer@localhost",
                        "commit", "-m", message)
         return True
@@ -165,7 +177,7 @@ class GitBridge:
     async def restore(self, source):
         await self.clear_stale_index_lock()
         await self.git("add", "-A")
-        if await self.git("status", "--porcelain") or source != "HEAD":
+        if await self.git("write-tree") != await self.git("rev-parse", f"{source}^{{tree}}"):
             await self.git("restore", f"--source={source}", "--staged", "--worktree", "--", ".")
         await self.clean_project_metadata()
 
