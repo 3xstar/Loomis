@@ -156,26 +156,38 @@ option { background: var(--base); }
 .project-button { text-align: left; overflow-wrap: anywhere; }
 
 .app-screen.icon-rail { grid-template-columns: 68px minmax(0, 1fr); }
-.icon-rail .sidebar { padding: 10px 8px; gap: 8px; align-items: center; }
+.icon-rail .sidebar { width: 68px; padding: 10px 8px; gap: 8px; }
+.icon-rail .sidebar,
+.icon-rail .sidebar :is(.sidebar-head, .brand-row, .section-label, .project-list,
+  .sidebar-actions, .hub-nav-label, .logo-mark, button, #settings-button, #hub-button) {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin-inline: auto;
+}
 .icon-rail :is(.brand-row > div, .user-card, .section-label > span, .hub-nav-label > span,
   #new-project-button > span, .project-name, .project-list-empty, .integration-alerts) { display: none; }
-.icon-rail :is(.sidebar-head, .sidebar-actions) { flex-direction: column; gap: 8px; }
+.icon-rail :is(.sidebar-head, .sidebar-actions) { gap: 8px; }
 .icon-rail .sidebar .sidebar-actions { margin-top: auto; }
-.icon-rail :is(.sidebar .icon-button, #hub-button, #new-project-button, .project-button) {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
+.icon-rail .sidebar :is(.logo-mark, button, #settings-button, #hub-button) {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
   padding: 0;
+  text-align: center;
 }
+.icon-rail #hub-button { position: relative; align-self: center; }
+.icon-rail #hub-button .hub-nav-label { position: absolute; inset: 0; }
+.icon-rail #hub-button svg { margin-inline: 0; }
 .icon-rail :is(#new-project-button, .project-button) {
   border: 1px solid var(--line);
   border-radius: 12px;
 }
 .icon-rail #new-project-button { background: var(--surface); }
 .icon-rail #sidebar-toggle svg { transform: scaleX(-1); }
-.icon-rail .project-list {
-  justify-items: center;
+.icon-rail .sidebar #project-list {
+  justify-content: safe center;
   width: 100%;
   min-height: 0;
   padding-block: 3px;
@@ -436,7 +448,7 @@ option { background: var(--base); }
   .main-area { height: 100%; }
   .sidebar { display: none; position: absolute; inset: 10px auto 10px 10px; width: 240px; z-index: 2; background: var(--base); }
   .sidebar.open, .mobile-only { display: flex; }
-  .icon-rail .sidebar { width: 68px; }
+  .icon-rail .sidebar:not(.open) { display: none; }
 }
 
 /* Keep the outgoing screen visible during its fade while JS makes it inert. */
