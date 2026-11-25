@@ -2,13 +2,19 @@ import asyncio
 import os
 import re
 from datetime import datetime
+from fnmatch import fnmatchcase
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import time_ns
 from uuid import uuid4
 
+from worker.sandbox import workspace_file
+
 
 PROJECT_METADATA = ("SPEC.md", "PLAN.md", "Project_context.md")
+TEMP_PATTERNS = ("_check*", "*.tmp.*", "temp_*")
+DRAFT_PATTERNS = ("*_draft.md", "*_sections.md", "*_review.md", "build_*.py", "run_build.py")
+FINAL_SUBJECT = "chore: удалены временные скрипты сборки и черновики"
 DOCUMENT_EXTENSIONS = {".docx", ".md", ".rst", ".txt", ".pdf", ".odt"}
 CONVENTIONAL_SUBJECT = re.compile(
     r"(?:feat|fix|docs|test|refactor|build|chore|perf|style|ci|revert)(?:\([\w.-]+\))?!?: "
@@ -16,12 +22,18 @@ CONVENTIONAL_SUBJECT = re.compile(
 )
 FORBIDDEN_SUBJECT_TEXT = re.compile(
     r"ход\s+выполнения|шаг\s+разработки|gpt|claude|codex|gemini|glm|deepseek|"
+    r"qwen|llama|mistral|grok|kimi|copilot|"
     r"\b(?:commit_msg|loomis_\w+)\b", re.IGNORECASE,
 )
-SERVICE_SUBJECT = re.compile(
-    r"(?:<[^<>]*>|n/?a|none|null|skip|done|no changes|без изменений|нет изменений|"
-    r"готово|выполнено|служебная строка|обновить файлы|update files|краткая суть изменений)"
-    r"[.!…]*", re.IGNORECASE,
+PAST_SUBJECT = re.compile(
+    r"(?:добавлен|обновлён|обновлен|удалён|удален|исправлен|изменён|изменен|"
+    r"подготовлен|проверен|создан|собран|настроен|перенесён|перенесен|"
+    r"сохранён|сохранен|реализован|восстановлен|оптимизирован|заменён|заменен)"
+    r"[аоы]?\s+\S", re.IGNORECASE,
+)
+SUBJECT_DIRECTIVE = re.compile(
+    r"\b(?:нужно|надо|необходимо|следует|требуется|"
+    r"[а-яё]{3,}(?:ать|ять|ить|еть|уть|оть|ыть|чь|ться|айте|яйте|ите|ься))\b", re.IGNORECASE,
 )
 
 
@@ -116,8 +128,41 @@ class GitBridge:
         if not paths or not await self.git("status", "--porcelain", "--", *paths):
             return False
         await self.clear_stale_index_lock()
-        await self.write_commit("commit", "--only", "-m", "chore: удалить служебные документы проекта", "--", *paths)
+        self.clean_workspace()
+        await self.write_commit("commit", "--only", "-m", "chore: удалены служебные документы проекта", "--", *paths)
         return True
+
+    def clean_workspace(self, *, final=False, deliverable=None):
+        patterns = TEMP_PATTERNS + DRAFT_PATTERNS if final else TEMP_PATTERNS
+        root = self.workspace.resolve(strict=True)
+        keep = workspace_file(root, deliverable) if final and deliverable else None
+        if keep is not None and (keep != root / deliverable or not keep.is_file()):
+            raise ValueError(f"Итоговый файл {deliverable} отсутствует или находится по ссылке.")
+
+        def raise_walk_error(error):
+            raise error
+
+        directories = []
+        for directory, dirs, files in os.walk(root, onerror=raise_walk_error):
+            parent = Path(directory)
+            dirs[:] = [name for name in dirs if name.casefold() != ".git"]
+            directories.append(parent)
+            for name in files + dirs:
+                path = parent / name
+                if name.casefold() == ".git" or path == keep:
+                    continue
+                if path.is_dir() and path.resolve() != path and not path.is_symlink():
+                    dirs.remove(name)
+                    continue
+                if path.is_symlink() or path.is_file():
+                    if (final and keep is not None) or any(fnmatchcase(name.casefold(), p) for p in patterns):
+                        path.unlink(missing_ok=True)
+                        if name in dirs:
+                            dirs.remove(name)
+        if keep is not None:
+            for directory in reversed(directories[1:]):
+                if not any(directory.iterdir()):
+                    directory.rmdir()
 
     async def write_commit(self, *args):
         name = await self.git("config", "--global", "--get", "user.name", allowed=(0, 1))
@@ -128,12 +173,18 @@ class GitBridge:
                    GIT_COMMITTER_NAME=name, GIT_COMMITTER_EMAIL=email)
         return await self.git("-c", f"user.name={name}", "-c", f"user.email={email}", *args, env=env)
 
-    async def commit(self, subject=None, *, forbidden_names=()):
+    async def commit(self, subject=None, *, forbidden_names=(), final=False, deliverable=None):
         await self.clear_stale_index_lock()
         await self.clean_project_metadata()
-        if not await self.git("status", "--porcelain", "--untracked-files=all"):
+        self.clean_workspace(final=final, deliverable=deliverable)
+        if not final and not await self.git("status", "--porcelain", "--untracked-files=all"):
             return False
         await self.git("add", "-A")
+        if final:
+            if deliverable:
+                await self.git("--literal-pathspecs", "add", "-f", "--", deliverable)
+            await self.write_commit("commit", "--allow-empty", "-m", FINAL_SUBJECT)
+            return True
         staged = await self.git("diff", "--cached", "--name-status", "-z", "--no-renames")
         if not staged:
             return False
@@ -142,8 +193,7 @@ class GitBridge:
         names = re.compile("|".join(forbidden), re.IGNORECASE)
         subject = (subject or "").strip()
         match = CONVENTIONAL_SUBJECT.fullmatch(subject)
-        if (not match or names.search(subject) or SERVICE_SUBJECT.fullmatch(match[1].strip())
-                or not any(char.isalnum() for char in match[1])):
+        if not match or names.search(subject) or not PAST_SUBJECT.match(match[1]) or SUBJECT_DIRECTIVE.search(match[1]):
             fields = staged.split("\0")
             groups = {}
             for status, path in zip(fields[::2], fields[1::2]):
@@ -151,13 +201,13 @@ class GitBridge:
             is_docs = all(path.suffix.lower() in DOCUMENT_EXTENSIONS
                           for paths in groups.values() for path in paths)
             kind = "docs" if is_docs else ("feat" if "A" in groups else "fix")
-            labels = {"A": "добавить", "M": "обновить", "D": "удалить", "T": "изменить тип"}
+            labels = {"A": "добавлены", "M": "обновлены", "D": "удалены", "T": "изменён тип файлов"}
             parts = []
             for status, paths in groups.items():
                 examples = [path.name for path in paths if not names.search(path.name)
                             and path.name.isprintable()]
-                files = ", ".join(examples[:3])[:60] or ("документацию" if is_docs else "файлы проекта")
-                parts.append(f"{labels.get(status, 'обновить')} {files}")
+                files = ", ".join(examples[:3])[:60] or ("документы проекта" if is_docs else "файлы проекта")
+                parts.append(f"{labels.get(status, 'обновлены')} {files}")
             subject = f"{kind}: {', '.join(parts)[:110].rstrip(', ')}"
         await self.write_commit("commit", "-m", subject)
         return True
@@ -167,13 +217,14 @@ class GitBridge:
 
     async def snapshot(self):
         await self.clean_project_metadata()
+        self.clean_workspace()
         await self.clear_stale_index_lock()
         await self.git("add", "-A")
         tree = await self.git("write-tree")
         head = await self.head()
         if head and tree == await self.git("rev-parse", "HEAD^{tree}"):
             return head
-        return await self.write_commit("commit-tree", tree, "-m", "chore: сохранить снимок рабочей области")
+        return await self.write_commit("commit-tree", tree, "-m", "chore: сохранён снимок рабочей области")
 
     async def checkpoint(self):
         await self.clean_project_metadata()

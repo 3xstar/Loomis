@@ -38,6 +38,14 @@ from .model_performance import cache_response, cached_response, model_key, promp
 
 logger = logging.getLogger(__name__)
 
+COMMIT_INSTRUCTION = (
+    "COMMIT_MSG: <тип>: <совершённый факт в прошедшем времени>. "
+    "Строго соблюдай Conventional Commits. Запрещены призывы к действию, "
+    "инфинитивы («проверить», «подготовить»), повелительное наклонение и названия моделей ИИ или агентов. "
+    "Примеры: COMMIT_MSG: docs: подготовлен и проверен паспорт проекта; "
+    "COMMIT_MSG: feat: добавлена авторизация."
+)
+
 def message_event(row, agent_name):
     return {
         "type": row.channel, "channel": row.channel, "project_id": row.project_id, "id": row.id,
@@ -232,6 +240,11 @@ class ProjectAgent(BaseAgent):
             instruction += VERBOSITY[project.verbosity_level or "concise"]
         if operation in {"meeting", "handoff"}:
             instruction += " Максимум 3 коротких пункта: Сделано, Файлы, Следующий шаг."
+        if operation == "execute":
+            instruction += (
+                f" {COMMIT_INSTRUCTION} Для RUN_CMD выполняй разовые проверки и преобразования "
+                'однострочником python -c "..." без создания временных файлов.'
+            )
         max_tokens = 700 if concise and operation not in {"chat", "plan"} else None
         history = await self.engine.prompt_history(project, config, direct=operation == "direct",
                                                    include_team_chat=operation == "chat")
@@ -1056,6 +1069,28 @@ class Orchestrator:
             ("Контекст проекта", project.context_content),
         ) if value)
 
+    @staticmethod
+    def sole_deliverable(spec, steps):
+        spec = spec or ""
+        matches = re.findall(
+            r"(?im)(?:единственн\w*|только\s+один|один)"
+            r"\s+(?:(?:итогов|сдаточн)\w*\s+)?файл\s*[:—-]?\s*"
+            r'(?:`([^`\r\n]+)`|«([^»\r\n]+)»|"([^"\r\n]+)"|([^\s,;:]+))',
+            spec,
+        )
+        paths = {next(filter(None, match)).rstrip(".") for match in matches if any(match)}
+        paths = {path for path in paths if Path(path).suffix}
+        if paths:
+            return next(iter(paths)) if len(paths) == 1 else None
+        planned = {path for _, path, _ in steps if path != "-"}
+        if len(planned) == 1:
+            path = next(iter(planned))
+            mentioned = re.search(rf"(?<![\w./\\-]){re.escape(path)}(?![\w/\\-]|\.\w)", spec, re.I)
+            filenames = set(re.findall(r"(?<![\w.])[\w.-]+\.[a-zA-Z][\w-]*\b", spec))
+            if mentioned and filenames == {Path(path).name}:
+                return path
+        return None
+
     async def loop(self, project_id, runtime):
         try:
             while True:
@@ -1215,10 +1250,7 @@ class Orchestrator:
                                 + (" Это финальная проверка. Проверь файлы и критерии ТЗ за один проход. "
                                    "Верни краткий вывод. Сохрани содержимое файлов без изменений. " if reviewing else "")
                                 + autonomy_instruction(mode)
-                                + " В конце отчёта верни отдельную короткую строку "
-                                "COMMIT_MSG: <тип>: <краткая суть изменений>. "
-                                "Например, COMMIT_MSG: docs: обновить паспорт проекта. "
-                                "Описывай изменения без имён агентов и моделей. "
+                                + " В конце отчёта верни отдельную строку COMMIT_MSG по системной инструкции. "
                                 "Если из-за технической ошибки невозможно собрать требуемый результат, "
                                 "верни отдельную строку LOOMIS_BLOCKED: <причина>. "
                                 "Если все задачи плана завершены, верни отдельную строку LOOMIS_COMPLETE.",
@@ -1270,14 +1302,19 @@ class Orchestrator:
                     if feedback is None:
                         stage = "сохранение результата"
                         await bridge.clean_project_metadata()
-                        await bridge.git("add", "-A")
-                        changes = await bridge.git("diff", "--name-only", checkpoint, "--", ".")
                         complete = (runtime.plan_step + 1 == len(steps) if planned else
-                                    "LOOMIS_COMPLETE" in result.message.splitlines())
-                        if project.commit_mode == "sequential" or complete:
+                                    "LOOMIS_COMPLETE" in response.splitlines()
+                                    or bool(re.search(r"(?mi)^Следующий шаг:[ \t]*Завершено[.!]?[ \t]*$", response)))
+                        if complete:
+                            deliverable = self.sole_deliverable(project.spec_content, steps)
+                            committed = await bridge.commit(final=True, deliverable=deliverable)
+                        elif project.commit_mode == "sequential":
                             subject = re.search(r"(?m)^COMMIT_MSG:[ \t]*([^\r\n]*)", response)
                             names = {name for item in configs for name in (item.name, item.model, item.provider)}
                             committed = await bridge.commit(subject[1] if subject else None, forbidden_names=names)
+                        else:
+                            await bridge.git("add", "-A")
+                        changes = await bridge.git("diff", "--name-only", checkpoint, "--", ".")
                         break
                     pending_result = None
                     await self.message(project.id, config.name, "@All", "terminal", feedback, config,
@@ -1334,7 +1371,7 @@ class Orchestrator:
             next_config = next((item for item in ranked if item.id not in runtime.successful_agents),
                                ranked[0] if ranked else config)
         target = "@All" if complete else f"@{next_config.name}"
-        visible_result = re.sub(r"(?m)^LOOMIS_(?:COMMIT:.*|COMPLETE)\s*$", "", result.message)
+        visible_result = re.sub(r"(?m)^(?:COMMIT_MSG:.*|LOOMIS_(?:COMMIT:.*|COMPLETE))[ \t]*$", "", result.message)
         report = (
             f"Сделано: {' '.join(visible_result.split())[:240]}\n"
             f"Файлы: {', '.join(changes.splitlines()[:6]) or 'Нет изменений'}\n"
@@ -1342,19 +1379,20 @@ class Orchestrator:
         )
         await self.message(project.id, config.name, target, "team_chat", report, config,
                            step_title=STEP_TITLES["execute"], media=generated)
-        await self.notify(project.id, report, event_type="step_log", config=config, in_team_chat=True)
-        if not complete:
+        if complete:
+            runtime.ready.clear()
+        else:
             runtime.handoff = (next_config.id, report)
         if committed:
             await self.save_commit_state(project, bridge, runtime, complete)
+            if complete:
+                await manager.publish_status(project.id, "completed")
             await manager.broadcast(project.id, {"type": "git_commit", "project_id": project.id})
+        await self.notify(project.id, report, event_type="step_log", config=config, in_team_chat=True)
+        if committed:
             if project.auto_push_mode == "after_each":
                 await self.publish_github_step(project, bridge, complete)
         if complete:
-            if not committed and project.git_repo_url and project.auto_push_mode == "after_each":
-                await self.publish_github_step(project, bridge, complete)
-            runtime.ready.clear()
-            await self.status(project.id, "completed", turn_state=runtime.snapshot())
             return
         if project.autonomy_mode == "step_by_step":
             runtime.ready.clear()
