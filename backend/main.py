@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from backend.database.models import AgentConfig, AgentMessage, Project, TaskLog,
 from backend.settings import ROOT, settings
 
 
+logger = logging.getLogger(__name__)
 dispatcher = Dispatcher(events_isolation=SimpleEventIsolation())
 dispatcher.include_router(bot_router)
 
@@ -174,6 +176,27 @@ def initialize_schema(connection) -> None:
         )
 
 
+async def poll_telegram(bot: Bot) -> None:
+    while True:
+        try:
+            await bot.set_my_commands([
+                BotCommand(command="start", description="Главное меню и статус аккаунта"),
+                BotCommand(command="new_project", description="Создать новый проект"),
+                BotCommand(command="projects", description="Мои проекты и управление"),
+                BotCommand(command="quick_register", description="Быстрая регистрация аккаунта"),
+                BotCommand(command="link", description="Привязать аккаунт по коду из приложения"),
+                BotCommand(command="cancel", description="Отменить текущее действие"),
+            ])
+            await dispatcher.start_polling(
+                bot, handle_signals=False, close_bot_session=False, handle_as_tasks=True
+            )
+            return
+        except Exception as exc:
+            logger.warning("Telegram polling setup or run failed (%s). Retrying in 5 seconds.",
+                           type(exc).__name__)
+            await asyncio.sleep(5)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     bot = None
@@ -189,20 +212,13 @@ async def lifespan(app: FastAPI):
         async with async_session_factory() as session:
             await migrate_project_metadata(session)
         if settings.bot_token:
-            bot = Bot(token=settings.bot_token)
-            bot.session.middleware(LocalizeTelegram())
-            orchestrator.bot = bot
-            await bot.set_my_commands([
-                BotCommand(command="start", description="Главное меню и статус аккаунта"),
-                BotCommand(command="new_project", description="Создать новый проект"),
-                BotCommand(command="projects", description="Мои проекты и управление"),
-                BotCommand(command="quick_register", description="Быстрая регистрация аккаунта"),
-                BotCommand(command="link", description="Привязать аккаунт по коду из приложения"),
-                BotCommand(command="cancel", description="Отменить текущее действие"),
-            ])
-            polling = asyncio.create_task(dispatcher.start_polling(
-                bot, handle_signals=False, close_bot_session=False, handle_as_tasks=True
-            ))
+            try:
+                bot = Bot(token=settings.bot_token)
+                bot.session.middleware(LocalizeTelegram())
+                polling = asyncio.create_task(poll_telegram(bot))
+                orchestrator.bot = bot
+            except Exception as exc:
+                logger.warning("Telegram bot initialization failed (%s).", type(exc).__name__)
         yield
     finally:
         await orchestrator.shutdown()
@@ -210,10 +226,9 @@ async def lifespan(app: FastAPI):
         try:
             if polling is not None:
                 if not polling.done():
-                    try:
+                    with suppress(RuntimeError, TimeoutError):
                         await asyncio.wait_for(dispatcher.stop_polling(), timeout=5)
-                    except (RuntimeError, TimeoutError):
-                        polling.cancel()
+                    polling.cancel()
                 with suppress(asyncio.CancelledError):
                     await polling
         finally:
