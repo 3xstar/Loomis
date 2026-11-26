@@ -1,37 +1,71 @@
 import json
 import subprocess
 import sys
+from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from threading import Lock
 from time import monotonic, sleep, time
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, build_opener
 
 import webview
+from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[1]
 ICON_PATH = Path(__file__).with_name("ui") / "logo.ico"
 SESSION_PATH = Path.home() / ".loomis" / "desktop_session.json"
+PREFERENCES_PATH = SESSION_PATH.with_name("desktop_preferences.json")
 if __package__ in (None, ""):
     sys.path.insert(0, str(ROOT))
 
 from backend.settings import settings
 
 
+def write_atomic(path: Path, data: bytes) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(data)
+            stream.close()
+            temporary.replace(path)
+        finally:
+            stream.close()
+            temporary.unlink(missing_ok=True)
+
+
+def prepare_windows_icon() -> None:
+    with Image.open(ICON_PATH.with_name("favicon.png")) as source:
+        icon = source.convert("RGBA").resize((256, 256), Image.Resampling.LANCZOS)
+    with BytesIO() as output:
+        icon.save(output, format="ICO", sizes=[(size, size) for size in (16, 32, 48, 64, 128, 256)])
+        data = output.getvalue()
+    if not ICON_PATH.exists() or ICON_PATH.read_bytes() != data:
+        write_atomic(ICON_PATH, data)
+
+
 class DesktopAPI:
+    def __init__(self) -> None:
+        self._preferences_lock = Lock()
+
     def save_session(self, token: str) -> None:
-        SESSION_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with NamedTemporaryFile(dir=SESSION_PATH.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-            try:
-                stream.write(json.dumps({"access_token": token}).encode("utf-8"))
-                stream.close()
-                temporary.replace(SESSION_PATH)
-            finally:
-                stream.close()
-                temporary.unlink(missing_ok=True)
+        write_atomic(SESSION_PATH, json.dumps({"access_token": token}).encode("utf-8"))
+
+    def load_preferences(self) -> dict:
+        try:
+            data = json.loads(PREFERENCES_PATH.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def save_preferences(self, changes: dict) -> None:
+        with self._preferences_lock:
+            preferences = self.load_preferences()
+            preferences.update(changes)
+            write_atomic(PREFERENCES_PATH, json.dumps(preferences, ensure_ascii=False).encode("utf-8"))
 
     def load_session(self) -> str | None:
         try:
@@ -68,16 +102,18 @@ def set_windows_icon(window) -> None:
     from ctypes import windll
     from ctypes.wintypes import HWND, LPARAM, UINT, WPARAM
     from System import Action
+    from System.Drawing import Icon
 
     def configure():
         hwnd = window.native.Handle.ToInt64()
-        icon = window.native.Icon.Handle.ToInt64()
         send_message = windll.user32.SendMessageW
         send_message.argtypes = (HWND, UINT, WPARAM, LPARAM)
         send_message.restype = LPARAM
         wm_seticon = 0x0080
-        send_message(hwnd, wm_seticon, 0, icon)  # ICON_SMALL
-        send_message(hwnd, wm_seticon, 1, icon)  # ICON_BIG
+        icons = tuple(Icon(str(ICON_PATH), size, size) for size in (16, 32))
+        for kind, icon in enumerate(icons):  # ICON_SMALL, ICON_BIG
+            send_message(hwnd, wm_seticon, kind, icon.Handle.ToInt64())
+        window._taskbar_icons = icons
 
     window.native.Invoke(Action(configure))
 
@@ -116,6 +152,11 @@ def server_ready(url: str) -> bool:
 
 
 def main() -> None:
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("3xstar.Loomis.Desktop.1")
+        prepare_windows_icon()
     url = f"http://127.0.0.1:{settings.api_port}"
     server = None
     try:

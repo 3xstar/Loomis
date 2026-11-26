@@ -10,7 +10,18 @@ const desktopSessionAPI = window.pywebview?.api?.load_session
     })
     : Promise.resolve();
 let sessionWrite = Promise.resolve();
+let preferencesWrite = Promise.resolve();
+let desktopPreferences = {};
 let token = null;
+
+function saveDesktopPreferences(changes) {
+  Object.assign(desktopPreferences, changes);
+  preferencesWrite = preferencesWrite.then(async () => {
+    const bridge = await desktopSessionAPI;
+    await bridge?.save_preferences(changes);
+  }).catch(error => notify(error.message));
+  return preferencesWrite;
+}
 
 function writeDesktopSession(accessToken) {
   sessionWrite = sessionWrite.then(async () => {
@@ -120,7 +131,9 @@ function setTheme(theme) {
 }
 setTheme(localStorage.getItem("loomis-theme") === "light" ? "light" : "dark");
 all(".theme-switch").forEach((button) => button.onclick = () => {
-  setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  setTheme(theme);
+  saveDesktopPreferences({theme});
 });
 
 function stopMagic() {
@@ -1144,6 +1157,7 @@ directResizer.onpointerup = directResizer.onpointercancel = directResizer.onlost
   directDrag = undefined;
   document.body.classList.remove("resizing-direct");
   localStorage.setItem(directWidthKey, directWidth);
+  saveDesktopPreferences({direct_width: directWidth});
 };
 directResizer.onkeydown = (event) => {
   const width = {ArrowLeft: directWidth + 10, ArrowRight: directWidth - 10, Home: 280, End: 560}[event.key];
@@ -1151,6 +1165,7 @@ directResizer.onkeydown = (event) => {
   event.preventDefault();
   setDirectWidth(width);
   localStorage.setItem(directWidthKey, directWidth);
+  saveDesktopPreferences({direct_width: directWidth});
 };
 
 function setDirectOpen(open) {
@@ -1629,6 +1644,12 @@ function showModal(id) {
 
 byId("add-agent-button").onclick = () => openAgentModal();
 const cliProviders = new Set(["codex", "claude", "opencode", "qwen", "cli"]);
+const cliCommands = {
+  codex: "codex exec --json --sandbox workspace-write -",
+  claude: "claude -p",
+  opencode: "opencode run",
+  qwen: "qwen",
+};
 const agentForm = byId("agent-form");
 const agentProvider = byId("agent-provider");
 const agentRole = byId("agent-role");
@@ -1670,7 +1691,6 @@ function openAgentModal(target, manual = false, preselected = []) {
   byId("agent-model").value = agent?.model || "";
   byId("agent-base-url").value = settings.base_url || settings.baseUrl || "";
   byId("agent-api-key").placeholder = settings.has_api_key ? "Ключ сохранён · введите новый для замены" : "";
-  byId("agent-command").value = settings.command || "";
   byId("agent-title").textContent = agent ? "Настройки агента" : "Подключить ИИ";
   byId("agent-submit").textContent = agent ? "Сохранить" : "Добавить агента";
   renderAgentFields();
@@ -1690,8 +1710,6 @@ function renderAgentFields() {
   const isApi = !cliProviders.has(agentProvider.value.toLowerCase());
   byId("agent-api-fields").inert = !isApi;
   byId("agent-base-url").disabled = byId("agent-api-key").disabled = !isApi;
-  byId("agent-cli-fields").classList.toggle("hidden", isApi);
-  byId("agent-command").disabled = isApi;
   byId("agent-model").placeholder = isApi ? "" : agentProvider.value;
   clearAgentErrors();
 }
@@ -1722,6 +1740,7 @@ sidebarToggle.onclick = () => {
   const collapsed = sidebarToggle.getAttribute("aria-expanded") === "true";
   setSidebarRail(collapsed);
   localStorage.setItem(sidebarRailKey, String(collapsed));
+  saveDesktopPreferences({sidebar_collapsed: collapsed});
 };
 
 byId("hub-mobile-menu").onclick = byId("mobile-menu").onclick = () => document.querySelector(".sidebar").classList.toggle("open");
@@ -1731,7 +1750,6 @@ const agentFields = {
   model: ["agent-model", "Введите имя модели длиной до 255 символов."],
   base_url: ["agent-base-url", "Введите корректный Base URL с http:// или https://."],
   api_key: ["agent-api-key", "Введите API Key."],
-  command: ["agent-command", "Введите команду запуска."],
 };
 
 function showAgentErrors(fields, message) {
@@ -1759,14 +1777,15 @@ agentForm.onsubmit = async (event) => {
   const provider = agentProvider.value;
   const isCli = cliProviders.has(provider.toLowerCase());
   const model = byId("agent-model").value.trim() || (isCli ? provider : "");
-  const settings = {
-  };
+  const settings = {};
   const errors = [];
   if ([...name].length < 2 || [...name].length > 100) errors.push("name");
   if (!model || [...model].length > 255) errors.push("model");
   if (isCli) {
-    settings.command = byId("agent-command").value.trim();
-    if (!settings.command) errors.push("command");
+    const command = cliCommands[provider.toLowerCase()];
+    if (command && (agentTarget.item?.provider !== provider || !agentTarget.item.settings?.command)) {
+      settings.command = command;
+    }
   } else {
     const keyInput = byId("agent-api-key");
     const entered = keyInput.value.trim();
@@ -2521,11 +2540,40 @@ const projectTemplates = {
   repo: ["Доработка репозитория", "Репозиторий и ветка:\nТекущее поведение:\nНеобходимые изменения:\nОграничения:\nКак проверить результат:"],
 };
 
+const projectPreferenceFields = {
+  autonomy_mode: "project-autonomy-mode",
+  failover_mode: "project-failover-mode",
+  verbosity_level: "project-verbosity-mode",
+  commit_mode: "project-commit-mode",
+  auto_push_mode: "project-auto-push-mode",
+  deadline_minutes: "project-deadline",
+};
+
+function restoreProjectPreferences() {
+  for (const [key, id] of Object.entries(projectPreferenceFields)) {
+    const field = byId(id);
+    const value = desktopPreferences[key];
+    if (field instanceof HTMLSelectElement) {
+      if ([...field.options].some(option => option.value === value)) field.value = value;
+    } else if (Number.isInteger(value) && value >= 1 && value <= 1440) {
+      field.value = value;
+    }
+  }
+}
+
+for (const [key, id] of Object.entries(projectPreferenceFields)) {
+  byId(id).addEventListener("change", ({target}) => {
+    if (!target.validity.valid) return;
+    saveDesktopPreferences({[key]: target.type === "number" ? target.valueAsNumber : target.value});
+  });
+}
+
 function openProjectModal(template) {
   const [name, spec] = (template || ["", ""]).map(LoomisI18n.translate);
   byId("project-name").value = name;
   byId("project-template").value = spec;
   byId("project-template-field").classList.toggle("hidden", !template);
+  restoreProjectPreferences();
   selectProjectAddTab(false);
   fillDefaultProjectPath();
   renderGitHubFields();
@@ -2546,13 +2594,20 @@ byId("project-form").onsubmit = async (event) => {
   const session = token;
   const form = event.currentTarget;
   const spec = byId("project-template").value.trim();
+  const preferences = Object.fromEntries(Object.entries(projectPreferenceFields).map(([key, id]) => {
+    const field = byId(id);
+    return [key, field.type === "number" ? field.valueAsNumber : field.value];
+  }));
+  const payload = {
+    name: byId("project-name").value,
+    ...preferences,
+    ...projectLocation("project"),
+    ...(!customProjectPath && {workspace_path: null}),
+  };
   button.disabled = true;
   try {
-    const created = await api("projects", {
-      name: byId("project-name").value,
-      ...projectLocation("project"),
-      ...(!customProjectPath && {workspace_path: null}),
-    }, session);
+    await saveDesktopPreferences(preferences);
+    const created = await api("projects", payload, session);
     let importError, specError;
     if (spec) {
       try {
@@ -2625,15 +2680,12 @@ const hubRole = byId("hub-role");
 
 function renderHubFields() {
   syncRoleProvider(hubRole, hubProvider);
-  const isApi = !cliProviders.has(hubProvider.value);
+  const isApi = !cliProviders.has(hubProvider.value.toLowerCase());
   byId("hub-api-fields").classList.toggle("hidden", !isApi);
-  byId("hub-cli-field").classList.toggle("hidden", isApi);
   const fields = hubForm.elements;
   fields.namedItem("base_url").disabled = fields.namedItem("api_key").disabled = !isApi;
   fields.namedItem("base_url").required = isApi;
   fields.namedItem("api_key").required = isApi && !editingPreset?.config_json.has_api_key;
-  fields.namedItem("command").disabled = isApi;
-  fields.namedItem("command").required = !isApi && hubProvider.value !== "codex";
 }
 hubProvider.onchange = hubRole.onchange = renderHubFields;
 
@@ -2668,7 +2720,6 @@ function openHubForm(preset) {
   fields.namedItem("name").value = preset?.name || "";
   fields.namedItem("model").value = config?.model || "";
   fields.namedItem("base_url").value = config?.base_url || "";
-  fields.namedItem("command").value = config?.command_template || "";
   fields.namedItem("api_key").placeholder = config?.has_api_key ? "Ключ сохранён" : "";
   byId("hub-modal-title").textContent = preset ? "Настройки модели" : "Добавить модель в Хаб";
   renderHubFields();
@@ -2768,9 +2819,13 @@ hubForm.onsubmit = async (event) => {
   const data = new FormData(hubForm);
   const button = event.submitter;
   const type = data.get("provider");
+  const provider = type.toLowerCase();
   const config = {model: data.get("model").trim()};
-  if (cliProviders.has(type)) {
-    config.command_template = data.get("command").trim() || null;
+  if (cliProviders.has(provider)) {
+    const command = cliCommands[provider];
+    if (command && (editingPreset?.adapter_type !== type || (!editingPreset.config_json.command_template && provider !== "codex"))) {
+      config.command_template = command;
+    }
   } else {
     config.base_url = data.get("base_url").trim();
     const key = data.get("api_key").trim();
@@ -3064,7 +3119,18 @@ byId("logout-confirm").onclick = async () => {
 
 async function restoreSession() {
   try {
-    const savedToken = localStorage.getItem(sessionKey) || await (await desktopSessionAPI)?.load_session();
+    const bridge = await desktopSessionAPI;
+    try {
+      const saved = await bridge?.load_preferences();
+      desktopPreferences = {...saved, ...desktopPreferences};
+      const {theme, direct_width, sidebar_collapsed} = desktopPreferences;
+      if (theme === "dark" || theme === "light") setTheme(theme);
+      if (Number.isFinite(direct_width)) setDirectWidth(direct_width);
+      if (typeof sidebar_collapsed === "boolean") setSidebarRail(sidebar_collapsed);
+    } catch (error) {
+      notify(error.message);
+    }
+    const savedToken = localStorage.getItem(sessionKey) || await bridge?.load_session();
     if (savedToken) await signIn(savedToken);
   } catch (error) {
     if (error.status === 401) {
