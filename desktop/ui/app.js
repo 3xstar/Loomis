@@ -581,19 +581,17 @@ function renderSpecAttachments() {
   }, specBusy || actionBusy);
 }
 
-const teamChatAvailableStatuses = new Set(["awaiting_approval", "paused", "error", "review_pending", "completed"]);
-const teamChatWorkingStatuses = new Set(["planning", "council", "running"]);
+const teamChatWorkingStatuses = new Set(["council", "running", "in_progress"]);
 const teamChatWorking = "Агенты выполняют задачу — дождитесь завершения этапа или нажмите «Пауза»";
 
 function syncComposer() {
   for (const channel of Object.keys(composers)) {
     const team = channel === "team";
-    const locked = team && !teamChatAvailableStatuses.has(project?.status);
     const working = team && teamChatWorkingStatuses.has(project?.status);
-    if (locked) discardRecording(channel);
+    if (working) discardRecording(channel);
     const {busy, recording, microphonePending} = composers[channel];
-    const available = !locked && project && !["draft", "council", "deleted"].includes(project.status)
-      && (team ? agentsInProject.some((agent) => agent.enabled && agent.agent_role_type !== "image_gen") : selectedAgent);
+    const available = project && !working && project.status !== "deleted"
+      && (team || (selectedAgent && !["draft", "council"].includes(project.status)));
     const input = composerNode(channel, "message-input");
     const hasPlan = Boolean(project?.has_plan);
     const editingPlan = team && planMode && hasPlan;
@@ -613,13 +611,14 @@ function syncComposer() {
       button.disabled = Boolean(busy);
     });
     const send = composerNode(channel, "send-button");
-    send.disabled = input.disabled || Boolean(recording);
+    send.disabled = input.disabled || Boolean(recording)
+      || (team && !agentsInProject.some((agent) => agent.enabled && agent.agent_role_type !== "image_gen"));
     send.classList.toggle("plan-send", editingPlan);
     send.title = editingPlan ? "Отправить замечания к PLAN.md" : "Отправить";
     send.setAttribute("aria-label", send.title);
     composerNode(channel, "chat-record").disabled = !recording && (input.disabled || editingPlan || Boolean(microphonePending));
-    input.placeholder = working ? teamChatWorking : editingPlan ? "Напишите замечания к PLAN.md…"
-      : team ? "Напишите в общий чат…" : "Напишите агенту…";
+    input.placeholder = working ? "Ожидание завершения этапа..." : editingPlan ? "Напишите замечания к PLAN.md…"
+      : team ? "Введите сообщение..." : "Напишите агенту…";
     input.setAttribute("aria-label", team ? "Сообщение команде" : "Сообщение агенту");
   }
 }
@@ -692,11 +691,11 @@ function setStatus(status) {
 function renderProjectControls() {
   const status = project?.status;
   const available = {
-    draft: ["build_spec"], planning: ["council"], awaiting_approval: ["approve"],
+    draft: ["build_spec"], planning: ["council"], ready_to_plan: ["council"], awaiting_approval: ["approve"],
     running: ["pause", "rollback"], paused: ["pause", "rollback"], completed: ["rollback"],
   }[status] || [];
   byId("spec-panel").classList.toggle("hidden", status !== "draft");
-  workCenter.hidden = !project || status === "draft";
+  workCenter.hidden = !project;
   const hasCycleActions = available.length && status !== "draft";
   byId("project-controls").classList.toggle("hidden", !hasCycleActions);
   byId("cycle-empty").hidden = Boolean(hasCycleActions);
@@ -736,10 +735,10 @@ function renderTeamEmpty() {
     label = "Добавить агента";
     action = () => openAgentModal();
   } else if (status === "draft") {
-    copy = "Добавьте материалы в буфер и соберите ТЗ, чтобы открыть обсуждение плана.";
+    copy = "Добавьте материалы в буфер, чтобы собрать ТЗ.";
     label = "Перейти к ТЗ";
     action = () => byId("spec-text").focus();
-  } else if (status === "planning") {
+  } else if (["planning", "ready_to_plan"].includes(status)) {
     copy = "Начните обсуждение, чтобы агенты подготовили план по ТЗ.";
     label = "Составить план";
     action = () => document.querySelector('[data-action="council"]').click();
@@ -1127,6 +1126,7 @@ async function selectProject(item) {
   planMode = false;
   deletedAgents.clear();
   project = item;
+  delete byId("completion-scene").dataset.chat;
   syncCompletionScreen();
   if (item) showHubPage(false);
   specBusy = actionBusy = false;
@@ -1494,6 +1494,20 @@ all("[data-action]").forEach((button) => button.onclick = () => {
 
 for (const channel of Object.keys(composers)) {
   const control = (id) => composerNode(channel, id);
+  const input = control("message-input");
+  const resizeHandle = control("message-resizer");
+  resizeHandle.onpointerdown = (event) => {
+    if (event.button !== 0 || resizeHandle.onpointermove) return;
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = input.getBoundingClientRect().height;
+    resizeHandle.setPointerCapture(event.pointerId);
+    resizeHandle.onpointermove = (move) => {
+      if (move.pointerId !== event.pointerId) return;
+      input.style.height = Math.max(44, Math.min(280, startHeight + startY - move.clientY)) + "px";
+    };
+  };
+  resizeHandle.onlostpointercapture = () => { resizeHandle.onpointermove = null; };
   control("message-input").onkeydown = (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
@@ -1594,7 +1608,7 @@ async function sendMessage(channel, event) {
   const message = input.value.trim();
   const {attachments = [], recording} = state;
   const hasFiles = attachments.length > 0;
-  if (!project || input.disabled || recording) return;
+  if (!project || composerNode(channel, "send-button").disabled || recording) return;
   if (feedback && (!message || hasFiles)) {
     showCursorToast("Для доработки плана введите текст без вложения.", event);
     return;
@@ -3094,13 +3108,17 @@ function syncCompletionScreen() {
   const page = byId("project-page");
   const changed = scene.dataset.project !== id;
   scene.dataset.project = id;
-  scene.inert = !active;
-  page.classList.toggle("is-completed", active);
+  const showChat = active && scene.dataset.chat === id;
+  const showScene = active && !showChat;
+  byId("back-to-completion").hidden = !showChat;
+  scene.inert = !showScene;
+  page.classList.toggle("is-completed", showScene);
   for (const panel of page.children) {
-    if (panel !== scene) panel.inert = active;
+    if (panel !== scene) panel.inert = showScene;
   }
   if (active) byId("completion-name").textContent = project.name;
   if (!changed) return;
+  delete scene.dataset.chat;
   scene.classList.remove("completion-lit", "completion-out");
   const closed = active && closedCompletionLighterIds().includes(id);
   scene.classList.toggle("completion-closed", closed);
@@ -3163,6 +3181,18 @@ byId("completion-scene").addEventListener("lighterclosed", (event) => {
 byId("completion-home").onclick = openDashboard;
 byId("completion-stats").onclick = () => byId("stats-button").onclick();
 byId("completion-return").onclick = () => confirmCompletionAction(true);
+byId("completion-chat").onclick = () => {
+  const scene = byId("completion-scene");
+  scene.dataset.chat = scene.dataset.project;
+  syncCompletionScreen();
+  selectView("team");
+  byId("message-input").focus();
+};
+byId("back-to-completion").onclick = () => {
+  delete byId("completion-scene").dataset.chat;
+  syncCompletionScreen();
+  byId("completion-chat").focus();
+};
 
 const statsNumber = new Intl.NumberFormat("ru");
 byId("stats-button").onclick = async () => {

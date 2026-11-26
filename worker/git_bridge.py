@@ -176,6 +176,8 @@ class GitBridge:
     async def commit(self, subject=None, *, forbidden_names=(), final=False, deliverable=None):
         await self.clear_stale_index_lock()
         await self.clean_project_metadata()
+        if final and await self.head():
+            await self.git("reset", "HEAD", "--", *(f":(icase,glob)**/{pattern}" for pattern in TEMP_PATTERNS))
         self.clean_workspace(final=final, deliverable=deliverable)
         if not final and not await self.git("status", "--porcelain", "--untracked-files=all"):
             return False
@@ -269,6 +271,19 @@ class GitBridge:
 
     async def diff(self, checkpoint):
         return await self.git("diff", "--no-ext-diff", checkpoint, "--", ".")
+
+    async def changed_project_files(self, baseline):
+        await self.clear_stale_index_lock()
+        await self.git("add", "-A")
+        changes = await self.git(
+            "diff", "--cached", "--name-status", "-z", "--no-renames", "--diff-filter=AMT", baseline, "--", ".",
+        )
+        fields = changes.split("\0")
+        return [
+            (status, path) for status, path in zip(fields[::2], fields[1::2])
+            if not any(fnmatchcase(Path(path).name.casefold(), pattern) for pattern in TEMP_PATTERNS)
+            and (self.workspace / path).is_file() and not (self.workspace / path).is_symlink()
+        ]
 
     async def open_transport(self):
         ref = f"refs/heads/{self.branch}-work-{uuid4().hex}"

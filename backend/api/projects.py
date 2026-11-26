@@ -26,7 +26,7 @@ from backend.core.github import create_github_repo
 from backend.core.media import MAX_MEDIA_BYTES, make_media, media_spec_content
 from backend.core.model_performance import model_key
 from backend.core.orchestrator import (
-    count_tokens, history_visible, message_event, orchestrator, probe_agent, require_team_chat_available,
+    count_tokens, history_visible, message_event, orchestrator, probe_agent,
 )
 from backend.database.models import DEFAULT_PROJECTS_DIR, AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia, ResponseCache, SpecItem, TaskLog, User, UserModelPreset, utc_now
 from backend.settings import ROOT
@@ -1105,7 +1105,6 @@ async def project_stats(project: OwnedProject, session: Session):
 @router.post("/{project_id}/chat")
 async def project_chat(project: OwnedProject, data: ChatMessage):
     try:
-        require_team_chat_available(project.status)
         return {"responses": await orchestrator.chat(project.id, data.question, data.target_agent_ids)}
     except (ValueError, OSError) as exc:
         raise HTTPException(409, str(exc)) from exc

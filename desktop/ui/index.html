@@ -125,7 +125,10 @@
         </dl>
         <div class="completion-content">
           <h1 id="completion-name" data-user-content></h1>
-          <p class="completion-status">Проект завершён</p>
+          <div class="completion-status">
+            <p>Проект завершён</p>
+            <button id="completion-chat" class="text-action" type="button">Общий чат ИИ</button>
+          </div>
           <div id="completion-actions" class="completion-actions" inert>
             <button id="completion-home" class="button" type="button" aria-labelledby="completion-home-label" aria-describedby="completion-home-hint">
               <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3Z"/></svg>
@@ -257,7 +260,10 @@
             <button class="tab active" data-view="team" type="button" aria-pressed="true">Общий чат ИИ</button>
             <button class="tab" data-view="terminal" type="button" aria-pressed="false">Терминал</button>
           </div>
-            <button id="clear-chat" class="text-action" type="button">Очистить экран</button>
+            <div>
+              <button id="back-to-completion" class="text-action" type="button" hidden>Итоги проекта</button>
+              <button id="clear-chat" class="text-action" type="button">Очистить экран</button>
+            </div>
           </div>
           <div id="terminal-controls" class="terminal-head hidden">
             <div id="terminal-tabs" class="terminal-tabs" role="group" aria-label="Терминалы агентов"></div>
@@ -292,10 +298,11 @@
             <div class="composer-input">
               <div id="chat-attachment" class="attachment-chips" aria-live="polite"></div>
               <div class="composer-row">
+                <div id="message-resizer" class="composer-resizer" aria-hidden="true"></div>
                 <input id="chat-file" class="hidden" type="file" multiple accept=".png,.jpg,.jpeg,.webp">
                 <button id="chat-attach" class="icon-button" type="button" title="Прикрепить изображение" aria-label="Прикрепить изображение"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg></button>
                 <button id="chat-record" class="icon-button" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение" aria-pressed="false"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1m-7 8v3m-4 0h8"/></svg></button>
-                <textarea id="message-input" rows="1" placeholder="Спросите агента о проекте…" maxlength="32000" disabled></textarea>
+                <textarea id="message-input" rows="1" placeholder="Введите сообщение..." maxlength="32000" disabled></textarea>
                 <button id="send-button" class="send-button" type="submit" title="Отправить" aria-label="Отправить" disabled><svg viewBox="0 0 24 24"><path d="m5 12 14-7-3 14-4-6-7-1Z"/><path d="m12 13 4-5"/></svg></button>
               </div>
             </div>
@@ -323,6 +330,7 @@
           <div class="composer-input">
             <div id="direct-chat-attachment" class="attachment-chips" aria-live="polite"></div>
             <div class="composer-row">
+              <div id="direct-message-resizer" class="composer-resizer" aria-hidden="true"></div>
               <input id="direct-chat-file" class="hidden" type="file" multiple accept=".png,.jpg,.jpeg,.webp">
               <button id="direct-chat-attach" class="icon-button" type="button" title="Прикрепить изображение" aria-label="Прикрепить изображение"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg></button>
               <button id="direct-chat-record" class="icon-button" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение" aria-pressed="false"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1m-7 8v3m-4 0h8"/></svg></button>

@@ -43,15 +43,15 @@ from .model_performance import cache_response, model_key, prompt_digest, rank_co
 logger = logging.getLogger(__name__)
 MAX_STEP_CONTINUATIONS = 3
 MAX_AUTO_RETRIES = 3
-TEAM_CHAT_AVAILABLE_STATUSES = frozenset({"awaiting_approval", "paused", "error", "review_pending", "completed"})
-TEAM_CHAT_WORKING_STATUSES = frozenset({"planning", "council", "running"})
+# The project is idle in "planning" until the council task starts.
+TEAM_CHAT_WORKING_STATUSES = frozenset({"council", "running", "in_progress"})
 TEAM_CHAT_WORKING = "Агенты выполняют задачу — дождитесь завершения этапа или нажмите «Пауза»"
 
 
 def require_team_chat_available(status: str | None) -> None:
     if status in TEAM_CHAT_WORKING_STATUSES:
         raise ValueError(TEAM_CHAT_WORKING)
-    if status not in TEAM_CHAT_AVAILABLE_STATUSES:
+    if status in {None, "deleted"}:
         raise ValueError("Чат недоступен в текущем статусе.")
 
 
@@ -1010,7 +1010,7 @@ class Orchestrator:
                 context += "\nПри обсуждении проекта не запрашивай у пользователя решений о ходе работ."
             response = await self.ask(project, config, question, context, media, team_chat=True)
             reply, marker, update_text = response.message.replace("\r\n", "\n").partition("\nLOOMIS_PLAN\n")
-            if marker and response.status == "success":
+            if marker and response.status == "success" and project.status != "draft":
                 revised, separator, summary = update_text.partition("\nLOOMIS_HANDOFF\n")
                 revised, summary = revised.strip(), summary.strip()
                 old_plan = project.plan_content or ""
@@ -1048,7 +1048,7 @@ class Orchestrator:
                         runtime.handoff = (config.id, "")
                     status = project.status
                     reviewing = status in {"completed", "review_pending"}
-                    if status == "planning" or (reviewing and not previously_approved):
+                    if status in {"planning", "ready_to_plan"} or (reviewing and not previously_approved):
                         status = "awaiting_approval"
                         auto_approve = project.autonomy_mode == "autonomous"
                     elif reviewing:
@@ -1438,11 +1438,29 @@ class Orchestrator:
                     recent = result.message
                     if result.status == "timeout":
                         raise TimeoutError(result.message)
-                    if result.status != "success":
-                        raise RuntimeError(result.message or result.status)
                     response = result.message.strip()
+                    empty_result = ((result.status == "success" and not response)
+                                    or response.rstrip(".") == "Исполнитель не вернул результат")
+                    if result.status != "success" and not empty_result:
+                        raise RuntimeError(result.message or result.status)
+                    verified_by_workspace = False
+                    if empty_result:
+                        changed_files = await bridge.changed_project_files(pass_tree) if pass_tree else []
+                        target = workspace_file(workspace, expected_path) if expected_path != "-" else None
+                        if changed_files:
+                            files_report = "\n".join(
+                                f"{'создан' if status == 'A' else 'обновлён'} файл {path}"
+                                for status, path in changed_files
+                            )
+                            response = result.message = f"Сделано: {files_report}"
+                        elif reviewing and target and target.is_file() and target.stat().st_size > 0:
+                            response = result.message = "Результат проверки подтверждён файлами рабочей папки."
+                            verified_by_workspace = True
+                        else:
+                            raise RuntimeError("Исполнитель не вернул результат.")
                     continuation = re.search(r"(?m)^[ \t]*STEP_CONTINUE:[ \t]*(.*)$", response)
-                    if continuation:
+                    final_report = final_step and re.search(r"(?mi)^[ \t]*Сделано:[ \t]*\S", response)
+                    if continuation and not final_report:
                         stage = "сохранение промежуточного результата"
                         if response == WORKSPACE_ROUND_EXHAUSTED:
                             bridge.clean_workspace()
@@ -1469,16 +1487,6 @@ class Orchestrator:
                         if can_continue:
                             continue
                         raise RuntimeError("Промежуточный результат сохранён. Исчерпаны три автопродолжения шага.")
-                    verified_by_workspace = False
-                    if not response:
-                        target = workspace_file(workspace, expected_path) if expected_path != "-" else None
-                        if not reviewing or not (
-                            target and target.is_file() and target.stat().st_size > 0
-                            or await bridge.git("status", "--porcelain", "--untracked-files=all")
-                        ):
-                            raise RuntimeError("Исполнитель не вернул результат.")
-                        verified_by_workspace = True
-                        response = result.message = "Результат проверки подтверждён файлами рабочей папки."
                     blocked = re.search(r"(?m)^LOOMIS_BLOCKED:[ \t]*(.+)$", response)
                     if blocked:
                         raise RuntimeError(blocked[1])
@@ -1595,7 +1603,9 @@ class Orchestrator:
             next_config = next((item for item in ranked if item.id not in runtime.successful_agents),
                                ranked[0] if ranked else config)
         target = "@All" if complete else f"@{next_config.name}"
-        visible_result = re.sub(r"(?m)^(?:COMMIT_MSG:.*|LOOMIS_(?:COMMIT:.*|COMPLETE))[ \t]*$", "", result.message)
+        visible_result = re.sub(
+            r"(?m)^(?:(?:COMMIT_MSG|STEP_CONTINUE):.*|LOOMIS_(?:COMMIT:.*|COMPLETE))[ \t]*$", "", result.message,
+        )
         visible_result = re.sub(r"^(?:\s*Сделано:)+\s*", "", visible_result)
         report = (
             f"Сделано: {' '.join(visible_result.split())[:240]}\n"

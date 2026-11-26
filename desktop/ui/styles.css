@@ -429,7 +429,23 @@ option { background: var(--base); }
 .terminal-actions { font-size: 12px; }
 .terminal { contain: layout paint; flex: 1; min-height: 0; overflow: auto; margin-top: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--terminal); font: 13px/1.6 "IBM Plex Mono", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .composer-top { margin-bottom: 8px; }
-.composer-row textarea { flex: 1; resize: vertical; }
+.composer-row { position: relative; }
+.composer-resizer {
+  position: absolute;
+  inset: -3px 0 auto;
+  z-index: 1;
+  height: 6px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.composer-row textarea {
+  flex: 1;
+  min-width: 0;
+  resize: none !important;
+  min-height: 44px;
+  height: 44px;
+  max-height: 280px;
+}
 .composer-row textarea:disabled { opacity: .55; }
 #team-chat-status:empty { display: none; }
 #team-chat-status {
@@ -858,7 +874,6 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
 #direct-empty { padding-inline: 8px; color: var(--muted); }
 #direct, #work-output { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 #direct { overflow: auto; }
-.composer-row textarea { min-width: 0; max-height: 18vh; }
 
 @media (max-width: 1160px) {
   #project-page:not(.hidden):has(#direct-panel:not(.hidden)) { grid-template-columns: minmax(0, 1fr); }
