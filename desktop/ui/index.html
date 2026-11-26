@@ -119,17 +119,29 @@
           <canvas id="completion-lighter" aria-hidden="true"></canvas>
           <button id="completion-extinguish" type="button" aria-label="Погасить зажигалку"></button>
         </div>
-        <h1 id="completion-name" data-user-content></h1>
         <dl class="completion-metrics">
           <div class="completion-metric"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg><dt>Было потрачено времени</dt><dd id="completion-time">—</dd></div>
           <div class="completion-metric"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg><dt>Было потрачено токенов</dt><dd id="completion-tokens">—</dd></div>
           <div class="completion-metric"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M3 12h5m8 0h5"/></svg><dt>Выполнено коммитов / шагов</dt><dd id="completion-commits">—</dd></div>
           <div class="completion-metric"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6" r="2"/><circle cx="5" cy="17" r="2"/><circle cx="19" cy="17" r="2"/><path d="m11 8-5 7m7-7 5 7M7 17h10"/></svg><dt>Команда проекта</dt><dd id="completion-team">—</dd></div>
         </dl>
-        <div id="completion-actions" class="completion-actions" inert>
-          <button id="completion-home" class="button" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3Z"/></svg> В главное меню</button>
-          <button id="completion-stats" class="button" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg> Статистика проекта</button>
-          <button id="completion-return" class="button" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5-6 6 6 6M3 11h12a5 5 0 0 1 5 5v3"/></svg> Вернуться к проекту</button>
+        <div class="completion-content">
+          <h1 id="completion-name" data-user-content></h1>
+          <p class="completion-status">Проект завершён</p>
+          <div id="completion-actions" class="completion-actions" inert>
+            <button id="completion-home" class="button" type="button" aria-labelledby="completion-home-label" aria-describedby="completion-home-hint">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3Z"/></svg>
+              <span><strong id="completion-home-label">В главное меню</strong><small id="completion-home-hint">Список проектов</small></span>
+            </button>
+            <button id="completion-stats" class="button" type="button" aria-labelledby="completion-stats-label" aria-describedby="completion-stats-hint">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg>
+              <span><strong id="completion-stats-label">Статистика проекта</strong><small id="completion-stats-hint">Время, токены и шаги</small></span>
+            </button>
+            <button id="completion-return" class="button" type="button" aria-labelledby="completion-return-label" aria-describedby="completion-return-hint">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5-6 6 6 6M3 11h12a5 5 0 0 1 5 5v3"/></svg>
+              <span><strong id="completion-return-label">Вернуться к проекту</strong><small id="completion-return-hint">Продолжить разработку</small></span>
+            </button>
+          </div>
         </div>
       </section>
 

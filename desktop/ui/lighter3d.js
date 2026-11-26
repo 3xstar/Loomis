@@ -718,7 +718,7 @@ function syncCompletion() {
     closedAt = Infinity;
     completionModel?.reset();
   }
-  if (!id || document.hidden) return;
+  if (!id || document.hidden || completionScene.classList.contains("completion-closed")) return;
   completionLoad ??= import("./vendor/three.module.min.js").then(THREE => {
     completionModel = createLighter(THREE, completionStage);
   }).catch(error => console.warn("Loomis completion lighter:", error));
@@ -749,6 +749,7 @@ extinguish.addEventListener("click", (event) => {
   closedAt = performance.now();
   extinguish.disabled = true;
   completionScene.classList.add("completion-out");
+  completionScene.dispatchEvent(new Event("lighterclosed"));
 });
 
 finalActions.addEventListener("animationend", (event) => {

@@ -1187,7 +1187,8 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
   --completion-glass: linear-gradient(145deg, #ffffff24, #ffffff0a 60%, #ffffff13);
   --completion-border: #ffffff30;
   --completion-shadow: inset 0 1px #ffffff23, 0 14px 34px #0006;
-  --completion-hover: #252525;
+  --completion-hover: #303030;
+  --completion-bevel: #ffffff55;
   position: absolute;
   inset: 0;
   z-index: 2;
@@ -1206,6 +1207,7 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
   --completion-border: #71717a30;
   --completion-shadow: inset 0 1px #fff, 0 14px 34px #18181b14;
   --completion-hover: #fff;
+  --completion-bevel: #fff;
   color: #18181b;
   background: #f4f4f5;
 }
@@ -1252,20 +1254,32 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
   opacity: 0;
   background: radial-gradient(ellipse at 52% 50%, #bfbfbf35, #9e9e9e14 25%, transparent 62%);
 }
-.completion-scene h1 {
+.completion-content {
   position: absolute;
   top: 9%;
-  inset-inline: 6%;
-  z-index: 1;
-  margin: 0;
+  inset-inline: 0;
+  z-index: 3;
+  padding: 0 clamp(14px, 3vw, 32px) 24px;
   text-align: center;
+  pointer-events: none;
+  transition: top .85s ease, transform .85s ease;
+}
+.completion-scene:is(.completion-out, .completion-closed) .completion-content {
+  top: 50%;
+  transform: translateY(-50%);
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  pointer-events: auto;
+}
+.completion-closed .completion-content { transition: none; }
+.completion-content h1 {
+  margin: 0;
   font-size: clamp(1.8rem, 5vw, 4.6rem);
   font-weight: 600;
   line-height: 1.05;
   overflow-wrap: anywhere;
   opacity: 0;
   text-shadow: 0 0 36px #eaeaea55;
-  pointer-events: none;
 }
 .completion-lighter-stage {
   position: absolute;
@@ -1367,35 +1381,62 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
 #completion-team { font-size: clamp(.75rem, 1.6vw, 1.2rem); }
 .completion-team-roster:not(:empty) { display: block; margin-top: 4px; font-size: .82em; }
 .completion-lit .completion-light,
-.completion-lit h1,
+.completion-lit:not(.completion-out) h1,
 .completion-lit .completion-metrics { animation: completion-reveal var(--completion-rise-time) ease both; }
 .completion-lit .completion-lighter-stage { animation: completion-rise var(--completion-rise-time) cubic-bezier(.18,.72,.26,1) both; }
 .completion-out .completion-lighter-stage,
 .completion-out .completion-light,
-.completion-out .completion-metrics,
-.completion-out h1 { animation: completion-fade .85s .22s ease both; pointer-events: none; }
+.completion-out .completion-metrics { animation: completion-fade .85s .22s ease both; pointer-events: none; }
 .completion-out .completion-fallback span { transform: rotate(0); }
 .completion-out .completion-fallback i { opacity: 0; }
-.completion-actions {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  padding: 20px;
-  flex-wrap: wrap;
-  align-content: center;
+.completion-closed :is(.completion-lighter-stage, .completion-light, .completion-metrics) { display: none; }
+.completion-scene:is(.completion-out, .completion-closed) h1 { opacity: 1; }
+.completion-status {
+  margin: 12px 0 clamp(24px, 5vh, 44px);
+  color: var(--completion-muted);
   visibility: hidden;
   opacity: 0;
 }
-.completion-out .completion-actions {
+.completion-actions {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  visibility: hidden;
+  opacity: 0;
+}
+.completion-scene:is(.completion-out, .completion-closed) :is(.completion-status, .completion-actions) {
   visibility: visible;
+  opacity: 1;
+}
+.completion-out :is(.completion-status, .completion-actions) {
   animation: completion-reveal .66s 1.04s ease both;
 }
-.completion-actions .button { padding: 14px 18px; }
-.completion-actions .button:hover { background: var(--completion-hover); }
-:root[data-theme="light"] .completion-out .completion-actions { animation-delay: 1.22s; }
+.completion-actions .button {
+  display: flex;
+  flex: 1 1 220px;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  max-width: 244px;
+  min-height: 92px;
+  padding: 14px 18px;
+  text-align: start;
+  border-top-color: var(--completion-bevel);
+  background: linear-gradient(155deg, #ffffff16, transparent 52%), var(--completion-glass);
+  box-shadow: inset 0 1px 1px var(--completion-bevel), inset 0 -1px #ffffff1f, 0 8px 18px #0003;
+  transition: transform .24s ease, background-color .24s ease, box-shadow .24s ease;
+}
+.completion-actions .button svg { width: 32px; height: 32px; stroke-width: 1.5; }
+.completion-actions .button strong { display: block; font-size: .92rem; }
+.completion-actions .button small { display: block; margin-top: 5px; color: var(--completion-muted); font-size: .78rem; }
+.completion-actions .button:focus-visible { outline-color: currentColor; }
+.completion-actions .button:not(:disabled):hover {
+  transform: translateY(-4px);
+  background-color: var(--completion-hover);
+  box-shadow: inset 0 1px 1px var(--completion-bevel), 0 12px 20px #0004;
+}
+:root[data-theme="light"] .completion-out :is(.completion-status, .completion-actions) { animation-delay: 1.22s; }
 @keyframes completion-reveal { from { opacity: 0; } to { opacity: 1; } }
 @keyframes completion-rise { from { opacity: 0; transform: translateY(44%); } to { opacity: 1; transform: translateY(0); } }
 @keyframes completion-fade { from { opacity: 1; } to { opacity: 0; } }
@@ -1420,9 +1461,10 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
   .completion-out .completion-lighter-stage,
   .completion-out .completion-light,
   .completion-out .completion-metrics,
-  .completion-out h1,
-  .completion-out .completion-actions { animation-duration: .01s; animation-delay: 0s; }
-  :root[data-theme="light"] .completion-out .completion-actions { animation-delay: 0s; }
+  .completion-out :is(.completion-status, .completion-actions) { animation-duration: .01s; animation-delay: 0s; }
+  :root[data-theme="light"] .completion-out :is(.completion-status, .completion-actions) { animation-delay: 0s; }
+  .completion-content, .completion-actions .button { transition: none; }
+  .completion-actions .button:not(:disabled):hover { transform: none; }
   :root[data-theme="light"] .completion-scene::before,
   :root[data-theme="light"] .completion-scene::after { display: none; }
 }

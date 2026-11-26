@@ -2845,6 +2845,10 @@ function renderCompletionTeam(target, {agents, completed_steps}) {
   );
 }
 
+function completionLighterKey(id) {
+  return `loomis_lighter_closed_${id}`;
+}
+
 function syncCompletionScreen() {
   const scene = byId("completion-scene");
   const active = project?.status === "completed";
@@ -2857,14 +2861,16 @@ function syncCompletionScreen() {
   for (const panel of page.children) {
     if (panel !== scene) panel.inert = active;
   }
+  if (active) byId("completion-name").textContent = project.name;
   if (!changed) return;
   scene.classList.remove("completion-lit", "completion-out");
+  const closed = active && localStorage.getItem(completionLighterKey(id)) === "1";
+  scene.classList.toggle("completion-closed", closed);
   const actions = byId("completion-actions");
-  actions.inert = true;
-  byId("completion-extinguish").disabled = false;
-  if (!active) return;
+  actions.inert = !closed;
+  byId("completion-extinguish").disabled = closed;
+  if (!active || closed) return;
   const current = selection;
-  byId("completion-name").textContent = project.name;
   for (const metric of ["time", "commits", "tokens", "team"]) byId("completion-" + metric).textContent = "—";
   completionStats(project.id).then(({stats, commits}) => {
     if (current !== selection || scene.dataset.project !== id) return;
@@ -2894,6 +2900,7 @@ function confirmCompletionAction(reopen) {
     button.disabled = true;
     try {
       const {status} = await api(`projects/${id}/actions`, {action: reopen ? "reopen_project" : "confirm_completion"});
+      if (reopen) localStorage.removeItem(completionLighterKey(id));
       if (revision === modalRevision) showModal();
       if (current === selection && statusVersion === statusRevision) setStatus(status);
       if (reopen && current === selection && project.status === "review_pending") {
@@ -2912,6 +2919,9 @@ function confirmCompletionAction(reopen) {
 byId("review-folder").onclick = openProjectFolder;
 byId("review-continue").onclick = () => byId("message-input").focus();
 byId("review-complete").onclick = () => confirmCompletionAction(false);
+byId("completion-scene").addEventListener("lighterclosed", (event) => {
+  localStorage.setItem(completionLighterKey(event.currentTarget.dataset.project), "1");
+});
 byId("completion-home").onclick = openDashboard;
 byId("completion-stats").onclick = () => byId("stats-button").onclick();
 byId("completion-return").onclick = () => confirmCompletionAction(true);
