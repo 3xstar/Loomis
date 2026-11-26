@@ -1187,13 +1187,8 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
     to { opacity: 1; transform: translateY(0) scale(1); }
   }
 }
-#project-page > :not(.completion-scene) {
-  transition: opacity .55s ease, visibility .55s;
-}
-#project-page.show-completion > :not(.completion-scene) {
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
+#project-page.is-completed > :not(.completion-scene) {
+  display: none !important;
 }
 .completion-scene {
   --completion-rise-time: 1.55s;
@@ -1209,12 +1204,10 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
   isolation: isolate;
   overflow: hidden;
   visibility: hidden;
-  opacity: 0;
   color: #f5f5f5;
   background: #080808;
-  transition: opacity .65s ease, visibility .65s;
 }
-.show-completion .completion-scene { opacity: 1; visibility: visible; }
+#project-page.is-completed > .completion-scene { visibility: visible; }
 :root[data-theme="light"] .completion-scene {
   --completion-muted: #52525b;
   --completion-glass: linear-gradient(145deg, #fffc, #ffffff50 60%, #fffa);
@@ -1470,7 +1463,6 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
   .completion-lighter-stage { width: 85%; }
 }
 @media (prefers-reduced-motion: reduce) {
-  #project-page > :not(.completion-scene), .completion-scene { transition-duration: .01s; }
   .completion-scene { --completion-rise-time: .01s; }
   .completion-out .completion-lighter-stage,
   .completion-out .completion-light,

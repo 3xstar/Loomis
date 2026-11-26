@@ -953,6 +953,8 @@ async function selectProject(item) {
   planMode = false;
   deletedAgents.clear();
   project = item;
+  syncCompletionScreen();
+  if (item) showHubPage(false);
   specBusy = actionBusy = false;
   byId("spec-panel").classList.add("hidden");
   byId("spec-form").reset();
@@ -1262,8 +1264,8 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
     button.addEventListener("contextmenu", (event) => openProjectContextMenu(event, item));
     button.onclick = () => {
       document.querySelector(".sidebar").classList.remove("open");
-      showHubPage(false);
       if (project?.id === item.id) {
+        showHubPage(false);
         refreshHistory(item.id, selection);
         return;
       }
@@ -2862,7 +2864,7 @@ function syncCompletionScreen() {
   const changed = scene.dataset.project !== id;
   scene.dataset.project = id;
   scene.inert = !active;
-  page.classList.toggle("show-completion", active);
+  page.classList.toggle("is-completed", active);
   for (const panel of page.children) {
     if (panel !== scene) panel.inert = active;
   }
