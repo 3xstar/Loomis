@@ -37,7 +37,7 @@ let selection = 0;
 let magicAttempt = 0;
 let statusRevision = 0;
 let specBusy = false;
-let actionBusy = false;
+let actionBusy = null;
 const specItemMenu = byId("spec-item-context-menu");
 let specMenuTarget, specEdit;
 
@@ -590,7 +590,7 @@ function syncComposer() {
     const working = team && teamChatWorkingStatuses.has(project?.status);
     if (working) discardRecording(channel);
     const {busy, recording, microphonePending} = composers[channel];
-    const available = project && !working && project.status !== "deleted"
+    const available = project && !working && project.status !== "deleted" && actionBusy !== "build_spec"
       && (team || (selectedAgent && !["draft", "council"].includes(project.status)));
     const input = composerNode(channel, "message-input");
     const hasPlan = Boolean(project?.has_plan);
@@ -694,8 +694,9 @@ function renderProjectControls() {
     draft: ["build_spec"], planning: ["council"], ready_to_plan: ["council"], awaiting_approval: ["approve"],
     running: ["pause", "rollback"], paused: ["pause", "rollback"], completed: ["rollback"],
   }[status] || [];
-  byId("spec-panel").classList.toggle("hidden", status !== "draft");
-  workCenter.hidden = !project;
+  const collectingSpec = status === "draft" && actionBusy !== "build_spec";
+  byId("spec-panel").classList.toggle("hidden", !collectingSpec);
+  workCenter.hidden = !project || collectingSpec;
   const hasCycleActions = available.length && status !== "draft";
   byId("project-controls").classList.toggle("hidden", !hasCycleActions);
   byId("cycle-empty").hidden = Boolean(hasCycleActions);
@@ -1129,7 +1130,8 @@ async function selectProject(item) {
   delete byId("completion-scene").dataset.chat;
   syncCompletionScreen();
   if (item) showHubPage(false);
-  specBusy = actionBusy = false;
+  specBusy = false;
+  actionBusy = null;
   closeSpecItemMenu();
   if (specEdit) setSpecEdit(null);
   byId("spec-text").readOnly = false;
@@ -1458,7 +1460,7 @@ async function runProjectAction(button) {
   const path = "projects/" + project.id + "/actions";
   let action = button.dataset.action;
   if (action === "pause" && project.status === "paused") action = "resume";
-  actionBusy = true;
+  actionBusy = action;
   renderProjectControls();
   try {
     if (action === "rollback" && project.status === "running") {
@@ -1471,7 +1473,7 @@ async function runProjectAction(button) {
     notify(error.message);
   } finally {
     if (current === selection) {
-      actionBusy = false;
+      actionBusy = null;
       renderProjectControls();
     }
   }
