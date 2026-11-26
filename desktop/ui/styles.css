@@ -474,6 +474,98 @@ option { background: var(--base); }
 .modal { max-height: calc(100dvh - 32px); overflow: auto; }
 .modal-head { margin-bottom: 18px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+#delete-modal {
+  --delete-ink: #fca5a5;
+  --delete-fill: rgba(239, 68, 68, 0.12);
+  --delete-line: rgba(239, 68, 68, 0.4);
+  width: min(440px, 92vw);
+  max-width: calc(100vw - 32px);
+  padding: 24px;
+  box-sizing: border-box;
+  background-clip: padding-box;
+}
+:root[data-theme="light"] #delete-modal { --delete-ink: #991b1b; }
+#delete-modal .modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+#delete-title { overflow-wrap: anywhere; }
+#delete-modal .modal-head .close-modal {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 9px;
+  font-size: 20px;
+  line-height: 1;
+}
+.delete-repo-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: background-color var(--motion) ease, border-color var(--motion) ease;
+}
+.delete-repo-option:has(:checked) {
+  background: var(--delete-fill);
+  border-color: var(--delete-line);
+}
+#delete-github-repo {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  padding: 0;
+  flex-shrink: 0;
+  border: 1px solid var(--muted);
+  border-radius: 5px;
+  cursor: pointer;
+}
+#delete-github-repo:checked { background: #b91c1c; border-color: #b91c1c; }
+#delete-github-repo:checked::after {
+  content: "";
+  width: 5px;
+  height: 9px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg);
+}
+@media (forced-colors: active) {
+  #delete-github-repo { appearance: auto; }
+  #delete-github-repo:checked::after { content: none; }
+}
+.delete-repo-copy { min-width: 0; }
+#delete-github-name {
+  display: table;
+  max-width: 100%;
+  margin-top: 6px;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: 12px/1.4 Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+#delete-modal .modal-actions { margin-top: 20px; gap: 10px; }
+#confirm-delete { color: var(--delete-ink); border-color: var(--delete-line); font-weight: 650; }
+#delete-modal:has(:where(#delete-github-option:not(.hidden) :checked)) #confirm-delete {
+  background: var(--delete-fill);
+}
+#delete-modal #confirm-delete:not(:disabled):is(:hover, :focus-visible) {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: white;
+  box-shadow: none;
+}
 #logout-modal { width: min(100%, 360px); }
 #logout-title { margin-bottom: 18px; }
 #rollback-pause-note { margin-bottom: 14px; }

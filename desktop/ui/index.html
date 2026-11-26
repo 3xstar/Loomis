@@ -445,11 +445,15 @@
       </form>
     </div>
     <div id="delete-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="delete-title">
-      <div class="modal-head"><h3 id="delete-title"></h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <div class="modal-head">
+        <h3 id="delete-title"></h3>
+        <button class="icon-button close-modal" type="button" aria-label="Закрыть">×</button>
+      </div>
       <div id="delete-github-option" class="hidden">
-        <label class="choice-chip">
-          <input id="delete-github-repo" type="checkbox" aria-describedby="delete-github-name">
-          <span><span>Также удалить связанный репозиторий на GitHub</span><br>
+        <label class="delete-repo-option">
+          <input id="delete-github-repo" type="checkbox" aria-labelledby="delete-github-label" aria-describedby="delete-github-name">
+          <span class="delete-repo-copy">
+            <span id="delete-github-label">Также удалить связанный репозиторий на GitHub</span>
             <code id="delete-github-name" data-user-content></code>
           </span>
         </label>
