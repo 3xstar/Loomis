@@ -1229,7 +1229,6 @@ async function loadDashboardUsage() {
     const usage = await api("projects/dashboard-usage");
     if (session !== token || request !== dashboardUsageRequest) return;
     byId("welcome-tokens").textContent = usage.total_tokens.toLocaleString("ru-RU");
-    byId("welcome-cache").textContent = usage.tokens_saved.toLocaleString("ru-RU");
   } catch (error) {
     if (session === token && request === dashboardUsageRequest) notify(error.message);
   }
@@ -1237,9 +1236,11 @@ async function loadDashboardUsage() {
 
 async function loadProjects(preferredId = project?.id, preserveSelection = false) {
   const session = token;
+  const current = selection;
   const projects = await api("projects");
   if (!token || token !== session) return;
   byId("welcome-projects").textContent = projects.length;
+  byId("welcome-completed").textContent = projects.filter((item) => item.status === "completed").length;
   loadDashboardUsage();
   byId("welcome-dashboard").dataset.projectCount = projects.length;
   const buttons = projects.map((item) => {
@@ -1276,7 +1277,7 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
     buttons[projects.indexOf(active)].setAttribute("aria-current", "true");
     return;
   }
-  await selectProject(projects.find((item) => item.id === preferredId));
+  if (current === selection) await selectProject(projects.find((item) => item.id === preferredId));
 }
 
 async function runProjectAction(button) {
@@ -1846,7 +1847,7 @@ function renderProjectTitle() {
 
 byId("dashboard-button").onclick = () => {
   selectProject();
-  loadDashboardUsage();
+  loadProjects().catch((error) => notify(error.message));
 };
 
 const workspaceControls = byId("workspace-controls");
@@ -2823,6 +2824,20 @@ async function completionStats(id) {
   return {stats, commits};
 }
 
+function renderCompletionTeam(target, {agents, completed_steps}) {
+  const names = agents.map(({name}) => name);
+  const visibleNames = names.slice(0, 3).join(", ");
+  const others = names.length > 3 ? ` +${names.length - 3}` : "";
+  const roster = element("span", "completion-team-roster", visibleNames + others);
+  roster.dataset.userContent = "";
+  roster.title = names.join(", ");
+  target.replaceChildren(
+    element("span", "", "Агентов"), ` ${statsFormat(agents.length)} / `,
+    element("span", "", "Шагов"), ` ${statsFormat(completed_steps)}`,
+    roster,
+  );
+}
+
 function syncCompletionScreen() {
   const scene = byId("completion-scene");
   const active = project?.status === "completed";
@@ -2849,7 +2864,7 @@ function syncCompletionScreen() {
     byId("completion-time").textContent = durationFormat(stats.duration_seconds);
     byId("completion-commits").textContent = `${statsFormat(commits?.length)} / ${statsFormat(stats.completed_steps)}`;
     byId("completion-tokens").textContent = statsFormat(stats.total_tokens);
-    byId("completion-team").textContent = `${statsFormat(stats.agents.length)} / ${statsFormat(stats.tokens_saved)}`;
+    renderCompletionTeam(byId("completion-team"), stats);
   }).catch((error) => {
     if (scene.dataset.project === id) notify(error.message);
   });
@@ -2917,8 +2932,10 @@ byId("stats-button").onclick = async () => {
       for (const [label, value] of [
         ["Было потрачено времени", durationFormat(stats.duration_seconds)],
         ["Выполнено коммитов / шагов", `${statsFormat(commits?.length)} / ${statsFormat(stats.completed_steps)}`],
-        ["Команда / Сэкономлено кэшем", `${statsFormat(stats.agents.length)} / ${statsFormat(stats.tokens_saved)}`],
       ]) summary.append(element("dt", "", label), element("dd", "", value));
+      const team = element("dd");
+      renderCompletionTeam(team, stats);
+      summary.append(element("dt", "", "Команда проекта"), team);
       const links = element("div", "review-actions");
       const folder = element("button", "button secondary", "Открыть в Проводнике");
       folder.type = "button";
@@ -3015,7 +3032,7 @@ byId("logout-confirm").onclick = async () => {
   const cleared = writeDesktopSession(null);
   stopMagic();
   selectProject(undefined);
-  for (const metric of ["models", "projects", "tokens", "cache"]) byId("welcome-" + metric).textContent = "—";
+  for (const metric of ["models", "projects", "tokens", "completed"]) byId("welcome-" + metric).textContent = "—";
   delete byId("welcome-dashboard").dataset.projectCount;
   showWorkspace(false);
   await cleared;

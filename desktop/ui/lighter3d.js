@@ -20,24 +20,27 @@ let pointer;
 let drag;
 let suppressPointerClick = false;
 let ashes = [];
-// Outer flame, inner flame, core, and reflected light at each project count.
-const flamePalettes = [
-  ["#ff7b00", "#ffb703", "#ffedce", "#ff9b32"],
-  ["#ff9f43", "#ffd792", "#f0faff", "#ffc382"],
-  ["#86c9fb", "#c6e8ff", "#edfaff", "#8ac7ff"],
-  ["#0284c7", "#38bdf8", "#c7efff", "#38bdf8"],
-  ["#0277c4", "#38bdf8", "#98dcff", "#249ffa"],
-  ["#2563eb", "#60a5fa", "#86bfff", "#2563eb"],
-];
-let projectCount = 0;
+// Outer flame, inner flame, core, and reflected light.
+const warmFlame = ["#ff6a00", "#ffb703", "#ffedce", "#ff9b32"];
+const coolFlame = ["#2563eb", "#60a5fa", "#86bfff", "#2563eb"];
+let heatRatio = 0;
+
+function blueCoverage(heat) {
+  return heat <= .5 ? Math.max(0, (heat - .2) / .6) : heat;
+}
 
 function syncProjectCount() {
-  projectCount = Math.min(flamePalettes.length - 1, Number(dashboard.dataset.projectCount) || 0);
-  const [outer, inner, core, glow] = flamePalettes[projectCount];
-  stage.style.setProperty("--flame-outer", outer);
-  stage.style.setProperty("--flame-inner", inner);
-  stage.style.setProperty("--flame-core", core);
-  stage.style.setProperty("--flame-glow", glow);
+  const projectCount = Number(dashboard.dataset.projectCount) || 0;
+  heatRatio = Math.min(Math.max(projectCount, 0) / 10, 1);
+  const coverage = blueCoverage(heatRatio);
+  for (const [index, name] of ["outer", "inner", "core"].entries()) {
+    const cool = coolFlame[index];
+    const warm = warmFlame[index];
+    stage.style.setProperty(`--flame-warm-${name}`, warm);
+    stage.style.setProperty(`--flame-cool-${name}`, cool);
+  }
+  stage.style.setProperty("--flame-glow", `color-mix(in srgb, ${coolFlame[3]} ${coverage * 100}%, ${warmFlame[3]})`);
+  stage.style.setProperty("--flame-split", `${108 - coverage * 116}%`);
   scheduleFrame();
 }
 
@@ -281,8 +284,9 @@ function createLighter(THREE, completionStage) {
   let depth = 0;
   let sparkTimer = 0;
   let theme;
-  let temperature = projectCount;
-  const palettes = flamePalettes.map(palette => palette.map(color => new THREE.Color(color)));
+  let temperature = heatRatio;
+  const warm = warmFlame.map(color => new THREE.Color(color));
+  const cool = coolFlame.map(color => new THREE.Color(color));
 
   function resize() {
     const { width: nextWidth, height: nextHeight } = canvas.getBoundingClientRect();
@@ -346,7 +350,7 @@ function createLighter(THREE, completionStage) {
   };
   const steel = new THREE.MeshStandardMaterial({ color: 0xb1b4bc, metalness: .8, roughness: .29 });
   const dark = new THREE.MeshStandardMaterial({ color: 0x18191e, roughness: .85 });
-  const fireLight = new THREE.PointLight(palettes[projectCount][3], 0, 3);
+  const fireLight = new THREE.PointLight(cinematic ? 0xffffff : warm[3], 0, 3);
   fireLight.position.set(0, 1.93, .29);
   lighterGroup.add(fireLight);
 
@@ -395,7 +399,7 @@ function createLighter(THREE, completionStage) {
     return new THREE.Mesh(geometry, material);
   }
 
-  const body = roundedBox(1.10, 1.32, .43, .095, .04, cinematic ? metal.clone() : metal);
+  const body = roundedBox(1.10, 1.32, .43, .095, .04, metal);
   body.position.y = .67;
   lighterGroup.add(body);
   const pivot = new THREE.Group();
@@ -405,6 +409,17 @@ function createLighter(THREE, completionStage) {
   pivot.add(lid);
   pivot.rotation.z = angle;
   lighterGroup.add(pivot);
+
+  const contourMaterial = new THREE.LineBasicMaterial({
+    color: 0xe5e5e5, opacity: 0, transparent: true, depthWrite: false, toneMapped: false,
+  });
+  const contours = cinematic ? [body, lid].map(mesh => {
+    const contour = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry, 5), contourMaterial);
+    contour.scale.setScalar(1.001);
+    contour.visible = false;
+    mesh.add(contour);
+    return contour;
+  }) : [];
 
   const hinge = new THREE.Mesh(new THREE.CylinderGeometry(.067, .067, .36, 20), steel);
   hinge.rotation.x = Math.PI / 2;
@@ -453,8 +468,9 @@ function createLighter(THREE, completionStage) {
   const flameGeometry = new THREE.SphereGeometry(1, 32, 32);
   const layers = [];
   const flameUniforms = {
-    time: { value: 0 }, bend: { value: 0 }, depth: { value: 0 }, strength: { value: 0 },
+    time: { value: 0 }, bend: { value: 0 }, depth: { value: 0 }, strength: { value: 0 }, blue: { value: 0 },
   };
+  const silver = [0xa4a4a4, 0xe0e0e0, 0xffffff];
   for (const [radius, length, opacity, bottom] of [
     [.23, .84, .39, .00],
     [.165, .70, .72, .01],
@@ -465,7 +481,8 @@ function createLighter(THREE, completionStage) {
       uniforms: {
         ...flameUniforms,
         radius: { value: radius }, length: { value: length }, opacity: { value: opacity },
-        color: { value: palettes[projectCount][layers.length].clone() }, bottom: { value: bottom },
+        color: { value: cinematic ? new THREE.Color(silver[layers.length]) : warm[layers.length] },
+        coolColor: { value: cool[layers.length] }, bottom: { value: bottom },
       },
       vertexShader: `
         uniform float time, bend, depth, radius, length, bottom;
@@ -483,14 +500,18 @@ function createLighter(THREE, completionStage) {
           gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.);
         }`,
       fragmentShader: `
-        uniform float strength, opacity;
-        uniform vec3 color;
+        uniform float strength, opacity, blue;
+        uniform vec3 color, coolColor;
         varying float rise;
         varying vec3 surfaceNormal;
         void main() {
           float edge = smoothstep(.0, .72, abs(surfaceNormal.z));
           float fade = smoothstep(0., .10, rise) * (1. - smoothstep(.66, 1., rise));
-          gl_FragColor = vec4(mix(color, vec3(1.), .31 * (1. - rise)),
+          float coolMix = smoothstep(-.12, .12, blue - rise)
+            * smoothstep(0., .12, blue);
+          coolMix = mix(coolMix, 1., smoothstep(.88, 1., blue));
+          vec3 flameColor = mix(color, coolColor, coolMix);
+          gl_FragColor = vec4(mix(flameColor, vec3(1.), .31 * (1. - rise) * (1. - coolMix)),
             edge * fade * opacity * strength);
           #include <colorspace_fragment>
         }`,
@@ -576,34 +597,27 @@ function createLighter(THREE, completionStage) {
       yawTarget += dx * (2 * Math.PI / 240);
       scheduleFrame();
     },
-    draw(time, dt, open, lit, bodyGlow = 0) {
+    draw(time, dt, open, lit, contourGlow = 0) {
       resize();
-      const light = !cinematic && document.documentElement.dataset.theme === "light";
+      const light = document.documentElement.dataset.theme === "light";
       if (theme !== light) {
         theme = light;
         metal.color.setHex(light ? 0xc2c7d0 : 0x53565f);
-        if (cinematic) body.material.color.copy(metal.color);
+        contourMaterial.color.setHex(light ? 0xf7f7f7 : 0xdcdcdc);
         badge.material.color.setHex(light ? 0x252932 : 0xe5e8f1);
       }
       const still = reducedMotion.matches;
       const yaw = lighterGroup.rotation.y;
       const rotating = Math.abs(yawTarget - yaw) > .001;
       lighterGroup.rotation.y = still || !rotating ? yawTarget : THREE.MathUtils.damp(yaw, yawTarget, 20, dt);
-      temperature = still ? projectCount : THREE.MathUtils.damp(temperature, projectCount, 8, dt);
-      const lower = Math.floor(temperature);
-      const upper = Math.min(lower + 1, palettes.length - 1);
-      const blend = temperature - lower;
-      for (const [index, layer] of layers.entries()) {
-        layer.material.uniforms.color.value.lerpColors(palettes[lower][index], palettes[upper][index], blend);
-      }
-      fireLight.color.lerpColors(palettes[lower][3], palettes[upper][3], blend);
       if (cinematic) {
-        for (const [index, layer] of layers.entries()) {
-          layer.material.uniforms.color.value.setHex([0xa4a4a4, 0xe0e0e0, 0xffffff][index]);
-        }
-        fireLight.color.setHex(0xffffff);
-        body.material.emissive.setHex(0xffffff);
-        body.material.emissiveIntensity = bodyGlow;
+        contourMaterial.opacity = contourGlow;
+        for (const contour of contours) contour.visible = contourGlow > .001;
+      } else {
+        temperature = still ? heatRatio : THREE.MathUtils.damp(temperature, heatRatio, 8, dt);
+        if (Math.abs(temperature - heatRatio) < .001) temperature = heatRatio;
+        flameUniforms.blue.value = blueCoverage(temperature);
+        fireLight.color.lerpColors(warm[3], cool[3], flameUniforms.blue.value);
       }
       scene.updateMatrixWorld();
       const hit = Boolean(!cinematic && !drag?.moved && pointer?.onToggle && hitTest(pointer, open));
@@ -661,7 +675,7 @@ function createLighter(THREE, completionStage) {
         stage.setAttribute("data-webgl", "");
       }
       return !still && (rotating || lit || fire > .002 || Math.abs(angle - goal) > .0005 ||
-        Math.abs(velocity) > .001 || Math.abs(temperature - projectCount) > .001 ||
+        Math.abs(velocity) > .001 || temperature !== heatRatio ||
         sparks.some(spark => spark.life > 0));
     },
   };
@@ -702,7 +716,6 @@ function syncCompletion() {
     previousCompletionTime = 0;
     entranceEnd = Infinity;
     closedAt = Infinity;
-    completionStage.classList.remove("completion-breathing");
     completionModel?.reset();
   }
   if (!id || document.hidden) return;
@@ -722,7 +735,6 @@ function syncCompletion() {
 completionStage.addEventListener("animationend", (event) => {
   if (event.animationName !== "completion-rise") return;
   entranceEnd = performance.now();
-  completionStage.classList.add("completion-breathing");
   const focused = document.activeElement;
   if (!extinguish.closest("[inert]") && !extinguish.disabled &&
       (focused === document.body || focused.matches('.project-button[aria-current="true"]'))) {
