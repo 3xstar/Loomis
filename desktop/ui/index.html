@@ -240,6 +240,7 @@
             </div>
             <div class="spec-buttons">
               <button id="spec-add" class="button secondary" type="submit">Добавить в буфер</button>
+              <button id="spec-cancel-edit" class="button secondary" type="button" hidden>Отмена</button>
               <button id="spec-attach" class="button secondary" type="button">Прикрепить документ</button>
               <button id="spec-image-button" class="button secondary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg> Изображение</button>
               <input id="spec-image" class="hidden" type="file" multiple accept=".png,.jpg,.jpeg,.webp">
@@ -359,6 +360,10 @@
     <button id="context-copy-commit" type="button" role="menuitem" hidden><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>Скопировать хэш коммита</button>
     <button id="context-edit" type="button" role="menuitem"></button>
     <button id="context-delete" class="danger" type="button" role="menuitem"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7l1-3h4l1 3"/></svg> Удалить</button>
+  </div>
+  <div id="spec-item-context-menu" class="context-menu glass-panel" role="menu" aria-label="Действия" inert>
+    <button id="spec-item-edit" type="button" role="menuitem"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 5 5M4 20l1-5L16 4a2 2 0 0 1 3 0l1 1a2 2 0 0 1 0 3L9 19l-5 1Z"/></svg>Редактировать</button>
+    <button id="spec-item-delete" class="danger" type="button" role="menuitem"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7l1-3h4l1 3"/></svg> Удалить</button>
   </div>
   <div id="modal-backdrop" class="modal-backdrop hidden" inert>
     <div id="logout-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="logout-title">

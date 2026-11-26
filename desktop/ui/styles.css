@@ -408,6 +408,9 @@ option { background: var(--base); }
 .spec-items { display: grid; gap: 6px; margin: 0; padding-inline-start: 24px; overflow-wrap: anywhere; }
 .spec-items:empty, #command-approvals:empty { display: none; }
 .spec-items summary { cursor: pointer; }
+.spec-text-item { border-radius: 9px; }
+.spec-text-item:hover, .spec-text-item:focus-within { background: var(--surface); }
+.spec-text-item, .spec-text-item summary { cursor: context-menu; }
 .spec-items p { white-space: pre-wrap; max-height: 180px; overflow: auto; }
 .command-approval { margin-bottom: 8px; overflow-wrap: anywhere; }
 .api-fields {

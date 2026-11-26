@@ -366,6 +366,32 @@ async def add_spec_item(request: Request, project: OwnedProject, session: Sessio
     return item
 
 
+async def get_spec_text_item(item_id: int, project: Project, session: Session) -> SpecItem:
+    item = await session.get(SpecItem, item_id)
+    if item is None or item.project_id != project.id or item.title != "Текст":
+        raise HTTPException(404, "Текстовый фрагмент ТЗ не найден.")
+    return item
+
+
+@router.patch("/{project_id}/spec-items/{item_id}", response_model=SpecItemView)
+async def edit_spec_item(item_id: int, data: SpecText, project: OwnedProject, session: Session):
+    async with orchestrator.runtime(project.id).boundary:
+        await require_draft(session, project)
+        item = await get_spec_text_item(item_id, project, session)
+        item.content = data.text
+        await session.commit()
+    return item
+
+
+@router.delete("/{project_id}/spec-items/{item_id}", status_code=204)
+async def delete_spec_item(item_id: int, project: OwnedProject, session: Session):
+    async with orchestrator.runtime(project.id).boundary:
+        await require_draft(session, project)
+        item = await get_spec_text_item(item_id, project, session)
+        await session.delete(item)
+        await session.commit()
+
+
 @router.patch("/{project_id}", response_model=ProjectView)
 async def update_project(data: ProjectPatch, project: OwnedProject, session: Session, user: CurrentUser):
     if data.github_visibility or data.git_repo_url:

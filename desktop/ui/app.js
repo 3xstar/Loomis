@@ -38,6 +38,8 @@ let magicAttempt = 0;
 let statusRevision = 0;
 let specBusy = false;
 let actionBusy = false;
+const specItemMenu = byId("spec-item-context-menu");
+let specMenuTarget, specEdit;
 
 let planMode = false;
 let selectedAgent;
@@ -699,10 +701,12 @@ function renderProjectControls() {
   rebuild.disabled = !project || actionBusy || ["draft", "council", "deleted"].includes(status)
     || !agentsInProject.some((agent) => agent.enabled);
   syncComposer();
-  byId("spec-add").disabled = byId("spec-attach").disabled = byId("spec-image-button").disabled = specBusy || actionBusy;
+  byId("spec-add").disabled = byId("spec-cancel-edit").disabled = specBusy || actionBusy;
+  byId("spec-attach").disabled = byId("spec-image-button").disabled = specBusy || actionBusy || Boolean(specEdit);
   byId("spec-attachments").querySelectorAll("button").forEach((button) => {
-    button.disabled = specBusy || actionBusy;
+    button.disabled = specBusy || actionBusy || Boolean(specEdit);
   });
+  if (status !== "draft" || specBusy || actionBusy) closeSpecItemMenu();
   renderTeamEmpty();
 }
 
@@ -743,7 +747,7 @@ function renderTeamEmpty() {
   button.disabled = actionBusy || (status === "council" && hasAgents && byId("message-input").disabled);
 }
 
-function appendSpecItem({title, content}) {
+function createSpecItem({id, title, content}) {
   const item = document.createElement("li");
   const details = document.createElement("details");
   const summary = document.createElement("summary");
@@ -752,8 +756,109 @@ function appendSpecItem({title, content}) {
   text.textContent = content;
   details.append(summary, text);
   item.append(details);
-  byId("spec-items").append(item);
+  item.dataset.userContent = "";
+  if (title === "Текст") {
+    item.className = "spec-text-item";
+    summary.setAttribute("aria-haspopup", "menu");
+    item.oncontextmenu = (event) => {
+      event.preventDefault();
+      if (project?.status !== "draft" || specBusy || actionBusy) return;
+      closeContextMenu();
+      closeProjectContextMenu();
+      specMenuTarget = {id, content, item, summary};
+      positionContextMenu(specItemMenu, event, summary);
+      specItemMenu.inert = false;
+      byId("spec-item-edit").focus({preventScroll: true});
+    };
+  }
+  return item;
 }
+
+function appendSpecItem(data) {
+  byId("spec-items").append(createSpecItem(data));
+}
+
+function closeSpecItemMenu(restoreFocus = false) {
+  const target = specMenuTarget;
+  specMenuTarget = null;
+  specItemMenu.inert = true;
+  if (restoreFocus) target?.summary.focus({preventScroll: true});
+}
+
+function setSpecEdit(target) {
+  const input = byId("spec-text");
+  const draft = specEdit?.draft ?? input.value;
+  specEdit = target ? {...target, draft} : null;
+  input.value = target ? target.content : draft;
+  byId("spec-add").textContent = target ? "Сохранить изменения" : "Добавить в буфер";
+  byId("spec-cancel-edit").hidden = !target;
+}
+
+async function mutateSpecItem(target, method, body) {
+  const current = selection;
+  const path = `projects/${project.id}/spec-items/${target.id}`;
+  specBusy = true;
+  byId("spec-text").readOnly = true;
+  renderProjectControls();
+  try {
+    const updated = await api(path, body, token, method);
+    if (current !== selection) return;
+    if (updated) {
+      const replacement = createSpecItem(updated);
+      replacement.firstElementChild.open = target.item.firstElementChild.open;
+      target.item.replaceWith(replacement);
+    } else {
+      target.item.remove();
+      byId("spec-empty").classList.toggle("hidden", Boolean(byId("spec-items").childElementCount));
+    }
+    if (specEdit?.id === target.id) setSpecEdit(null);
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    if (current === selection) {
+      specBusy = false;
+      byId("spec-text").readOnly = false;
+      renderProjectControls();
+    }
+  }
+}
+
+byId("spec-item-edit").onclick = () => {
+  if (!specMenuTarget) return;
+  setSpecEdit(specMenuTarget);
+  closeSpecItemMenu();
+  renderProjectControls();
+  byId("spec-text").focus();
+};
+byId("spec-item-delete").onclick = () => {
+  const target = specMenuTarget;
+  if (!target) return;
+  closeSpecItemMenu();
+  return mutateSpecItem(target, "DELETE");
+};
+byId("spec-cancel-edit").onclick = () => {
+  setSpecEdit(null);
+  renderProjectControls();
+  byId("spec-text").focus();
+};
+specItemMenu.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeSpecItemMenu(true);
+  } else if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+    event.preventDefault();
+    const [first, last] = specItemMenu.querySelectorAll("button");
+    (event.key === "Home" || (event.key !== "End" && document.activeElement === last) ? first : last).focus();
+  }
+});
+specItemMenu.addEventListener("focusout", (event) => {
+  if (!specItemMenu.contains(event.relatedTarget)) closeSpecItemMenu();
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!specItemMenu.contains(event.target)) closeSpecItemMenu();
+});
+window.addEventListener("resize", () => closeSpecItemMenu());
 
 async function loadSpecItems(projectId, current) {
   specBusy = true;
@@ -786,6 +891,10 @@ byId("spec-form").onsubmit = async (event) => {
   const input = byId("spec-text");
   const message = input.value.trim();
   if (project?.status !== "draft" || specBusy || actionBusy || (!message && !specAttachments.length)) return;
+  if (specEdit) {
+    if (message) await mutateSpecItem(specEdit, "PATCH", {text: message});
+    return;
+  }
   const current = selection;
   const {id} = project;
   const path = "projects/" + id;
@@ -990,6 +1099,9 @@ async function selectProject(item) {
   syncCompletionScreen();
   if (item) showHubPage(false);
   specBusy = actionBusy = false;
+  closeSpecItemMenu();
+  if (specEdit) setSpecEdit(null);
+  byId("spec-text").readOnly = false;
   byId("spec-panel").classList.add("hidden");
   byId("spec-form").reset();
   specAttachments = [];
@@ -1488,6 +1600,7 @@ let modalRevision = 0;
 
 function openContextMenu(event, target) {
   event.preventDefault();
+  closeSpecItemMenu();
   contextTrigger = event.currentTarget;
   contextTarget = target;
   closeProjectContextMenu();
@@ -3156,6 +3269,7 @@ let projectMenuTarget, projectMenuTrigger, projectMenuRepo;
 
 function openProjectContextMenu(event, item) {
   event.preventDefault();
+  closeSpecItemMenu();
   closeContextMenu();
   projectMenuTrigger = event.currentTarget;
   projectMenuTarget = {kind: "project", item, path: "projects/" + item.id};
