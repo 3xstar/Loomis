@@ -623,6 +623,8 @@ function setStatus(status) {
   const enteringDraft = status === "draft" && byId("spec-panel").classList.contains("hidden");
   if (project) {
     project.status = status;
+    byId("project-list").querySelector(`[data-id="${project.id}"]`)
+      ?.toggleAttribute("data-completed", status === "completed");
     if (!["draft", "deleted", "council"].includes(status)) {
       const current = selection;
       const revision = statusRevision;
@@ -1251,9 +1253,12 @@ async function loadProjects(preferredId = project?.id, preserveSelection = false
     button.type = "button";
     button.title = item.name;
     button.setAttribute("aria-label", item.name);
+    button.toggleAttribute("data-completed", item.status === "completed");
     button.append(element("span", "project-name", item.name),
       element("span", "project-acronym", projectAcronym(item.name)));
     button.lastElementChild.setAttribute("aria-hidden", "true");
+    button.insertAdjacentHTML("beforeend",
+      '<svg class="project-completed" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg>');
     button.addEventListener("contextmenu", (event) => openProjectContextMenu(event, item));
     button.onclick = () => {
       document.querySelector(".sidebar").classList.remove("open");

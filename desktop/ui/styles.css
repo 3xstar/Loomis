@@ -105,19 +105,20 @@ button svg {
 }
 button:not(:disabled, :where(#brand-home, #completion-extinguish)):hover { box-shadow: inset 0 0 0 1px var(--accent); }
 #brand-home {
-  --logo-glow: #e6ebf6;
+  --logo-glow: drop-shadow(0 0 2px rgba(255, 255, 255, 0.9)) drop-shadow(0 0 7px rgba(255, 255, 255, 0.55));
   padding: 0;
   border: 0;
   background: transparent;
+  box-shadow: none;
 }
-:root[data-theme="light"] #brand-home { --logo-glow: #737e91; }
+:root[data-theme="light"] #brand-home {
+  --logo-glow: drop-shadow(0 0 3px rgba(0, 0, 0, 0.35)) drop-shadow(0 0 8px rgba(0, 0, 0, 0.18));
+}
 #brand-home img {
-  transition: filter 220ms ease, transform 220ms ease;
+  image-rendering: -webkit-optimize-contrast;
+  transition: filter 220ms ease;
 }
-#brand-home:hover img {
-  filter: drop-shadow(0 0 2px var(--logo-glow)) drop-shadow(0 0 5px var(--logo-glow));
-  transform: scale(1.04);
-}
+#brand-home:hover img { filter: var(--logo-glow); }
 @media (prefers-reduced-motion: reduce) {
   #brand-home img { transition: none; }
 }
@@ -170,7 +171,10 @@ option { background: var(--base); }
 .user-copy span, .brand-row span { display: block; font-size: 12px; }
 .avatar { display: grid; place-items: center; width: 28px; aspect-ratio: 1; border-radius: 50%; background: var(--surface); }
 .project-list { display: grid; align-content: start; gap: 6px; overflow: auto; }
-.project-button { text-align: left; overflow-wrap: anywhere; }
+.project-button { display: flex; align-items: center; gap: 8px; text-align: left; overflow-wrap: anywhere; }
+.project-name { min-width: 0; }
+.project-button .project-completed { margin-left: auto; color: var(--ink); }
+.project-button:not([data-completed]) .project-completed { display: none; }
 
 .app-screen.icon-rail { grid-template-columns: 68px minmax(0, 1fr); }
 .icon-rail .sidebar { width: 68px; padding: 10px 8px; gap: 8px; }
@@ -211,6 +215,16 @@ option { background: var(--base); }
   scrollbar-width: none;
 }
 .icon-rail .project-acronym { display: block; font-size: 11px; font-weight: 700; }
+.icon-rail .project-button { position: relative; }
+.icon-rail .project-button .project-completed {
+  position: absolute;
+  bottom: 3px;
+  left: calc(50% - 5px);
+  width: 10px;
+  height: 10px;
+  margin: 0;
+  stroke-width: 2.5;
+}
 .theme-switch { font-size: 12px; padding: 4px 9px; }
 .topbar { padding: 12px 18px; }
 .status-pill { border: 1px solid var(--line); border-radius: 20px; padding: 2px 9px; font-size: 12px; }
