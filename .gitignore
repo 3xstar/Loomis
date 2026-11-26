@@ -8,4 +8,8 @@ workspaces/*
 temp_uploads/*
 loomis.db*
 
+.vscode/
+AGENTS.md
+CLAUDE.md
 STATE.md
+*.lnk

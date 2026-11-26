@@ -4,16 +4,17 @@ English | [Русский](README.ru.md)
 <h1 align="center">Loomis</h1>
 <p align="center"><strong>Turn project requirements into reviewed changes in Git.</strong></p>
 
-Loomis is a local workspace for managing software projects and AI development agents. Collect requirements in Desktop or Telegram, have agents discuss the work, and approve their plan. Follow progress and logs in real time.
+Loomis is a local workspace for managing software projects and AI development agents. Collect requirements in Desktop or Telegram, approve the plan, and follow progress and logs in real time.
 
 ## Features
 
-- Build `SPEC.md` from text, documents, and images. Telegram also accepts voice notes.
-- Save CLI and OpenAI-compatible model presets in the Model Hub, connect them to projects, and track reported token usage.
-- Run a two-round agent council and approve the resulting `PLAN.md`. Send questions in team or direct chat, or send feedback to revise the plan.
-- Set request deadlines and choose how Loomis hands off work when an agent fails. Git checkpoints support rollback and configurable push behavior.
-- Use the Liquid Glass Desktop workspace, detach chats and terminals into a separate window, or manage projects from Telegram.
-- Choose Russian or English in Desktop under **Settings → Language** or in Telegram under **Account settings → Language**. Both clients use the same account preference.
+- **Requirements and plans in the database.** Collect requirements from text, documents, and images in Desktop or Telegram. The bot also accepts voice notes. Loomis stores requirements and plans in its database, keeping the Git worktree focused on project files.
+- **Two-column Desktop workspace.** The IDE layout brings together team and direct chats, terminals, and project controls. An interactive 3D lighter appears on the dashboard and completion screen.
+- **Project stages.** Requirements → Plan discussion → Development → Final / Git. You can request plan revisions before approval. After the last development step, the project enters Pending review (`review_pending`). You can approve the result to close the project or request further work.
+- **Git workflow.** Loomis creates rollback checkpoints and writes past-tense commit messages without model names. You can configure when commits are pushed to GitHub.
+- **Telegram synchronization.** Desktop and the bot share projects, requirements, plans, agents, chats, and approvals. From your phone, you can run the full workflow, review the result, and deliver the project to its linked GitHub repository with a manual push.
+- **Model Hub and execution.** Connect CLI and OpenAI-compatible model presets, track reported token usage, set deadlines, and configure handoffs when an agent fails. Loomis supports remote workers.
+- **Language.** Choose Russian or English in Desktop under **Settings → Language** or in Telegram under **Account settings → Language**. Both clients use the same account preference.
 
 ## Architecture
 
@@ -66,6 +67,7 @@ Send `Authorization: Bearer <access_token>` to protected HTTP routes. Desktop au
 | GET | `/api/projects/dashboard-usage` | Read dashboard token usage |
 | GET / PATCH / DELETE | `/api/projects/{project_id}` | Read, update, or delete a project |
 | GET / POST | `/api/projects/{project_id}/spec-items` | List or add specification entries |
+| POST | `/api/projects/{project_id}/open-folder` | Open the project folder on the machine running the API |
 | POST | `/api/projects/{project_id}/actions` | Run project lifecycle actions |
 | POST | `/api/projects/{project_id}/chat`, `/api/projects/{project_id}/council/feedback` | Message agents or submit plan feedback |
 | POST | `/api/projects/{project_id}/agents/{agent_id}/question` | Ask an agent a question |
