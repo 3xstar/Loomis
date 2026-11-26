@@ -180,7 +180,7 @@ def main() -> None:
         api._window = window
         if sys.platform == "win32":
             window.events.shown += lambda: set_dark_title_bar(window)
-            window.events.shown += lambda: set_windows_icon(window)
+            window.events.loaded += lambda: set_windows_icon(window)
             window.events.loaded += lambda: enable_workspace_popup(window, url)
         webview.start(private_mode=True, icon=str(ICON_PATH))
     finally:

@@ -120,6 +120,7 @@ function showCursorToast(message, event) {
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("loomis-theme", theme);
+  byId("settings-theme").value = theme;
   all(".theme-switch").forEach((button) => {
     button.innerHTML = icon(theme === "dark"
       ? '<path d="M20.9 13.3A9 9 0 0 1 10.7 3.1a9 9 0 1 0 10.2 10.2Z"/>'
@@ -129,6 +130,10 @@ function setTheme(theme) {
     button.setAttribute("aria-pressed", theme === "light");
   });
 }
+byId("settings-theme").onchange = ({target}) => {
+  setTheme(target.value);
+  saveDesktopPreferences({theme: target.value});
+};
 setTheme(localStorage.getItem("loomis-theme") === "light" ? "light" : "dark");
 all(".theme-switch").forEach((button) => button.onclick = () => {
   const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
@@ -989,12 +994,10 @@ async function selectProject(item) {
   selectedAgent = undefined;
   renderDirectAgents([]);
   renderProjectTitle();
-  renderProjectModes();
   selectView("team");
   setStatus(item?.status || "—");
   all(".project-button").forEach((button) => button.setAttribute("aria-current", button.dataset.id === String(item?.id)));
   byId("stats-button").disabled = byId("add-agent-button").disabled = !item;
-  renderDeadline();
   if (!item) return;
   const revision = statusRevision;
   connect(item.id, current);
@@ -1093,38 +1096,6 @@ function updateLight(id) {
   light.innerHTML = status === "asking"
     ? icon('<path d="M9 9a3 3 0 1 1 4 2.83c-.67.24-1 .86-1 1.67M12 17h.01"/>')
     : "";
-}
-
-const projectModes = [
-  ["autonomy-mode", "autonomy_mode", "autonomous"],
-  ["failover-mode", "failover_mode", "auto"],
-  ["verbosity-mode", "verbosity_level", "concise"],
-];
-function renderProjectModes() {
-  for (const [id, field, fallback] of projectModes) {
-    byId(id).value = project?.[field] || fallback;
-    byId(id).disabled = !project;
-  }
-}
-
-for (const [id, field] of projectModes) {
-  const control = byId(id);
-  control.onchange = async () => {
-    if (!project) return;
-    const current = selection;
-    control.disabled = true;
-    try {
-      const result = await api("projects/" + project.id, {[field]: control.value}, token, "PATCH");
-      if (current === selection) project[field] = result[field];
-    } catch (error) {
-      notify(error.message);
-    } finally {
-      if (current === selection) {
-        control.value = project[field];
-        control.disabled = false;
-      }
-    }
-  };
 }
 
 let directOpen = !matchMedia("(max-width: 1160px)").matches;
@@ -2109,7 +2080,6 @@ for (const card of all("[data-language]")) {
 function openSettings(tabId) {
   projectsDirField.value = defaultProjectsDir;
   renderTelegramLogs();
-  renderDeadline();
   showModal("settings-modal");
   const tab = byId(tabId);
   selectSettingsTab(tab);
@@ -2145,7 +2115,7 @@ byId("project-settings-button").onclick = () => {
   locationForm.reset();
   byId("settings-workspace").value = project?.workspace_path ?? "";
   byId("settings-git").value = project?.git_repo_url ?? "";
-  renderGitModes(project);
+  renderProjectSettings(project);
   renderGitHubFields();
   showModal("project-settings-modal");
   refreshIntegrations();
@@ -2352,9 +2322,26 @@ async function updateIntegration(button, action, event) {
   }
 }
 
-function renderGitModes(item) {
-  byId("settings-commit-mode").value = item.commit_mode || "sequential";
-  byId("settings-auto-push-mode").value = item.auto_push_mode || "after_each";
+const projectSettings = {
+  autonomy_mode: ["autonomy-mode", "autonomous"],
+  failover_mode: ["failover-mode", "auto"],
+  verbosity_level: ["verbosity-mode", "concise"],
+  deadline_minutes: ["deadline", 10],
+  commit_mode: ["commit-mode", "sequential"],
+  auto_push_mode: ["auto-push-mode", "after_each"],
+};
+
+function renderProjectSettings(item) {
+  for (const [key, [id, fallback]] of Object.entries(projectSettings)) {
+    byId("settings-" + id).value = item[key] ?? fallback;
+  }
+}
+
+function readProjectSettings(prefix) {
+  return Object.fromEntries(Object.entries(projectSettings).map(([key, [id]]) => {
+    const field = byId(prefix + "-" + id);
+    return [key, field.type === "number" ? field.valueAsNumber : field.value];
+  }));
 }
 
 function projectLocation(prefix) {
@@ -2362,8 +2349,6 @@ function projectLocation(prefix) {
   const creating = byId(prefix + "-new-repo").checked;
   return {
     workspace_path: path.trim() ? path : null,
-    commit_mode: byId(prefix + "-commit-mode").value,
-    auto_push_mode: byId(prefix + "-auto-push-mode").value,
     ...(githubUsername && {git_repo_url: creating ? null : byId(prefix + "-git").value.trim() || null}),
     ...(creating && {github_visibility: byId(prefix + "-visibility").value}),
   };
@@ -2375,7 +2360,7 @@ locationForm.onsubmit = async (event) => {
   const target = project;
   const revision = modalRevision;
   const button = event.submitter;
-  const updates = projectLocation("settings");
+  const updates = {...projectLocation("settings"), ...readProjectSettings("settings")};
   for (const key of Object.keys(updates)) {
     if (updates[key] === target[key]) delete updates[key];
   }
@@ -2386,14 +2371,15 @@ locationForm.onsubmit = async (event) => {
     if (project !== target) return;
     target.workspace_path = saved.workspace_path;
     target.git_repo_url = saved.git_repo_url;
-    target.commit_mode = saved.commit_mode;
-    target.auto_push_mode = saved.auto_push_mode;
+    for (const key of Object.keys(projectSettings)) {
+      target[key] = saved[key];
+    }
     renderProjectTitle();
     if (revision === modalRevision) {
       locationForm.reset();
       byId("settings-workspace").value = saved.workspace_path;
       byId("settings-git").value = saved.git_repo_url ?? "";
-      renderGitModes(saved);
+      renderProjectSettings(saved);
       renderGitHubFields();
     }
   } catch (error) {
@@ -2414,38 +2400,6 @@ byId("telegram-logs").onchange = async ({target}) => {
   } finally {
     target.disabled = false;
     renderTelegramLogs();
-  }
-};
-
-function renderDeadline() {
-  const field = byId("request-deadline");
-  field.value = project?.deadline_minutes ?? "";
-  field.setCustomValidity("");
-  field.disabled = byId("save-deadline").disabled = !project;
-}
-byId("request-deadline").oninput = ({target}) => {
-  target.value = target.value.replace(/[^0-9]/g, "");
-  target.setCustomValidity("");
-};
-byId("deadline-form").onsubmit = async (event) => {
-  event.preventDefault();
-  if (!project) return;
-  const target = project;
-  const field = byId("request-deadline");
-  const deadline = Number(field.value);
-  if (deadline < 1 || deadline > 1440) {
-    field.setCustomValidity(LoomisI18n.translate("Введите целое число от 1 до 1440."));
-    field.reportValidity();
-    return;
-  }
-  field.disabled = byId("save-deadline").disabled = true;
-  try {
-    const result = await api("projects/" + target.id, {deadline_minutes: deadline}, token, "PATCH");
-    target.deadline_minutes = result.deadline_minutes;
-  } catch (error) {
-    notify(error.message);
-  } finally {
-    if (project === target) renderDeadline();
   }
 };
 
@@ -2540,40 +2494,14 @@ const projectTemplates = {
   repo: ["Доработка репозитория", "Репозиторий и ветка:\nТекущее поведение:\nНеобходимые изменения:\nОграничения:\nКак проверить результат:"],
 };
 
-const projectPreferenceFields = {
-  autonomy_mode: "project-autonomy-mode",
-  failover_mode: "project-failover-mode",
-  verbosity_level: "project-verbosity-mode",
-  commit_mode: "project-commit-mode",
-  auto_push_mode: "project-auto-push-mode",
-  deadline_minutes: "project-deadline",
-};
-
-function restoreProjectPreferences() {
-  for (const [key, id] of Object.entries(projectPreferenceFields)) {
-    const field = byId(id);
-    const value = desktopPreferences[key];
-    if (field instanceof HTMLSelectElement) {
-      if ([...field.options].some(option => option.value === value)) field.value = value;
-    } else if (Number.isInteger(value) && value >= 1 && value <= 1440) {
-      field.value = value;
-    }
-  }
-}
-
-for (const [key, id] of Object.entries(projectPreferenceFields)) {
-  byId(id).addEventListener("change", ({target}) => {
-    if (!target.validity.valid) return;
-    saveDesktopPreferences({[key]: target.type === "number" ? target.valueAsNumber : target.value});
-  });
-}
-
 function openProjectModal(template) {
   const [name, spec] = (template || ["", ""]).map(LoomisI18n.translate);
   byId("project-name").value = name;
   byId("project-template").value = spec;
   byId("project-template-field").classList.toggle("hidden", !template);
-  restoreProjectPreferences();
+  for (const [id, fallback] of Object.values(projectSettings)) {
+    byId("project-" + id).value = fallback;
+  }
   selectProjectAddTab(false);
   fillDefaultProjectPath();
   renderGitHubFields();
@@ -2594,19 +2522,14 @@ byId("project-form").onsubmit = async (event) => {
   const session = token;
   const form = event.currentTarget;
   const spec = byId("project-template").value.trim();
-  const preferences = Object.fromEntries(Object.entries(projectPreferenceFields).map(([key, id]) => {
-    const field = byId(id);
-    return [key, field.type === "number" ? field.valueAsNumber : field.value];
-  }));
   const payload = {
     name: byId("project-name").value,
-    ...preferences,
+    ...readProjectSettings("project"),
     ...projectLocation("project"),
     ...(!customProjectPath && {workspace_path: null}),
   };
   button.disabled = true;
   try {
-    await saveDesktopPreferences(preferences);
     const created = await api("projects", payload, session);
     let importError, specError;
     if (spec) {

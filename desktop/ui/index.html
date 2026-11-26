@@ -389,20 +389,20 @@
             <select id="project-visibility"><option value="private">Приватный</option><option value="public">Публичный</option></select>
           </label>
         </div>
-        <label class="field"><span>Режим работы нейросетей</span>
+        <label class="field"><span>Режим работы</span>
           <select id="project-autonomy-mode">
             <option value="autonomous">Автономный</option>
             <option value="consultative">С вопросами</option>
             <option value="step_by_step">Пошаговый</option>
           </select>
         </label>
-        <label class="field"><span>Режим передачи при поломке</span>
+        <label class="field"><span>Передача при сбое</span>
           <select id="project-failover-mode">
             <option value="auto">Авто-передача</option>
             <option value="manual">С подтверждением</option>
           </select>
         </label>
-        <label class="field"><span>Краткость отчётов нейросетей</span>
+        <label class="field"><span>Краткость отчётов</span>
           <select id="project-verbosity-mode">
             <option value="concise">Кратко по сути</option>
             <option value="balanced">Сбалансированно</option>
@@ -410,7 +410,7 @@
           </select>
         </label>
         <label class="field">
-          <span><span>Дедлайн одного запроса агента</span> (<span>мин</span>)</span>
+          <span><span>Дедлайн запроса</span> (<span>мин</span>)</span>
           <input id="project-deadline" type="number" min="1" max="1440" step="1" value="10" required>
         </label>
         <label class="field"><span>Режим коммитов</span>
@@ -419,7 +419,7 @@
             <option value="single_preset">Одним коммитом в конце</option>
           </select>
         </label>
-        <label class="field"><span>Режим авто-пуша</span>
+        <label class="field"><span>Авто-пуш</span>
           <select id="project-auto-push-mode" name="auto_push_mode">
             <option value="after_each">После каждого коммита</option>
             <option value="manual_finish">Вручную по завершении</option>
@@ -495,13 +495,52 @@
               <select id="settings-visibility"><option value="private">Приватный</option><option value="public">Публичный</option></select>
             </label>
           </div>
+        <div class="field">
+          <div class="setting-heading">
+            <label for="settings-autonomy-mode">Режим работы</label>
+            <button class="setting-help" type="button" aria-label="Справка: Режим работы" aria-describedby="settings-autonomy-mode-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
+            <div id="settings-autonomy-mode-help" class="setting-tooltip" role="tooltip"><span><strong>Автономный</strong> — агенты работают сами.</span><span><strong>С вопросами</strong> — уточняют неясности в чате.</span><span><strong>Пошаговый</strong> — ждут подтверждения каждого шага.</span></div>
+          </div>
+          <select id="settings-autonomy-mode">
+            <option value="autonomous">Автономный</option>
+            <option value="consultative">С вопросами</option>
+            <option value="step_by_step">Пошаговый</option>
+          </select>
+        </div>
+        <div class="field">
+          <div class="setting-heading">
+            <label for="settings-failover-mode">Передача при сбое</label>
+            <button class="setting-help" type="button" aria-label="Справка: Передача при сбое" aria-describedby="settings-failover-mode-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
+            <div id="settings-failover-mode-help" class="setting-tooltip" role="tooltip"><span><strong>Авто-передача</strong> — следующий агент сразу подхватывает задачу.</span><span><strong>С подтверждением</strong> — Loomis ждёт вашего согласия на передачу.</span></div>
+          </div>
+          <select id="settings-failover-mode">
+            <option value="auto">Авто-передача</option>
+            <option value="manual">С подтверждением</option>
+          </select>
+        </div>
+        <div class="field">
+          <div class="setting-heading">
+            <label for="settings-verbosity-mode">Краткость отчётов</label>
+            <button class="setting-help" type="button" aria-label="Справка: Краткость отчётов" aria-describedby="settings-verbosity-mode-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
+            <div id="settings-verbosity-mode-help" class="setting-tooltip" role="tooltip"><span><strong>Кратко по сути</strong> — только результат и важные детали.</span><span><strong>Сбалансированно</strong> — результат и основные решения.</span><span><strong>Подробно</strong> — ход работы, решения и детали.</span></div>
+          </div>
+          <select id="settings-verbosity-mode">
+            <option value="concise">Кратко по сути</option>
+            <option value="balanced">Сбалансированно</option>
+            <option value="detailed">Подробно</option>
+          </select>
+        </div>
+        <label class="field">
+          <span><span>Дедлайн запроса</span> (<span>мин</span>)</span>
+          <input id="settings-deadline" type="number" min="1" max="1440" step="1" value="10" required>
+        </label>
         <label class="field"><span>Режим коммитов</span>
           <select id="settings-commit-mode" name="commit_mode">
             <option value="sequential">Последовательные коммиты</option>
             <option value="single_preset">Одним коммитом в конце</option>
           </select>
         </label>
-        <label class="field"><span>Режим авто-пуша</span>
+        <label class="field"><span>Авто-пуш</span>
           <select id="settings-auto-push-mode" name="auto_push_mode">
             <option value="after_each">После каждого коммита</option>
             <option value="manual_finish">Вручную по завершении</option>
@@ -524,70 +563,27 @@
       </div>
       <div id="general-panel" class="stack" role="tabpanel" aria-labelledby="general-tab">
         <form id="projects-dir-form" class="field" aria-labelledby="projects-dir-title">
-          <label id="projects-dir-title" for="default-projects-dir">Общая папка для проектов</label>
+          <label id="projects-dir-title" for="default-projects-dir">Общая папка для проектов на ПК</label>
           <div class="folder-field">
             <input id="default-projects-dir" type="text" maxlength="1024" required>
             <button class="button secondary" type="button" data-folder-input="default-projects-dir">Обзор...</button>
           </div>
           <button class="button secondary" type="submit">Сохранить</button>
         </form>
-        <div class="field">
-          <div class="setting-heading">
-            <label for="autonomy-mode">Режим работы нейросетей</label>
-            <button class="setting-help" type="button" aria-label="Справка: Режим работы нейросетей" aria-describedby="autonomy-mode-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
-            <div id="autonomy-mode-help" class="setting-tooltip" role="tooltip"><span><strong>Автономный</strong> — агенты работают сами.</span><span><strong>С вопросами</strong> — уточняют неясности в чате.</span><span><strong>Пошаговый</strong> — ждут подтверждения каждого шага.</span></div>
-          </div>
-          <select id="autonomy-mode" disabled>
-            <option value="autonomous">Автономный</option>
-            <option value="consultative">С вопросами</option>
-            <option value="step_by_step">Пошаговый</option>
-          </select>
-        </div>
-        <div class="field">
-          <div class="setting-heading">
-            <label for="failover-mode">Режим передачи при поломке</label>
-            <button class="setting-help" type="button" aria-label="Справка: Режим передачи при поломке" aria-describedby="failover-mode-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
-            <div id="failover-mode-help" class="setting-tooltip" role="tooltip"><span><strong>Авто-передача</strong> — следующий агент сразу подхватывает задачу.</span><span><strong>С подтверждением</strong> — Loomis ждёт вашего согласия на передачу.</span></div>
-          </div>
-          <select id="failover-mode" disabled>
-            <option value="auto">Авто-передача</option>
-            <option value="manual">С подтверждением</option>
-          </select>
-        </div>
-        <div class="field">
-          <div class="setting-heading">
-            <label for="verbosity-mode">Краткость отчётов нейросетей</label>
-            <button class="setting-help" type="button" aria-label="Справка: Краткость отчётов нейросетей" aria-describedby="verbosity-mode-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
-            <div id="verbosity-mode-help" class="setting-tooltip" role="tooltip"><span><strong>Кратко по сути</strong> — только результат и важные детали.</span><span><strong>Сбалансированно</strong> — результат и основные решения.</span><span><strong>Подробно</strong> — ход работы, решения и детали.</span></div>
-          </div>
-          <select id="verbosity-mode" disabled>
-            <option value="concise">Кратко по сути</option>
-            <option value="balanced">Сбалансированно</option>
-            <option value="detailed">Подробно</option>
-          </select>
-        </div>
-        <form id="deadline-form" class="stack">
-          <div class="field deadline-row">
-            <div class="setting-heading">
-              <label for="request-deadline">Дедлайн одного запроса агента</label>
-              <button class="setting-help" type="button" aria-label="Справка: Дедлайн одного запроса агента" aria-describedby="request-deadline-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
-              <div id="request-deadline-help" class="setting-tooltip" role="tooltip"><span>Введите целое число от 1 до 1440.</span><span><strong>По истечении срока</strong> — Loomis сохраняет частичную работу и запускает передачу задачи.</span></div>
-            </div>
-            <div class="deadline-input">
-              <input id="request-deadline" type="text" inputmode="numeric" pattern="[0-9]{1,4}" maxlength="4" aria-describedby="deadline-unit" required disabled>
-              <span id="deadline-unit">мин</span>
-            </div>
-          </div>
-          <button id="save-deadline" class="button secondary" type="submit" disabled>Сохранить дедлайн</button>
-        </form>
         <div class="switch-row">
           <div class="setting-heading">
-            <label for="telegram-logs">Рабочие логи в Telegram</label>
-            <button class="setting-help" type="button" aria-label="Справка: Рабочие логи в Telegram" aria-describedby="telegram-logs-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
+            <label for="telegram-logs">Доставка рабочих логов в Telegram</label>
+            <button class="setting-help" type="button" aria-label="Справка: Доставка рабочих логов в Telegram" aria-describedby="telegram-logs-help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1 .7-1.5 1-1.5 2.5m0 3h.01"/></svg></button>
             <div id="telegram-logs-help" class="setting-tooltip" role="tooltip"><span><strong>Включены</strong> — бот присылает рабочие журналы.</span><span><strong>Выключены</strong> — рабочие журналы остаются в Loomis.</span></div>
           </div>
           <input id="telegram-logs" type="checkbox" role="switch"><span id="telegram-logs-state" aria-hidden="true"></span>
         </div>
+        <label class="field"><span>Тема оформления</span>
+          <select id="settings-theme">
+            <option value="dark">Тёмная</option>
+            <option value="light">Светлая</option>
+          </select>
+        </label>
       </div>
       <div id="integrations-panel" class="stack" role="tabpanel" aria-labelledby="integrations-tab" tabindex="0" hidden>
         <section id="telegram-card" class="integration-card glass-panel" aria-labelledby="telegram-title">
