@@ -12,7 +12,7 @@ from worker.sandbox import workspace_file
 
 
 PROJECT_METADATA = ("SPEC.md", "PLAN.md", "Project_context.md")
-TEMP_PATTERNS = ("_check*", "*.tmp.*", "temp_*")
+TEMP_PATTERNS = ("_check*", "*.tmp.*", "temp_*", "dump.txt", "inspect_*.py")
 DRAFT_PATTERNS = ("*_draft.md", "*_sections.md", "*_review.md", "build_*.py", "run_build.py")
 FINAL_SUBJECT = "chore: удалены временные скрипты сборки и черновики"
 DOCUMENT_EXTENSIONS = {".docx", ".md", ".rst", ".txt", ".pdf", ".odt"}

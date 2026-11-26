@@ -40,7 +40,8 @@ AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2
 ProviderName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 AutonomyMode = Annotated[Literal["autonomous", "consultative", "step_by_step"],
                          BeforeValidator(lambda value: "consultative" if value == "with_questions" else value)]
-FailoverMode = Literal["auto", "manual"]
+FailoverMode = Annotated[Literal["auto", "manual"],
+                         BeforeValidator(lambda value: "manual" if value == "confirm" else value)]
 CommitMode = Literal["sequential", "single_preset"]
 AutoPushMode = Literal["after_each", "manual_finish"]
 VerbosityLevel = Literal["concise", "balanced", "detailed"]
@@ -361,7 +362,7 @@ async def require_draft(session: Session, project: Project) -> None:
 async def add_spec_item(request: Request, project: OwnedProject, session: Session):
     await require_draft(session, project)
     title, content = await read_spec_item(request)
-    async with orchestrator.runtime(project.id).boundary:
+    async with orchestrator.runtime(project.id).execution_lock:
         await require_draft(session, project)
         position = await session.scalar(
             select(func.max(SpecItem.position)).where(SpecItem.project_id == project.id)
@@ -381,7 +382,7 @@ async def get_spec_text_item(item_id: int, project: Project, session: Session) -
 
 @router.patch("/{project_id}/spec-items/{item_id}", response_model=SpecItemView)
 async def edit_spec_item(item_id: int, data: SpecText, project: OwnedProject, session: Session):
-    async with orchestrator.runtime(project.id).boundary:
+    async with orchestrator.runtime(project.id).execution_lock:
         await require_draft(session, project)
         item = await get_spec_text_item(item_id, project, session)
         item.content = data.text
@@ -391,7 +392,7 @@ async def edit_spec_item(item_id: int, data: SpecText, project: OwnedProject, se
 
 @router.delete("/{project_id}/spec-items/{item_id}", status_code=204)
 async def delete_spec_item(item_id: int, project: OwnedProject, session: Session):
-    async with orchestrator.runtime(project.id).boundary:
+    async with orchestrator.runtime(project.id).execution_lock:
         await require_draft(session, project)
         item = await get_spec_text_item(item_id, project, session)
         await session.delete(item)
@@ -417,7 +418,7 @@ async def edit_project(data: ProjectPatch, project: Project, session: AsyncSessi
     if any(field in required and value is None for field, value in updates.items()):
         raise HTTPException(422, "Обязательные настройки проекта не могут быть пустыми.")
     configure_workspace = bool(visibility or updates.keys() & {"workspace_path", "git_repo_url"})
-    boundary = orchestrator.runtime(project.id).boundary if configure_workspace else nullcontext()
+    boundary = orchestrator.runtime(project.id).execution_lock if configure_workspace else nullcontext()
     async with boundary:
         await session.refresh(project)
         if project.status in {"running", "council"} and "workspace_path" in updates:
@@ -582,7 +583,7 @@ async def add_agent(data: AgentCreate, project: OwnedProject, session: Session):
 
 
 async def persist_new_agent(agent, project, session):
-    async with orchestrator.runtime(project.id).boundary:
+    async with orchestrator.runtime(project.id).execution_lock:
         await require_agent_changes(project, session)
         tokens = await test_config(project.id, agent)
         agent.tested_at = utc_now()
@@ -610,11 +611,12 @@ async def test_agent(data: AgentCandidateTest | ExistingAgentTest, project: Owne
         if data.agent_id is not None and existing.provider == agent.provider and existing.model == agent.model:
             agent.id = existing.id
             agent.preset_id = existing.preset_id
-        tokens = await test_config(project.id, agent)
-        await count_tokens(session, project.owner_id, agent, tokens)
-        await session.commit()
+        async with orchestrator.runtime(project.id).execution_lock:
+            tokens = await test_config(project.id, agent)
+            await count_tokens(session, project.owner_id, agent, tokens)
+            await session.commit()
         return {"status": "success"}
-    async with orchestrator.runtime(project.id).boundary:
+    async with orchestrator.runtime(project.id).execution_lock:
         await require_agent_changes(project, session)
         agent = await owned_agent(data.agent_id, project, session)
         try:
@@ -646,7 +648,7 @@ async def get_agent(agent: OwnedAgent):
 
 @router.patch("/{project_id}/agents/{agent_id}", response_model=AgentView)
 async def edit_agent(data: AgentPatch, project: OwnedProject, agent: OwnedAgent, session: Session):
-    async with orchestrator.runtime(project.id).boundary:
+    async with orchestrator.runtime(project.id).execution_lock:
         await require_agent_changes(project, session)
         agent = await owned_agent(agent.id, project, session)
         await session.refresh(agent)
@@ -704,7 +706,7 @@ def merged_agent_settings(provider, model, existing, supplied):
 
 @router.delete("/{project_id}/agents/{agent_id}", status_code=204)
 async def delete_agent(project: OwnedProject, agent: OwnedAgent, session: Session):
-    async with orchestrator.runtime(project.id).boundary:
+    async with orchestrator.runtime(project.id).execution_lock:
         await require_agent_changes(project, session)
         agent = await owned_agent(agent.id, project, session)
         await session.refresh(agent)
@@ -817,7 +819,7 @@ class ApprovalDecision(BaseModel):
 async def project_action(project: OwnedProject, data: ProjectAction, session: Session):
     try:
         if data.action == "build_spec":
-            async with orchestrator.runtime(project.id).boundary:
+            async with orchestrator.runtime(project.id).execution_lock:
                 await require_draft(session, project)
                 has_items = await session.scalar(select(SpecItem.id).where(SpecItem.project_id == project.id).limit(1))
                 if has_items is None:
@@ -852,6 +854,11 @@ async def council_feedback(project: OwnedProject, data: CouncilFeedback):
         return {"status": updated.status, "responses": responses}
     except (ValueError, OSError, RuntimeError) as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/{project_id}/approvals")
+async def project_approvals(project: OwnedProject):
+    return await orchestrator.pending_approvals(project.id)
 
 
 @router.post("/{project_id}/approvals/{key}")
@@ -1002,7 +1009,7 @@ class HubImport(BaseModel):
 
 @router.post("/{project_id}/agents/from-hub", response_model=list[AgentView], status_code=201)
 async def import_presets(data: HubImport, project: OwnedProject, session: Session):
-    async with orchestrator.runtime(project.id).boundary:
+    async with orchestrator.runtime(project.id).execution_lock:
         await require_agent_changes(project, session)
         ids = list(dict.fromkeys(data.preset_ids))
         presets = {row.id: row for row in await session.scalars(select(UserModelPreset).where(
@@ -1104,7 +1111,7 @@ async def project_chat(project: OwnedProject, data: ChatMessage):
 async def store_spec_media(session, project, media):
     await require_draft(session, project)
     content = await media_spec_content(media)
-    async with orchestrator.runtime(project.id).boundary:
+    async with orchestrator.runtime(project.id).execution_lock:
         await require_draft(session, project)
         position = await session.scalar(select(func.max(SpecItem.position)).where(SpecItem.project_id == project.id))
         item = SpecItem(project_id=project.id, title=media.filename, content=content, position=(position or 0) + 1)

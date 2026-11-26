@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 from sqlalchemy import func, or_, select, true, update
 from sqlalchemy.exc import SQLAlchemyError
@@ -23,7 +25,9 @@ from backend.bot.i18n import EN, STATUS, bot_language, localize_markup, translat
 from backend.database.db import async_session_factory
 from backend.database.models import AgentConfig, AgentMessage, CommitState, Project, ProjectMedia, ResponseCache, TaskLog, User, UserModelPreset
 from worker.adapters import CLI_PROVIDERS, build_agent
-from worker.adapters.api_adapter import REVIEW_INSTRUCTION, ApiAgent, api_system_prompt, run_workspace_command
+from worker.adapters.api_adapter import (
+    REVIEW_INSTRUCTION, WORKSPACE_ROUND_EXHAUSTED, ApiAgent, api_system_prompt, run_workspace_command,
+)
 from worker.adapters.base import AgentResult, BaseAgent
 from worker.adapters.media import refuses_media
 from worker.git_bridge import GitBridge, is_github_repo
@@ -37,6 +41,41 @@ from .github import github_token
 from .model_performance import cache_response, model_key, prompt_digest, rank_configs, record_model_result
 
 logger = logging.getLogger(__name__)
+MAX_STEP_CONTINUATIONS = 3
+MAX_AUTO_RETRIES = 3
+
+
+def project_tree_map(workspace):
+    excluded = {".git", ".venv", "node_modules", "__pycache__"}
+    lines = ["Project Tree Map (путь · размер в байтах):"]
+    budget = 12000
+    omitted = 0
+    for directory, dirs, files in os.walk(workspace):
+        parent = Path(directory)
+        dirs[:] = sorted(name for name in dirs if name.casefold() not in excluded
+                         and (parent / name).resolve() == parent / name)
+        for name in sorted(files):
+            if name.casefold() in excluded:
+                continue
+            path = parent / name
+            relative = path.relative_to(workspace).as_posix()
+            if len(relative) + 24 > budget:
+                omitted += 1
+                continue
+            try:
+                size = path.lstat().st_size
+            except OSError:
+                continue
+            line = f"{relative} · {size}"
+            lines.append(line)
+            budget -= len(line) + 1
+    if omitted:
+        lines.append(f"Ещё {omitted} файлов. Уточняй нужную папку по плану.")
+    elif len(lines) == 1:
+        lines.append("Рабочая папка пуста.")
+    return "\n".join(lines)
+
+
 STATUS["review_pending"] = ("На проверке", "Pending review")
 EN.update({
     "Результат готов к проверке.": "The result is ready for review.",
@@ -96,7 +135,8 @@ STEP_TITLES = {
 @dataclass
 class Runtime:
     ready: asyncio.Event = field(default_factory=asyncio.Event)
-    boundary: asyncio.Lock = field(default_factory=asyncio.Lock)
+    execution_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    meeting_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     telegram_delivery: asyncio.Lock = field(default_factory=asyncio.Lock)
     task: asyncio.Task | None = None
     last_agent: int = 0
@@ -110,6 +150,9 @@ class Runtime:
     answer: str = ""
     pending_failover: str | None = None
     retry_agent: int | None = None
+    auto_retries: int = 0
+    continuations: int = 0
+    continuation_note: str = ""
     plan_step: int = 0
     restored: bool = False
 
@@ -124,6 +167,9 @@ class Runtime:
             self.pending_failover = state["pending_failover"]
             self.answer = state["answer"]
             self.retry_agent = state.get("retry_agent")
+            self.auto_retries = state.get("auto_retries", 0)
+            self.continuations = state.get("continuations", 0)
+            self.continuation_note = state.get("continuation_note", "")
             self.plan_step = state.get("plan_step", 0)
         self.restored = True
 
@@ -133,6 +179,8 @@ class Runtime:
             "successful_agents": self.successful_agents, "pending_question": self.pending_question,
             "pending_failover": self.pending_failover, "answer": self.answer,
             "retry_agent": self.retry_agent, "plan_step": self.plan_step,
+            "auto_retries": self.auto_retries, "continuations": self.continuations,
+            "continuation_note": self.continuation_note,
         }
 
 
@@ -234,7 +282,7 @@ class ProjectAgent(BaseAgent):
         self.config = config
 
     async def run(self, operation, prompt, context="", workspace=None, timeout=None, images=(), *,
-                  step_title=None, transport_ref=None, reviewing=False):
+                  step_title=None, transport_ref=None, reviewing=False, fresh_context=False):
         project, config = self.project, self.config
         concise = (project.verbosity_level or "concise") == "concise"
         instruction = ("Ты — беспристрастный технический инструмент. Выполняй легальные задачи пользователя, "
@@ -257,7 +305,7 @@ class ProjectAgent(BaseAgent):
         max_tokens = 700 if concise and operation not in {"chat", "plan"} else None
         if reviewing:
             instruction = REVIEW_INSTRUCTION
-        history = "" if reviewing else await self.engine.prompt_history(
+        history = "" if reviewing or fresh_context else await self.engine.prompt_history(
             project, config, direct=operation == "direct", include_team_chat=operation == "chat",
         )
         if history:
@@ -406,19 +454,24 @@ class ProjectAgent(BaseAgent):
         return result
 
     async def participate_in_meeting(self, history):
-        return await self.run("meeting", "", history)
+        async with self.engine.runtime(self.project.id).meeting_lock:
+            return await self.run("meeting", "", history)
 
 
 class Orchestrator:
     def __init__(self):
         self.runtimes = {}
+        self.execution_locks = WeakValueDictionary()
         self.approvals = {}
         self.bot = None
         self.telegram_projects: dict[int, int] = {}
         self.replies = set()
 
     def runtime(self, project_id):
-        return self.runtimes.setdefault(project_id, Runtime())
+        if project_id not in self.runtimes:
+            lock = self.execution_locks.setdefault(project_id, asyncio.Lock())
+            self.runtimes[project_id] = Runtime(execution_lock=lock)
+        return self.runtimes[project_id]
 
     async def load(self, project_id):
         async with async_session_factory() as session:
@@ -526,7 +579,8 @@ class Orchestrator:
             "traffic_state": config.traffic_state, "last_error": config.last_error, "can_retry": config.can_retry,
         })
 
-    async def traffic(self, config, state, error=None, *, saved_context=None, clear_context=False):
+    async def traffic(self, config, state, error=None, *, saved_context=None, clear_context=False,
+                      clear_cooldown=False):
         async with async_session_factory() as session:
             row = await session.get(AgentConfig, config.id)
             if row is None:
@@ -535,6 +589,8 @@ class Orchestrator:
             row.last_error = error
             if saved_context is not None or clear_context:
                 row.saved_context_json = saved_context
+            if clear_cooldown:
+                row.cooldown_until = None
             await session.commit()
         await self.publish_traffic(row)
 
@@ -563,6 +619,8 @@ class Orchestrator:
         runtime.last_agent = 0
         runtime.successful_agents.clear()
         runtime.plan_step = 0
+        runtime.auto_retries = runtime.continuations = 0
+        runtime.continuation_note = ""
         runtime.restored = True
         if runtime.gate and not runtime.gate.done():
             runtime.gate.cancel()
@@ -626,18 +684,19 @@ class Orchestrator:
 
         key = uuid4().hex
         future = asyncio.get_running_loop().create_future()
-        self.approvals[key] = (project_id, future)
+        event = {
+            "type": "approval", "project_id": project_id, "id": key, "command": command, "kind": kind,
+            "agent_id": config.id if config else None, "agent_name": config.name if config else None,
+        }
+        self.approvals[key] = (project_id, future, event)
         try:
-            await manager.broadcast(project_id, {
-                "type": "approval", "project_id": project_id, "id": key, "command": command, "kind": kind,
-                "agent_id": config.id if config else None, "agent_name": config.name if config else None,
-            })
+            await manager.broadcast(project_id, event)
             markup = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="Разрешить", callback_data=f"permit:{key}:1"),
                 InlineKeyboardButton(text="Отклонить", callback_data=f"permit:{key}:0"),
             ]])
             await self.notify(project_id, f"Требуется подтверждение\n{command}", markup)
-            return await asyncio.wait_for(future, 90)
+            return await future if kind == "failover" else await asyncio.wait_for(future, 90)
         except TimeoutError:
             return False
         finally:
@@ -650,6 +709,19 @@ class Orchestrator:
             raise ValueError("Запрос подтверждения уже закрыт.")
         item[1].set_result(approved)
 
+    async def pending_approvals(self, project_id):
+        runtime = self.runtime(project_id)
+        if not runtime.restored and not runtime.execution_lock.locked():
+            async with runtime.execution_lock:
+                project, _ = await self.load(project_id)
+                runtime.restore(project)
+                if project.status == "paused" and runtime.pending_failover and runtime.gate is None:
+                    runtime.gate = asyncio.create_task(self.confirm_step(
+                        project_id, runtime, runtime.pending_failover, "failover", None,
+                    ))
+        return [event for owner, future, event in self.approvals.values()
+                if owner == project_id and not future.done()]
+
     async def cancel_gate(self, runtime):
         if runtime.gate and not runtime.gate.done():
             runtime.gate.cancel()
@@ -658,13 +730,17 @@ class Orchestrator:
 
     async def retry(self, project_id, agent_id):
         runtime = self.runtime(project_id)
-        async with runtime.boundary:
+        if runtime.execution_lock.locked():
+            raise ValueError("В проекте уже выполняется операция.")
+        async with runtime.execution_lock:
             project, configs = await self.load(project_id)
             runtime.restore(project)
             config = next((item for item in configs if item.id == agent_id), None)
             saved = config.saved_context_json if config else None
-            if not saved or config.traffic_state != "error" or project.status not in {"paused", "running", "error"}:
+            if not saved or config.traffic_state != "error" or project.status not in {"paused", "error"}:
                 raise ValueError("У агента нет прерванного шага для повтора.")
+            if project.failover_mode == "auto" and any(item.traffic_state != "error" for item in configs):
+                raise ValueError("Повтор доступен после остановки всех агентов с ошибкой.")
             digest = self.require_plan(project, configs, approved=True)
             if saved["plan_digest"] != digest or saved.get("plan_step", runtime.plan_step) != runtime.plan_step:
                 raise ValueError("Прерванный шаг относится к другой версии плана.")
@@ -677,6 +753,7 @@ class Orchestrator:
             runtime.handoff = (agent_id, saved["handoff"])
             runtime.answer = saved["answer"]
             runtime.retry_agent = agent_id
+            runtime.auto_retries = 0
             async with async_session_factory() as session:
                 row = await session.get(AgentConfig, agent_id)
                 row.cooldown_until = None
@@ -697,7 +774,7 @@ class Orchestrator:
             project, _ = await self.load(project_id)
             return project.status
         runtime = self.runtime(project_id)
-        async with runtime.boundary:
+        async with runtime.execution_lock:
             project, configs = await self.load(project_id)
             runtime.restore(project)
             transitions = {
@@ -750,7 +827,7 @@ class Orchestrator:
                         await self.traffic(config, "waiting")
                 self.require_plan(project, configs, approved=False)
             elif action == "resume" and project.status == "paused":
-                if project.autonomy_mode == "autonomous":
+                if project.autonomy_mode == "autonomous" and not runtime.pending_failover:
                     runtime.pending_question = None
                     await self.cancel_gate(runtime)
                 elif runtime.pending_question is not None:
@@ -776,6 +853,8 @@ class Orchestrator:
                     await bridge.commit()
                 runtime.meeting_base = None
                 runtime.plan_step = max(0, runtime.plan_step - 1)
+                runtime.auto_retries = runtime.continuations = 0
+                runtime.continuation_note = ""
                 runtime.handoff = None
                 runtime.answer = ""
                 if project.status == "completed":
@@ -785,8 +864,7 @@ class Orchestrator:
                 return "paused"
             else:
                 raise ValueError("Действие недоступно в текущем статусе.")
-            if (runtime.pending_failover and project.failover_mode == "manual"
-                    and project.autonomy_mode == "step_by_step"):
+            if runtime.pending_failover and project.failover_mode != "auto":
                 return await self.pause_for_approval(
                     project, runtime, runtime.pending_failover, "failover"
                 )
@@ -813,7 +891,7 @@ class Orchestrator:
     async def confirm_step(self, project_id, runtime, prompt, kind, config):
         if not await self.request_approval(project_id, prompt, kind=kind, config=config):
             return
-        async with runtime.boundary:
+        async with runtime.execution_lock:
             project, configs = await self.load(project_id)
             try:
                 digest = self.require_plan(project, configs, approved=True)
@@ -853,7 +931,8 @@ class Orchestrator:
 
         async def synthesize(agent, prompt, context, step_title):
             images = await self.spec_images(project_id)
-            return await agent.run_with_spec_images("plan", prompt, context, images=images, step_title=step_title)
+            async with self.runtime(project_id).execution_lock:
+                return await agent.run_with_spec_images("plan", prompt, context, images=images, step_title=step_title)
 
         async def rank_members(members):
             _, current = await self.load(project_id)
@@ -892,7 +971,7 @@ class Orchestrator:
     async def chat(self, project_id, question, target_agent_ids=None, *, media=None):
         runtime = self.runtime(project_id)
         auto_approve = False
-        async with runtime.boundary:
+        async with runtime.execution_lock:
             project, configs = await self.load(project_id)
             if project.status in {"draft", "council"}:
                 raise ValueError("Чат недоступен в текущем статусе.")
@@ -947,6 +1026,8 @@ class Orchestrator:
                     digest = self.plan_digest(project)
                     runtime.answer = f"Уточнение пользователя: {question}\nСледующее действие: {summary}"
                     runtime.retry_agent = None
+                    runtime.auto_retries = runtime.continuations = 0
+                    runtime.continuation_note = ""
                     if steps:
                         runtime.handoff = (by_name[steps[complete_prefix][0]].id, "")
                     elif runtime.handoff is None:
@@ -1051,7 +1132,7 @@ class Orchestrator:
 
     async def question(self, project_id, agent_id, question, *, media=None):
         runtime = self.runtime(project_id)
-        async with runtime.boundary:
+        async with runtime.execution_lock:
             project, configs = await self.load(project_id)
             if project.status == "council":
                 raise ValueError("Чат недоступен в текущем статусе.")
@@ -1131,7 +1212,7 @@ class Orchestrator:
         try:
             while True:
                 await runtime.ready.wait()
-                async with runtime.boundary:
+                async with runtime.execution_lock:
                     if not runtime.ready.is_set():
                         continue
                     project, configs = await self.load(project_id)
@@ -1159,8 +1240,8 @@ class Orchestrator:
         planned = steps[runtime.plan_step] if steps else None
         compact = bool(planned and is_compact_plan(project.plan_content or ""))
         final_step = planned and runtime.plan_step == len(steps) - 1
-        reviewing = bool(final_step and (
-            (compact and runtime.plan_step == 1)
+        reviewing = bool(planned and (
+            (final_step and compact and runtime.plan_step == 1)
             or (
                 re.match(r"(?i)^(?:финальная\s+)?(?:проверить|проверь|проверка|сверить|сверка|ревью)\b", planned[2])
                 and not re.search(
@@ -1198,11 +1279,11 @@ class Orchestrator:
         if is_artist and (not planned or planned[0] != config.name):
             raise ValueError(f"Для @{config.name} нет текущего шага генерации в плане.")
         bridge = GitBridge(workspace, project.id)
-        await bridge.prepare()
         interval = project.meeting_interval_minutes * 60
         if runtime.next_meeting is None:
             runtime.next_meeting = monotonic() + interval
-        if not compact and text_agents and runtime.retry_agent is None and monotonic() >= runtime.next_meeting:
+        if not compact and len(text_agents) > 1 and runtime.retry_agent is None and monotonic() >= runtime.next_meeting:
+            await bridge.prepare()
             diff = await bridge.diff(runtime.meeting_base) if runtime.meeting_base else ""
             summary = await periodic_meeting(project.context_content or "", [
                 (item.name, ProjectAgent(self, project, item)) for item in text_agents
@@ -1234,8 +1315,7 @@ class Orchestrator:
                 return
         remote = config.settings.get("worker")
         saved = config.saved_context_json if runtime.retry_agent == config.id else None
-        checkpoint = (saved or {}).get("checkpoint") or await bridge.checkpoint()
-        runtime.meeting_base = runtime.meeting_base or checkpoint
+        checkpoint = (saved or {}).get("checkpoint")
         clock = asyncio.get_running_loop()
         deadline = clock.time() + project.deadline_minutes * 60
         feedback = saved["feedback"] if saved else ""
@@ -1252,8 +1332,12 @@ class Orchestrator:
         clarification = ""
         images = () if is_artist or reviewing else await self.spec_images(project.id)
         generated = None
-        confirm_handoff = handoff and not receipt_done and not is_artist and not compact and mode != "autonomous"
-        stage = "подтверждение передачи задачи" if confirm_handoff else "исполнение задачи"
+        failed_handoff = any(item.id == runtime.last_agent and item.traffic_state == "error" for item in configs)
+        confirm_handoff = (
+            handoff and not receipt_done and not is_artist and not compact and mode != "autonomous"
+            and not failed_handoff
+        )
+        stage = "подготовка рабочей папки"
         recent = ""
         complete = False
         committed = False
@@ -1261,7 +1345,11 @@ class Orchestrator:
         question_allowed = mode in {"consultative", "with_questions"}
         try:
             async with asyncio.timeout_at(deadline):
+                await bridge.prepare()
+                checkpoint = checkpoint or await bridge.checkpoint()
+                runtime.meeting_base = runtime.meeting_base or checkpoint
                 if confirm_handoff:
+                    stage = "подтверждение передачи задачи"
                     receipt = await agent.run(
                         "handoff", f"Ты {config.name}. Кратко сообщи команде, какую работу начнёшь. {task}",
                         f"{handoff}\n{runtime.answer}", timeout=max(0.01, deadline - clock.time()),
@@ -1277,6 +1365,7 @@ class Orchestrator:
                 while True:
                     stage = "исполнение задачи"
                     correction = f"Исправь ошибки проверки перед передачей хода:\n{feedback[:15000]}" if feedback else ""
+                    pass_tree = None
                     if is_artist:
                         path = planned[1]
                         if pending_result is None:
@@ -1287,6 +1376,9 @@ class Orchestrator:
                     elif pending_result is not None:
                         result = AgentResult("success", pending_result)
                     else:
+                        tree_map = await asyncio.to_thread(project_tree_map, workspace)
+                        await bridge.git("add", "-A")
+                        pass_tree = await bridge.git("write-tree")
                         transport_ref = await bridge.open_transport() if remote else None
                         try:
                             if reviewing:
@@ -1315,10 +1407,14 @@ class Orchestrator:
                                     "верни отдельную строку LOOMIS_BLOCKED: <причина>. "
                                     "Если все задачи плана завершены, верни отдельную строку LOOMIS_COMPLETE."
                                 )
+                            prompt += f"\n\n{tree_map}"
+                            if runtime.continuation_note:
+                                prompt += f"\n\nПромежуточный коммит текущего шага:\n{runtime.continuation_note}"
                             result = await agent.run_with_spec_images(
                                 "execute", prompt,
                                 workspace=workspace, timeout=max(0.01, deadline - clock.time()), images=images,
                                 transport_ref=transport_ref, reviewing=reviewing,
+                                fresh_context=bool(runtime.continuations),
                                 step_title="Исправление ошибок проверки" if feedback else None,
                             )
                         finally:
@@ -1331,8 +1427,44 @@ class Orchestrator:
                     if result.status != "success":
                         raise RuntimeError(result.message or result.status)
                     response = result.message.strip()
+                    continuation = re.search(r"(?m)^[ \t]*STEP_CONTINUE:[ \t]*(.*)$", response)
+                    if continuation:
+                        stage = "сохранение промежуточного результата"
+                        if response == WORKSPACE_ROUND_EXHAUSTED:
+                            bridge.clean_workspace()
+                            await bridge.git("add", "-A")
+                            if pass_tree == await bridge.git("write-tree"):
+                                raise RuntimeError("За текущий проход не получено изменений или итогового отчёта.")
+                        committed_checkpoint = await bridge.commit("chore: сохранён промежуточный результат шага")
+                        if not committed_checkpoint and response != WORKSPACE_ROUND_EXHAUSTED:
+                            await bridge.write_commit(
+                                "commit", "--allow-empty", "-m", "chore: сохранён промежуточный результат шага",
+                            )
+                            committed_checkpoint = True
+                        runtime.continuation_note = (
+                            f"{await bridge.head()}\n{continuation[1][:3000]}"
+                            if response != WORKSPACE_ROUND_EXHAUSTED else
+                            f"{await bridge.head()}\nПроверь сохранённые изменения и доведи этот шаг до результата."
+                        )
+                        can_continue = runtime.continuations < MAX_STEP_CONTINUATIONS
+                        if can_continue:
+                            runtime.continuations += 1
+                        if committed_checkpoint:
+                            await self.save_commit_state(project, bridge, runtime, False)
+                            await manager.broadcast(project.id, {"type": "git_commit", "project_id": project.id})
+                        if can_continue:
+                            continue
+                        raise RuntimeError("Промежуточный результат сохранён. Исчерпаны три автопродолжения шага.")
+                    verified_by_workspace = False
                     if not response:
-                        raise RuntimeError("Исполнитель не вернул результат.")
+                        target = workspace_file(workspace, expected_path) if expected_path != "-" else None
+                        if not reviewing or not (
+                            target and target.is_file() and target.stat().st_size > 0
+                            or await bridge.git("status", "--porcelain", "--untracked-files=all")
+                        ):
+                            raise RuntimeError("Исполнитель не вернул результат.")
+                        verified_by_workspace = True
+                        response = result.message = "Результат проверки подтверждён файлами рабочей папки."
                     blocked = re.search(r"(?m)^LOOMIS_BLOCKED:[ \t]*(.+)$", response)
                     if blocked:
                         raise RuntimeError(blocked[1])
@@ -1351,7 +1483,8 @@ class Orchestrator:
                     self.require_plan(project, configs, approved=True)
                     stage = "проверка результата"
                     pending_result = result.message
-                    if expected_path != "-" and not workspace_file(workspace, expected_path).is_file():
+                    if (not verified_by_workspace and expected_path != "-"
+                            and not workspace_file(workspace, expected_path).is_file()):
                         if reviewing:
                             raise RuntimeError(f"Итоговый файл {expected_path} отсутствует.")
                         feedback = f"Итоговый файл {expected_path} отсутствует. Создай его и проверь результат."
@@ -1390,20 +1523,29 @@ class Orchestrator:
             diagnostic, partial_diff = await self.diagnose_failure(
                 bridge, checkpoint, config, stage, feedback or recent,
             )
-            runtime.retry_agent = None
-            await self.traffic(config, "error", error, saved_context={
+            saved_context = {
                 "plan_digest": project.approved_plan_digest, "task": task, "context": context,
                 "handoff": handoff, "answer": runtime.answer, "feedback": feedback,
                 "diagnostic": diagnostic, "partial_diff": partial_diff,
                 "receipt_done": receipt_done, "pending_result": pending_result, "checkpoint": checkpoint,
                 "plan_step": runtime.plan_step,
-            })
+            }
+            if project.failover_mode == "auto" and len(configs) == 1 and runtime.auto_retries < MAX_AUTO_RETRIES:
+                runtime.auto_retries += 1
+                runtime.retry_agent = config.id
+                runtime.handoff = (config.id, handoff)
+                await self.traffic(config, "waiting", saved_context=saved_context, clear_cooldown=True)
+                await self.save_turn(project.id, runtime)
+                await asyncio.sleep(4)
+                return
+            runtime.retry_agent = None
+            await self.traffic(config, "error", error, saved_context=saved_context)
             await self.failover(project, [] if is_artist else text_agents, runtime, config, task, handoff, error,
                                 diagnostic=diagnostic, partial_diff=partial_diff)
             return
         runtime.retry_agent = None
         if clarification:
-            await bridge.restore(checkpoint)
+            await bridge.restore(await bridge.head() if runtime.continuations else checkpoint)
             await bridge.git("tag", "-d", checkpoint)
             if runtime.meeting_base == checkpoint:
                 runtime.meeting_base = None
@@ -1416,6 +1558,8 @@ class Orchestrator:
             await self.notify(project.id, f"{config.name} спрашивает: {clarification}",
                               event_type="question", config=config, critical=True)
             return
+        runtime.auto_retries = runtime.continuations = 0
+        runtime.continuation_note = ""
         async with async_session_factory() as session:
             session.add(TaskLog(project_id=project.id, agent_id=config.id, sender_name=config.name,
                                 operation="completed_step", duration_seconds=0, status="success"))
@@ -1512,7 +1656,7 @@ class Orchestrator:
         if not re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_hash):
             raise ValueError("Некорректный хэш коммита.")
         runtime = self.runtime(project_id)
-        async with runtime.boundary:
+        async with runtime.execution_lock:
             project, _ = await self.load(project_id)
             if project.status in {"running", "council"}:
                 raise ValueError("Сначала приостановите проект.")
@@ -1586,6 +1730,9 @@ class Orchestrator:
             runtime.pending_failover = fresh.pending_failover
             runtime.retry_agent = fresh.retry_agent
             runtime.plan_step = fresh.plan_step
+            runtime.auto_retries = fresh.auto_retries
+            runtime.continuations = fresh.continuations
+            runtime.continuation_note = fresh.continuation_note
             runtime.answer = fresh.answer
             runtime.restored = True
             runtime.meeting_base = None
@@ -1598,7 +1745,7 @@ class Orchestrator:
             return {"status": row.status, "commit_hash": target, "context_restored": snapshot is not None}
 
     async def push_project(self, project_id):
-        async with self.runtime(project_id).boundary:
+        async with self.runtime(project_id).execution_lock:
             project, _ = await self.load(project_id)
             if project.status in {"running", "council"}:
                 raise ValueError("Сначала приостановите проект.")
@@ -1645,8 +1792,9 @@ class Orchestrator:
         diff = ""
         try:
             status = await bridge.git("status", "--short", "--untracked-files=all")
-            changes = await bridge.git("diff", "--stat", checkpoint, "--", ".")
-            diff = await bridge.diff(checkpoint)
+            changes = await bridge.git("diff", "--stat", checkpoint, "--", ".") if checkpoint else ""
+            if checkpoint:
+                diff = await bridge.diff(checkpoint)
             notes.append(f"Изменения в репозитории:\n{(changes or status or 'Нет изменений')[:900]}")
             if status and status != changes:
                 notes.append(status[:500])
@@ -1716,7 +1864,7 @@ class Orchestrator:
         if partial_diff:
             context += f"\n\nGit diff на момент сбоя:\n{partial_diff}"
         runtime.handoff = (successor.id, context)
-        if project.failover_mode == "manual" and project.autonomy_mode == "step_by_step":
+        if project.failover_mode != "auto":
             runtime.pending_failover = f"{broken.name}: {error}\nПередать задачу @{successor.name}?"
             await self.pause_for_approval(project, runtime, runtime.pending_failover, "failover", broken)
         else:
@@ -1726,12 +1874,16 @@ class Orchestrator:
                           in_team_chat=True)
 
     async def stop(self, project_id):
-        runtime = self.runtimes.pop(project_id, None)
+        runtime = self.runtimes.get(project_id)
         if runtime:
+            runtime.ready.clear()
             tasks = [task for task in (runtime.task, runtime.council, runtime.gate) if task and not task.done()]
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            async with runtime.execution_lock:
+                if self.runtimes.get(project_id) is runtime:
+                    self.runtimes.pop(project_id)
 
     def background_reply(self, reply):
         task = asyncio.create_task(reply)

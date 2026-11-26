@@ -667,6 +667,7 @@ function setStatus(status) {
   });
   const pause = document.querySelector('[data-action="pause"]');
   pause.querySelector("strong").textContent = status === "paused" ? "Продолжить" : "Пауза";
+  updateAgentLights();
   renderProjectControls();
   renderGitPush();
   if (gitCommitsVisible()) loadGitCommits();
@@ -956,6 +957,7 @@ for (const [picker, trigger, image] of [
 }
 
 function showCommandApproval({id, command, kind}, projectId) {
+  if (Array.from(byId("command-approvals").children).some((panel) => panel.dataset.approvalId === id)) return;
   const panel = document.createElement("section");
   const heading = document.createElement("h3");
   const text = document.createElement("p");
@@ -1017,13 +1019,31 @@ function refreshHistory(projectId, current) {
   });
 }
 
-function connect(projectId, current) {
+function connect(projectId, current, reconnecting = false) {
   if (current !== selection) return;
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   socket = new WebSocket(scheme + "//" + location.host + "/ws/" + projectId, ["loomis", token]);
-  socket.onopen = () => refreshHistory(projectId, current);
+  let closedApprovals = new Set();
+  const connection = socket;
+  socket.onopen = () => {
+    refreshHistory(projectId, current);
+    if (reconnecting) loadAgents(projectId, current).catch((error) => {
+      if (current === selection && connection === socket) notify(error.message);
+    });
+    api("projects/" + projectId + "/approvals")
+      .then((approvals) => {
+        if (current !== selection || connection !== socket) return;
+        for (const approval of approvals) {
+          if (!closedApprovals.has(approval.id)) showCommandApproval(approval, projectId);
+        }
+      })
+      .catch((error) => {
+        if (current === selection && connection === socket) notify(error.message);
+      })
+      .finally(() => { closedApprovals = null; });
+  };
   socket.onmessage = ({data}) => {
-    if (current !== selection) return;
+    if (current !== selection || connection !== socket) return;
     const event = JSON.parse(data);
     if (event.type === "status") {
       statusRevision++;
@@ -1040,18 +1060,19 @@ function connect(projectId, current) {
     }
     if (event.type === "git_commit") loadGitCommits();
     if (event.type === "approval_closed") {
+      closedApprovals?.add(event.id);
       Array.from(byId("command-approvals").children)
         .find((panel) => panel.dataset.approvalId === event.id)?.remove();
     }
     if (event.type === "traffic_state") {
       traffic.set(event.agent_id, event);
-      updateLight(event.agent_id);
+      updateAgentLights();
     }
     if (event.type === "approval") showCommandApproval(event, projectId);
   };
   socket.onclose = () => {
     if (current !== selection) return;
-    setTimeout(() => connect(projectId, current), 3500);
+    setTimeout(() => connect(projectId, current, true), 3500);
   };
 }
 
@@ -1144,8 +1165,12 @@ async function selectProject(item) {
 }
 
 async function loadAgents(projectId, current) {
+  const previousTraffic = new Map(traffic);
   const agents = await api("projects/" + projectId + "/agents");
   if (current !== selection) return;
+  for (const [id, event] of previousTraffic) {
+    if (traffic.get(id) === event) traffic.delete(id);
+  }
   const ids = new Set(agents.map((agent) => agent.id));
   for (const agent of agentsInProject) if (!ids.has(agent.id)) removeAgentHistory(agent);
   agentsInProject = agents;
@@ -1198,16 +1223,28 @@ async function loadAgents(projectId, current) {
     signals.append(light, retry);
     card.append(description, signals);
     lights.set(agent.id, {light, agent, retry});
-    updateLight(agent.id);
     return card;
   });
   byId("agent-grid").replaceChildren(...(cards.length ? cards : ["В проекте пока нет агентов."]));
+  updateAgentLights();
   renderDirectAgents(agents);
   renderTerminalTabs();
   renderProjectControls();
 }
 
-function updateLight(id) {
+function updateAgentLights() {
+  const showRetry = canShowRetry();
+  for (const id of lights.keys()) updateLight(id, showRetry);
+}
+
+function canShowRetry() {
+  if (!["paused", "error"].includes(project?.status)) return false;
+  if (project.failover_mode !== "auto") return true;
+  return agentsInProject.every((member) =>
+    !member.enabled || (traffic.get(member.id) || member).traffic_state === "error");
+}
+
+function updateLight(id, showRetry = canShowRetry()) {
   const card = lights.get(id);
   if (!card) return;
   const {light, agent, retry} = card;
@@ -1215,9 +1252,9 @@ function updateLight(id) {
   const status = agent.enabled ? state.traffic_state : "error";
   const labels = {working: "Работает", asking: "Ждёт ответа в личном чате", waiting: "Ждёт своей очереди",
     error: state.last_error || "Агент недоступен"};
-  retry.hidden = !agent.enabled || status !== "error";
   const canRetry = state.can_retry ?? agent.can_retry;
-  retry.disabled = "pending" in retry.dataset || !canRetry;
+  retry.hidden = !agent.enabled || status !== "error" || !showRetry;
+  retry.disabled = retry.hidden || "pending" in retry.dataset || !canRetry;
   retry.title = canRetry ? "Перезапустить" : "Нет сохранённого контекста для перезапуска";
   light.dataset.state = status;
   const label = labels[status] || "Состояние неизвестно";

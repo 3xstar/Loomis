@@ -33,6 +33,13 @@ COMMAND_INSTRUCTION = (
     "Разбирай ошибки, исправляй их и проверяй, что итоговые файлы созданы, прежде чем завершить задачу."
 )
 COMMAND_LINE = re.compile(r"^[ \t]*RUN_CMD:[ \t]*(\S[^\r\n]*)\r?$", re.MULTILINE)
+WORKSPACE_ROUND_LIMIT = 15
+WORKSPACE_ROUND_EXHAUSTED = "STEP_CONTINUE: [лимит команд]"
+WORKSPACE_ROUND_WARNING = (
+    "Промежуточный лимит команд достигнут. Если шаг полностью готов — выведи итоговый отчёт "
+    "(Сделано:, Следующий шаг:, COMMIT_MSG:). Если нужно продолжить работу над этим же шагом "
+    "в следующей сессии — выведи STEP_CONTINUE: <что уже сделано и что осталось>"
+)
 REVIEW_INSTRUCTION = (
     "Проверь результат по критериям без изменения файлов. Команды только для чтения: run_cmd или RUN_CMD. "
     "Кратко перечисли несоответствия. Если проверка невозможна, верни LOOMIS_BLOCKED: <причина>."
@@ -80,7 +87,15 @@ async def run_workspace_command(workspace: Path, command: str, *, compact_output
     if not isinstance(command, str) or not command.strip() or len(command) > 16000 or "\0" in command:
         raise ValueError("Expected one nonempty shell command up to 16000 characters")
     workspace_path = workspace.resolve(strict=True)
-    return await asyncio.to_thread(run_host_command, workspace_path, use_worker_python(command), compact_output)
+    execution = asyncio.create_task(
+        asyncio.to_thread(run_host_command, workspace_path, use_worker_python(command), compact_output)
+    )
+    try:
+        return await asyncio.shield(execution)
+    except asyncio.CancelledError:
+        # Keep the workspace reserved until the shell command has stopped writing.
+        await asyncio.gather(execution, return_exceptions=True)
+        raise
 
 
 def run_host_command(workspace_path: Path, command: str, compact_output=False) -> str:
@@ -328,8 +343,11 @@ class ApiAgent(BaseAgent):
                 fragments = []
                 rounds = []
                 command_rounds = []
-                for _ in range(32):
+                limit = WORKSPACE_ROUND_LIMIT if workspace is not None else 32
+                for round_number in range(1, limit + 1):
                     dialogue = [*messages, *(entry for batch in rounds for entry in batch)]
+                    if workspace is not None and round_number >= WORKSPACE_ROUND_LIMIT - 1:
+                        dialogue.insert(1, {"role": "system", "content": WORKSPACE_ROUND_WARNING})
                     try:
                         response = await client.chat.completions.create(model=self.model, messages=dialogue, **options)
                     except BadRequestError as exc:
@@ -345,6 +363,8 @@ class ApiAgent(BaseAgent):
                     message = choice.message
                     if not message.tool_calls:
                         answer = message.content or ""
+                        if workspace is not None and re.search(r"(?m)^[ \t]*STEP_CONTINUE:", answer):
+                            return AgentResult("success", answer, tokens)
                         commands = COMMAND_LINE.findall(answer) if workspace is not None else []
                         if commands:
                             outputs = []
@@ -404,7 +424,9 @@ class ApiAgent(BaseAgent):
                         command_rounds.append(batch)
                         if len(command_rounds) > 2:
                             command_rounds.pop(0).clear()
-                return AgentResult("error", "Tool round limit reached", tokens)
+                if workspace is not None:
+                    return AgentResult("success", WORKSPACE_ROUND_EXHAUSTED, tokens)
+                return AgentResult("error", "Диалог завершился без итогового ответа.", tokens)
         except APITimeoutError as exc:
             return AgentResult("timeout", str(exc), tokens)
         except TimeoutError:
