@@ -73,7 +73,6 @@ button:not(:disabled):active, select:not(:disabled):active { transform: scale(0.
 .screen { position: fixed; inset: 0; }
 .auth-screen { display: grid; place-items: center; overflow: auto; padding: 20px; }
 .auth-screen:not([data-session-checked]) { visibility: hidden; }
-.auth-brand .theme-switch { margin-left: auto; }
 .auth-card, .modal { width: min(100%, 460px); padding: 30px; }
 .auth-brand, .brand-row, .sidebar-head, .user-card, .section-label,
 .topbar, .project-title, .topbar-actions, .section-head, .terminal-head, .terminal-actions,
@@ -84,12 +83,12 @@ button:not(:disabled):active, select:not(:disabled):active { transform: scale(0.
 :root:not([data-theme="light"]) .logo-light,
 :root[data-theme="light"] .logo-dark { display: none; }
 .auth-lead { margin: 12px 0 24px; }
-.glass-tabs { display: grid; grid-template-columns: 1fr 1.4fr; gap: 4px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 15px; margin-bottom: 20px; }
+.glass-tabs { display: grid; grid-template-columns: 1fr 1.4fr; gap: 4px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; margin-bottom: 20px; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled { opacity: .45; cursor: default; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.button, .tab, .icon-button, .control-button, .project-button, .send-button, .theme-switch {
+.button, .tab, .icon-button, .control-button, .project-button, .send-button {
   border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 8px 12px;
 }
 button svg {
@@ -122,7 +121,7 @@ button:not(:disabled, :where(#brand-home, #completion-extinguish)):hover { box-s
 @media (prefers-reduced-motion: reduce) {
   #brand-home img { transition: none; }
 }
-.tab { border-color: transparent; background: transparent; }
+.tab { border-color: transparent; background: transparent; border-radius: 999px; }
 .tab.active, .project-button[aria-current="true"] { border-color: var(--line); background: var(--surface); color: var(--accent); }
 .primary, .send-button { background: var(--accent); color: var(--primary-ink); font-weight: 650; }
 .link-button, .text-action { border: 0; border-radius: 8px; background: transparent; color: var(--accent); padding: 4px 6px; }
@@ -225,7 +224,6 @@ option { background: var(--base); }
   margin: 0;
   stroke-width: 2.5;
 }
-.theme-switch { font-size: 12px; padding: 4px 9px; }
 .topbar { padding: 12px 18px; }
 .status-pill { border: 1px solid var(--line); border-radius: 20px; padding: 2px 9px; font-size: 12px; }
 
@@ -362,14 +360,14 @@ option { background: var(--base); }
 .quick-card strong,.quick-card small { display:block; }
 .quick-card strong { font-size:clamp(13px, 2.3cqh, 18px); }
 .quick-card small { margin-top:3px; font-size:clamp(11px, 1.8cqh, 14px); color:var(--muted); }
-.project-stepper { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:8px; margin:0 2px; list-style:none; }
-.project-stepper li { display:flex; align-items:center; justify-content:center; gap:7px; padding:7px 5px; border-radius:10px; color:var(--muted); font-size:12px; text-align:center; }
+.project-stepper.glass-panel { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:4px; margin:0 2px; list-style:none; border-radius:999px; }
+.project-stepper li { display:flex; align-items:center; justify-content:center; gap:7px; padding:7px 5px; border-radius:999px; color:var(--muted); font-size:12px; text-align:center; }
 .project-stepper li span { display:grid; place-items:center; width:20px; height:20px; border-radius:50%; border:1px solid var(--line); font-size:11px; }
 .project-stepper li.active { color:var(--ink); background:color-mix(in srgb, var(--accent) 16%, transparent); }
 .project-stepper li.active span { background:var(--accent); color:var(--primary-ink); border-color:transparent; }
 .team-empty { height:100%; display:grid; place-items:center; padding:20px; }
 .team-empty-card { max-width:390px; padding:28px; text-align:center; } .team-empty-card .dashboard-icon { margin:0 auto 10px; width:42px; height:42px; } .team-empty-card h3 { margin:0 0 5px; } .team-empty-card p { color:var(--muted); margin:0 0 16px; }
-.welcome-dashboard.hidden, .project-stepper.hidden, .workspace.hidden { display:none; }
+.welcome-dashboard.hidden, .project-stepper.glass-panel.hidden, .workspace.hidden { display:none; }
 #project-page:has(.welcome-dashboard:not(.hidden)) .topbar { background:transparent; border-color:transparent; box-shadow:none; backdrop-filter:none; }
 #project-page:has(.welcome-dashboard:not(.hidden)) .topbar-actions { margin-left:auto; }
 @media (max-width: 530px) {
@@ -651,7 +649,7 @@ option { background: var(--base); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-#project-page .project-stepper { margin: 0; padding: 4px; }
+#project-page .project-stepper { margin: 0; }
 .workspace { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; overflow: hidden; }
 #workspace-controls { flex: 0 0 auto; min-width: 0; }
 #workspace-controls > summary { padding: 7px 12px; cursor: pointer; }
@@ -756,7 +754,7 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
   width: fit-content;
   padding: 4px;
   border: 1px solid var(--line);
-  border-radius: 15px;
+  border-radius: 999px;
   background: var(--surface);
 }
 .work-switch { flex-wrap: wrap; }
@@ -1082,13 +1080,14 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
   #hub-button, .hub-nav-label, .setting-tooltip { transition: none; }
 }
 
-.settings-tabs {
+.settings-tabs.glass-panel {
   position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   margin-bottom: 16px;
+  border-radius: 999px;
 }
 .settings-tabs::before {
   content: "";
@@ -1097,7 +1096,7 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
   inset: 4px auto 4px 4px;
   width: calc((100% - 16px) / 3);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 999px;
   background: var(--surface);
   pointer-events: none;
   transform: translate3d(0, 0, 0);

@@ -110,22 +110,27 @@ function scheduleFrame() {
   }
 }
 
-toggle.addEventListener("click", event => {
-  if (event.detail && suppressPointerClick) return;
-  if (event.detail && model && !model.hitTest({ x: event.clientX, y: event.clientY }, burning)) return;
-  burning = !burning;
+function setHomeLighterOpen(open, animateChange = false) {
+  burning = open;
   toggle.setAttribute("aria-expanded", String(burning));
   stage.toggleAttribute("data-open", burning);
-  if (burning) {
-    ignition = performance.now() + (reducedMotion.matches ? 0 : 190);
-  } else {
-    ignition = 0;
-    stage.removeAttribute("data-burning");
-    if (!content.inert && !reducedMotion.matches && ashContext) disperseWidgets();
+  ignition = burning && animateChange && !reducedMotion.matches ? performance.now() + 190 : 0;
+  stage.toggleAttribute("data-burning", burning && !ignition);
+  if (!burning && animateChange && !content.inert && !reducedMotion.matches && ashContext) {
+    disperseWidgets();
   }
   content.classList.toggle("revealed", burning);
   content.inert = !burning;
   scheduleFrame();
+}
+
+setHomeLighterOpen(toggle.getAttribute("aria-expanded") === "true");
+toggle.addEventListener("lighterrestore", ({detail: open}) => setHomeLighterOpen(open));
+toggle.addEventListener("click", event => {
+  if (event.detail && suppressPointerClick) return;
+  if (event.detail && model && !model.hitTest({ x: event.clientX, y: event.clientY }, burning)) return;
+  setHomeLighterOpen(!burning, true);
+  toggle.dispatchEvent(new CustomEvent("lighterchange", {detail: burning}));
 });
 
 toggle.addEventListener("pointerdown", event => {
@@ -221,19 +226,12 @@ function syncVisibility() {
     if (toggle.hasPointerCapture(pointerId)) toggle.releasePointerCapture(pointerId);
   }
   if (onDashboard) return;
-  burning = false;
-  ignition = 0;
   pointer = undefined;
   ashes = [];
   ashContext?.clearRect(0, 0, ash.width, ash.height);
-  toggle.setAttribute("aria-expanded", "false");
-  stage.removeAttribute("data-open");
-  stage.removeAttribute("data-burning");
-  content.inert = true;
-  content.classList.remove("revealed");
   stage.removeAttribute("data-hit");
   stage.style.removeProperty("--lighter-bend");
-  model?.reset();
+  if (!burning) model?.reset();
 }
 
 const visibility = new MutationObserver(syncVisibility);

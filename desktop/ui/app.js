@@ -2,6 +2,7 @@ const byId = (id) => document.getElementById(id);
 const all = (selector) => document.querySelectorAll(selector);
 
 const sessionKey = "loomis-token";
+const homeLighterKey = "loomis_home_lighter_open";
 const desktopSessionAPI = window.pywebview?.api?.load_session
   ? Promise.resolve(window.pywebview.api)
   : new URLSearchParams(location.search).get("desktop") === "1"
@@ -121,24 +122,17 @@ function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("loomis-theme", theme);
   byId("settings-theme").value = theme;
-  all(".theme-switch").forEach((button) => {
-    button.innerHTML = icon(theme === "dark"
-      ? '<path d="M20.9 13.3A9 9 0 0 1 10.7 3.1a9 9 0 1 0 10.2 10.2Z"/>'
-      : '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.4 1.4m11.2 11.2L19 19M5 19l1.4-1.4M17.6 6.4 19 5"/>');
-    button.setAttribute("aria-label", theme === "dark" ? "Светлая тема" : "Тёмная тема");
-    button.title = theme === "dark" ? "Dark Liquid Glass" : "Light iOS Glass";
-    button.setAttribute("aria-pressed", theme === "light");
-  });
 }
 byId("settings-theme").onchange = ({target}) => {
   setTheme(target.value);
   saveDesktopPreferences({theme: target.value});
 };
 setTheme(localStorage.getItem("loomis-theme") === "light" ? "light" : "dark");
-all(".theme-switch").forEach((button) => button.onclick = () => {
-  const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  setTheme(theme);
-  saveDesktopPreferences({theme});
+const homeLighterToggle = byId("lighter-toggle");
+homeLighterToggle.setAttribute("aria-expanded", String(localStorage.getItem(homeLighterKey) === "true"));
+homeLighterToggle.addEventListener("lighterchange", ({detail: open}) => {
+  localStorage.setItem(homeLighterKey, String(open));
+  saveDesktopPreferences({homeLighterOpen: open});
 });
 
 function stopMagic() {
@@ -2330,6 +2324,21 @@ const projectSettings = {
   commit_mode: ["commit-mode", "sequential"],
   auto_push_mode: ["auto-push-mode", "after_each"],
 };
+const projectPreferenceKeys = {
+  autonomy_mode: "work_mode",
+  verbosity_level: "report_verbosity",
+};
+
+function rememberProjectSettings(settings) {
+  const defaultProjectPrefs = {...desktopPreferences.defaultProjectPrefs};
+  for (const [key, value] of Object.entries(settings)) {
+    const [id] = projectSettings[key];
+    if (byId("project-" + id).validity.valid) {
+      defaultProjectPrefs[projectPreferenceKeys[key] ?? key] = value;
+    }
+  }
+  return saveDesktopPreferences({defaultProjectPrefs});
+}
 
 function renderProjectSettings(item) {
   for (const [key, [id, fallback]] of Object.entries(projectSettings)) {
@@ -2499,8 +2508,11 @@ function openProjectModal(template) {
   byId("project-name").value = name;
   byId("project-template").value = spec;
   byId("project-template-field").classList.toggle("hidden", !template);
-  for (const [id, fallback] of Object.values(projectSettings)) {
-    byId("project-" + id).value = fallback;
+  for (const [key, [id, fallback]] of Object.entries(projectSettings)) {
+    const field = byId("project-" + id);
+    const saved = desktopPreferences.defaultProjectPrefs?.[projectPreferenceKeys[key] ?? key];
+    field.value = saved ?? fallback;
+    if (!field.value || !field.validity.valid) field.value = fallback;
   }
   selectProjectAddTab(false);
   fillDefaultProjectPath();
@@ -2513,6 +2525,9 @@ byId("new-project-button").onclick = byId("welcome-create").onclick = () => open
 all("[data-template]").forEach((button) => {
   button.onclick = () => openProjectModal(projectTemplates[button.dataset.template]);
 });
+for (const [id] of Object.values(projectSettings)) {
+  byId("project-" + id).addEventListener("change", () => rememberProjectSettings(readProjectSettings("project")));
+}
 byId("project-form").onsubmit = async (event) => {
   event.preventDefault();
   const button = event.submitter;
@@ -2522,14 +2537,17 @@ byId("project-form").onsubmit = async (event) => {
   const session = token;
   const form = event.currentTarget;
   const spec = byId("project-template").value.trim();
+  const settings = readProjectSettings("project");
+  const saved = rememberProjectSettings(settings);
   const payload = {
     name: byId("project-name").value,
-    ...readProjectSettings("project"),
+    ...settings,
     ...projectLocation("project"),
     ...(!customProjectPath && {workspace_path: null}),
   };
   button.disabled = true;
   try {
+    await saved;
     const created = await api("projects", payload, session);
     let importError, specError;
     if (spec) {
@@ -2830,8 +2848,27 @@ function renderCompletionTeam(target, {agents, completed_steps}) {
   );
 }
 
-function completionLighterKey(id) {
-  return `loomis_lighter_closed_${id}`;
+const completionLighterPrefix = "loomis_lighter_closed_";
+
+function closedCompletionLighterIds() {
+  const saved = desktopPreferences.closedCompletionLighters;
+  if (Array.isArray(saved)) return saved.map(String);
+  return Object.keys(localStorage)
+    .filter(key => key.startsWith(completionLighterPrefix) && localStorage.getItem(key) === "1")
+    .map(key => key.slice(completionLighterPrefix.length));
+}
+
+function rememberCompletionLighter(id, closed) {
+  const ids = new Set(closedCompletionLighterIds());
+  const key = completionLighterPrefix + id;
+  if (closed) {
+    ids.add(id);
+    localStorage.setItem(key, "1");
+  } else {
+    ids.delete(id);
+    localStorage.removeItem(key);
+  }
+  return saveDesktopPreferences({closedCompletionLighters: [...ids]});
 }
 
 function syncCompletionScreen() {
@@ -2849,7 +2886,7 @@ function syncCompletionScreen() {
   if (active) byId("completion-name").textContent = project.name;
   if (!changed) return;
   scene.classList.remove("completion-lit", "completion-out");
-  const closed = active && localStorage.getItem(completionLighterKey(id)) === "1";
+  const closed = active && closedCompletionLighterIds().includes(id);
   scene.classList.toggle("completion-closed", closed);
   const actions = byId("completion-actions");
   actions.inert = !closed;
@@ -2885,7 +2922,7 @@ function confirmCompletionAction(reopen) {
     button.disabled = true;
     try {
       const {status} = await api(`projects/${id}/actions`, {action: reopen ? "reopen_project" : "confirm_completion"});
-      if (reopen) localStorage.removeItem(completionLighterKey(id));
+      if (reopen) await rememberCompletionLighter(String(id), false);
       if (revision === modalRevision) showModal();
       if (current === selection && statusVersion === statusRevision) setStatus(status);
       if (reopen && current === selection && project.status === "review_pending") {
@@ -2905,7 +2942,7 @@ byId("review-folder").onclick = openProjectFolder;
 byId("review-continue").onclick = () => byId("message-input").focus();
 byId("review-complete").onclick = () => confirmCompletionAction(false);
 byId("completion-scene").addEventListener("lighterclosed", (event) => {
-  localStorage.setItem(completionLighterKey(event.currentTarget.dataset.project), "1");
+  rememberCompletionLighter(event.currentTarget.dataset.project, true);
 });
 byId("completion-home").onclick = openDashboard;
 byId("completion-stats").onclick = () => byId("stats-button").onclick();
@@ -3046,10 +3083,21 @@ async function restoreSession() {
     try {
       const saved = await bridge?.load_preferences();
       desktopPreferences = {...saved, ...desktopPreferences};
-      const {theme, direct_width, sidebar_collapsed} = desktopPreferences;
+      const {theme, direct_width, sidebar_collapsed, homeLighterOpen, closedCompletionLighters} = desktopPreferences;
       if (theme === "dark" || theme === "light") setTheme(theme);
       if (Number.isFinite(direct_width)) setDirectWidth(direct_width);
       if (typeof sidebar_collapsed === "boolean") setSidebarRail(sidebar_collapsed);
+      if (typeof homeLighterOpen === "boolean") {
+        localStorage.setItem(homeLighterKey, String(homeLighterOpen));
+        homeLighterToggle.setAttribute("aria-expanded", String(homeLighterOpen));
+        homeLighterToggle.dispatchEvent(new CustomEvent("lighterrestore", {detail: homeLighterOpen}));
+      } else if (localStorage.getItem(homeLighterKey) !== null && bridge) {
+        saveDesktopPreferences({homeLighterOpen: localStorage.getItem(homeLighterKey) === "true"});
+      }
+      if (!Array.isArray(closedCompletionLighters) && bridge) {
+        const ids = closedCompletionLighterIds();
+        if (ids.length) saveDesktopPreferences({closedCompletionLighters: ids});
+      }
     } catch (error) {
       notify(error.message);
     }
