@@ -43,6 +43,16 @@ from .model_performance import cache_response, model_key, prompt_digest, rank_co
 logger = logging.getLogger(__name__)
 MAX_STEP_CONTINUATIONS = 3
 MAX_AUTO_RETRIES = 3
+TEAM_CHAT_AVAILABLE_STATUSES = frozenset({"awaiting_approval", "paused", "error", "review_pending", "completed"})
+TEAM_CHAT_WORKING_STATUSES = frozenset({"planning", "council", "running"})
+TEAM_CHAT_WORKING = "Агенты выполняют задачу — дождитесь завершения этапа или нажмите «Пауза»"
+
+
+def require_team_chat_available(status: str | None) -> None:
+    if status in TEAM_CHAT_WORKING_STATUSES:
+        raise ValueError(TEAM_CHAT_WORKING)
+    if status not in TEAM_CHAT_AVAILABLE_STATUSES:
+        raise ValueError("Чат недоступен в текущем статусе.")
 
 
 def project_tree_map(workspace):
@@ -971,10 +981,14 @@ class Orchestrator:
     async def chat(self, project_id, question, target_agent_ids=None, *, media=None):
         runtime = self.runtime(project_id)
         auto_approve = False
+        # Reject active work before waiting for its execution lock.
+        if runtime.execution_lock.locked():
+            async with async_session_factory() as session:
+                status = await session.scalar(select(Project.status).where(Project.id == project_id))
+            require_team_chat_available(status)
         async with runtime.execution_lock:
             project, configs = await self.load(project_id)
-            if project.status in {"draft", "council"}:
-                raise ValueError("Чат недоступен в текущем статусе.")
+            require_team_chat_available(project.status)
             runtime.restore(project)
             candidates = [item for item in configs if item.agent_role_type != "image_gen"]
             if not candidates:

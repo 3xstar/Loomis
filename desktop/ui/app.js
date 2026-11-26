@@ -581,17 +581,27 @@ function renderSpecAttachments() {
   }, specBusy || actionBusy);
 }
 
+const teamChatAvailableStatuses = new Set(["awaiting_approval", "paused", "error", "review_pending", "completed"]);
+const teamChatWorkingStatuses = new Set(["planning", "council", "running"]);
+const teamChatWorking = "Агенты выполняют задачу — дождитесь завершения этапа или нажмите «Пауза»";
+
 function syncComposer() {
   for (const channel of Object.keys(composers)) {
     const team = channel === "team";
+    const locked = team && !teamChatAvailableStatuses.has(project?.status);
+    const working = team && teamChatWorkingStatuses.has(project?.status);
+    if (locked) discardRecording(channel);
     const {busy, recording, microphonePending} = composers[channel];
-    const available = project && !["draft", "council", "deleted"].includes(project.status)
+    const available = !locked && project && !["draft", "council", "deleted"].includes(project.status)
       && (team ? agentsInProject.some((agent) => agent.enabled && agent.agent_role_type !== "image_gen") : selectedAgent);
     const input = composerNode(channel, "message-input");
     const hasPlan = Boolean(project?.has_plan);
     const editingPlan = team && planMode && hasPlan;
     if (team) {
       const modeChip = byId("plan-mode");
+      const statusPill = byId("team-chat-status");
+      statusPill.textContent = working ? teamChatWorking : "";
+      byId("message-form").classList.toggle("agents-working", working);
       modeChip.textContent = editingPlan ? "Режим: Правка PLAN.md" : "Режим: Обсуждение";
       modeChip.setAttribute("aria-pressed", editingPlan);
       modeChip.disabled = !available || !hasPlan || busy || Boolean(recording) || Boolean(microphonePending);
@@ -608,7 +618,7 @@ function syncComposer() {
     send.title = editingPlan ? "Отправить замечания к PLAN.md" : "Отправить";
     send.setAttribute("aria-label", send.title);
     composerNode(channel, "chat-record").disabled = !recording && (input.disabled || editingPlan || Boolean(microphonePending));
-    input.placeholder = editingPlan ? "Напишите замечания к PLAN.md…"
+    input.placeholder = working ? teamChatWorking : editingPlan ? "Напишите замечания к PLAN.md…"
       : team ? "Напишите в общий чат…" : "Напишите агенту…";
     input.setAttribute("aria-label", team ? "Сообщение команде" : "Сообщение агенту");
   }

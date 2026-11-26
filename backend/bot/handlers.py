@@ -39,7 +39,7 @@ from backend.core.doc_parser import parse_document
 from backend.core.github import github_repo_name
 from backend.core.media import MAX_MEDIA_BYTES, MEDIA_TYPES, make_media
 from backend.core.model_performance import model_key
-from backend.core.orchestrator import history_visible, orchestrator
+from backend.core.orchestrator import TEAM_CHAT_WORKING, history_visible, orchestrator, require_team_chat_available
 from backend.core.voice import VoiceTranscriber
 from backend.database.db import async_session_factory
 from backend.database.models import (
@@ -1004,6 +1004,9 @@ async def review_continue(callback: CallbackQuery, state: FSMContext, session: A
     await choose_team_target(callback.message, project, session, "plan")
 
 
+TEAM_CHAT_BUSY_REPLY = "⏳ Агенты сейчас выполняют текущий этап. Дождитесь завершения или нажмите «Пауза», чтобы внести правки"
+
+
 def run_project_action(message, project, action, **options):
     async def reply():
         try:
@@ -1154,6 +1157,8 @@ async def agent_chat_question(message: Message, bot: Bot, state: FSMContext,
         await state.clear()
         return
     try:
+        if "agent_id" not in data:
+            require_team_chat_available(project.status)
         question = (message.text or message.caption or "").strip()
         media = await read_media(message, bot, project.id)
         if message.document and media is None:
@@ -1217,6 +1222,9 @@ async def permit_command(callback: CallbackQuery, session: AsyncSession, account
 
 
 async def answer_formatted(message, content):
+    if content == TEAM_CHAT_WORKING:
+        await message.answer(TEAM_CHAT_BUSY_REPLY)
+        return
     for part in telegram_html(content):
         await message.answer(part, parse_mode="HTML")
 

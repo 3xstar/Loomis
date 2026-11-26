@@ -233,6 +233,8 @@ const LoomisI18n = (() => {
     "Например, MyApp": "For example, MyApp",
     "По умолчанию (workspaces)": "Default (workspaces)",
     "Спросите агента о проекте…": "Ask the agent about the project…",
+    "Агенты выполняют задачу — дождитесь завершения этапа или нажмите «Пауза»": "Agents are working — wait for the stage to finish or click Pause",
+    "Чат недоступен в текущем статусе.": "Chat is unavailable in the current project state.",
     "Сначала подключите хотя бы одного ИИ-агента": "Connect at least one AI agent first",
     "Ошибка запроса": "Request failed",
     "Зарегистрироваться": "Register",

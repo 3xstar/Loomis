@@ -11,6 +11,8 @@ from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
 bot_language = ContextVar("bot_language", default="ru")
 EN = {
     'Общий чат ИИ': 'AI team chat',
+    '⏳ Агенты сейчас выполняют текущий этап. Дождитесь завершения или нажмите «Пауза», чтобы внести правки': '⏳ Agents are working on the current stage. Wait for it to finish or click Pause to make changes',
+    'Чат недоступен в текущем статусе.': 'Chat is unavailable in the current project state.',
     'Личный чат с ИИ': 'AI direct chat',
     'Агенты проекта': 'Project agents',
     'План и Консилиум': 'Plan and council',
