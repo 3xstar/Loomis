@@ -508,6 +508,7 @@ option { background: var(--base); }
   max-width: calc(100vw - 32px);
   padding: 24px;
   box-sizing: border-box;
+  overflow-x: hidden;
   background-clip: padding-box;
 }
 :root[data-theme="light"] #delete-modal { --delete-ink: #991b1b; }
@@ -572,8 +573,11 @@ option { background: var(--base); }
   #delete-github-repo:checked::after { content: none; }
 }
 .delete-repo-copy { min-width: 0; }
-#delete-github-name {
-  display: table;
+#delete-github-name,
+#delete-local-path {
+  display: block;
+  box-sizing: border-box;
+  width: fit-content;
   max-width: 100%;
   margin-top: 6px;
   padding: 2px 7px;
@@ -584,6 +588,7 @@ option { background: var(--base); }
   font: 12px/1.4 Consolas, monospace;
   overflow-wrap: anywhere;
 }
+#delete-local-path { word-break: break-all; }
 #delete-modal .modal-actions { margin-top: 20px; gap: 10px; }
 #completion-confirm-modal .modal-actions { margin-top: 22px; }
 #confirm-delete { color: var(--delete-ink); border-color: var(--delete-line); font-weight: 650; }
