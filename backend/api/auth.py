@@ -276,7 +276,7 @@ def _device_signature(user_id: int, client_id: str, device_code: str, expires_at
 @router.post("/github/device/start")
 async def start_github_device(user: CurrentUser):
     client_id = _github_client_id()
-    result = await _github_oauth("device/code", {"client_id": client_id, "scope": "repo"})
+    result = await _github_oauth("device/code", {"client_id": client_id, "scope": "repo delete_repo"})
     if result.get("error") == "device_flow_disabled":
         raise HTTPException(503, "Включите Device Flow в настройках GitHub OAuth App.")
     device_code, user_code = result.get("device_code"), result.get("user_code")
