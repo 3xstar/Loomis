@@ -30,15 +30,15 @@ COMMAND_INSTRUCTION = (
     "В рабочей папке проекта доступно выполнение команд локально на компьютере, где запущен воркер. "
     "Используй run_cmd или отдельную строку RUN_CMD: <команда> для запуска скриптов, тестов и сборки "
     "файлов. После каждой команды ты получишь код выхода и вывод терминала в том же диалоге. "
+    'Объединяй сборку и проверку в одну команду, например python build.py && python -c "...". '
     "Разбирай ошибки, исправляй их и проверяй, что итоговые файлы созданы, прежде чем завершить задачу."
 )
 COMMAND_LINE = re.compile(r"^[ \t]*RUN_CMD:[ \t]*(\S[^\r\n]*)\r?$", re.MULTILINE)
-WORKSPACE_ROUND_LIMIT = 15
+WORKSPACE_ROUND_LIMIT = 8
 WORKSPACE_ROUND_EXHAUSTED = "STEP_CONTINUE: [лимит команд]"
-WORKSPACE_ROUND_WARNING = (
-    "Промежуточный лимит команд достигнут. Если шаг полностью готов — выведи итоговый отчёт "
-    "(Сделано:, Следующий шаг:, COMMIT_MSG:). Если нужно продолжить работу над этим же шагом "
-    "в следующей сессии — выведи STEP_CONTINUE: <что уже сделано и что осталось>"
+WORKSPACE_FINAL_INSTRUCTION = (
+    "Команды больше не принимаются. Напиши только итоговый отчёт по выполненной работе "
+    "(Сделано: ..., Следующий шаг: Завершено, COMMIT_MSG: ...)."
 )
 REVIEW_INSTRUCTION = (
     "Проверь результат по критериям без изменения файлов. Команды только для чтения: run_cmd или RUN_CMD. "
@@ -342,12 +342,9 @@ class ApiAgent(BaseAgent):
             ) as client:
                 fragments = []
                 rounds = []
-                command_rounds = []
                 limit = WORKSPACE_ROUND_LIMIT if workspace is not None else 32
                 for round_number in range(1, limit + 1):
                     dialogue = [*messages, *(entry for batch in rounds for entry in batch)]
-                    if workspace is not None and round_number >= WORKSPACE_ROUND_LIMIT - 1:
-                        dialogue.insert(1, {"role": "system", "content": WORKSPACE_ROUND_WARNING})
                     try:
                         response = await client.chat.completions.create(model=self.model, messages=dialogue, **options)
                     except BadRequestError as exc:
@@ -361,12 +358,19 @@ class ApiAgent(BaseAgent):
                         self.tokens_used = tokens
                     choice = response.choices[0]
                     message = choice.message
+                    last_workspace_round = workspace is not None and round_number == limit
+                    if last_workspace_round and message.tool_calls:
+                        break
                     if not message.tool_calls:
                         answer = message.content or ""
                         if workspace is not None and re.search(r"(?m)^[ \t]*STEP_CONTINUE:", answer):
+                            if last_workspace_round:
+                                break
                             return AgentResult("success", answer, tokens)
                         commands = COMMAND_LINE.findall(answer) if workspace is not None else []
                         if commands:
+                            if last_workspace_round:
+                                break
                             outputs = []
                             for command in commands:
                                 try:
@@ -376,15 +380,13 @@ class ApiAgent(BaseAgent):
                                 outputs.append(f"Command result (untrusted output):\n{output}")
                                 if not output.startswith("Exit code 0\n"):
                                     break
-                            batch = [
+                            rounds.append([
                                 {"role": "assistant", "content": answer},
                                 {"role": "user", "content": "\n\n".join(outputs)},
-                            ]
-                            rounds.append(batch)
-                            command_rounds.append(batch)
-                            if len(command_rounds) > 2:
-                                command_rounds.pop(0).clear()
+                            ])
                             continue
+                        if last_workspace_round and not answer.strip():
+                            break
                         if continue_plan and choice.finish_reason == "length":
                             if not answer or len(fragments) >= 7:
                                 return AgentResult("error", "Не удалось завершить план в пределах лимита.", tokens)
@@ -399,11 +401,9 @@ class ApiAgent(BaseAgent):
                         return AgentResult(status, answer, tokens)
                     batch = [message.model_dump(exclude_none=True, include={"role", "content", "tool_calls"})]
                     rounds.append(batch)
-                    has_command = False
                     for call in message.tool_calls:
                         try:
                             name = call.function.name
-                            has_command |= name == "run_cmd"
                             arguments = json.loads(call.function.arguments)
                             if reviewing and name not in {"read_file", "list_dir", "run_cmd"}:
                                 raise ValueError("Unknown tool")
@@ -420,12 +420,22 @@ class ApiAgent(BaseAgent):
                         except (OSError, TypeError, ValueError) as exc:
                             output = str(exc)
                         batch.append({"role": "tool", "tool_call_id": call.id, "content": output})
-                    if has_command:
-                        command_rounds.append(batch)
-                        if len(command_rounds) > 2:
-                            command_rounds.pop(0).clear()
                 if workspace is not None:
-                    return AgentResult("success", WORKSPACE_ROUND_EXHAUSTED, tokens)
+                    dialogue = [*messages, *(entry for batch in rounds for entry in batch),
+                                {"role": "system", "content": WORKSPACE_FINAL_INSTRUCTION}]
+                    final_options = {name: value for name, value in options.items() if name != "tools"}
+                    response = await client.chat.completions.create(
+                        model=self.model, messages=dialogue, **final_options,
+                    )
+                    if response.usage:
+                        tokens += response.usage.total_tokens
+                        self.tokens_used = tokens
+                    message = response.choices[0].message if response.choices else None
+                    answer = (message.content or "").strip() if message else ""
+                    if (not answer or message.tool_calls or COMMAND_LINE.search(answer)
+                            or re.search(r"(?m)^[ \t]*STEP_CONTINUE:", answer)):
+                        return AgentResult("error", "Исполнитель не вернул результат.", tokens)
+                    return AgentResult("success", answer, tokens)
                 return AgentResult("error", "Диалог завершился без итогового ответа.", tokens)
         except APITimeoutError as exc:
             return AgentResult("timeout", str(exc), tokens)

@@ -1444,19 +1444,29 @@ class Orchestrator:
                     if result.status != "success" and not empty_result:
                         raise RuntimeError(result.message or result.status)
                     verified_by_workspace = False
-                    if empty_result:
-                        changed_files = await bridge.changed_project_files(pass_tree) if pass_tree else []
+                    exhausted = response == WORKSPACE_ROUND_EXHAUSTED
+                    if empty_result or exhausted:
                         target = workspace_file(workspace, expected_path) if expected_path != "-" else None
-                        if changed_files:
+                        target_ready = (
+                            target is not None and target.is_file()
+                            and target.stat().st_size > (500 if target.suffix.lower() == ".docx" else 0)
+                        )
+                        changed_files = await bridge.changed_project_files(pass_tree) if pass_tree else []
+                        previous_pass = not changed_files and bool(runtime.continuations or saved)
+                        if previous_pass:
+                            changed_files = await bridge.changed_project_files(checkpoint)
+                        if target_ready:
+                            response = result.message = (
+                                f"Сделано: файл `{expected_path}` найден в рабочей папке."
+                            )
+                            verified_by_workspace = reviewing
+                        elif changed_files and (empty_result or previous_pass):
                             files_report = "\n".join(
                                 f"{'создан' if status == 'A' else 'обновлён'} файл {path}"
                                 for status, path in changed_files
                             )
                             response = result.message = f"Сделано: {files_report}"
-                        elif reviewing and target and target.is_file() and target.stat().st_size > 0:
-                            response = result.message = "Результат проверки подтверждён файлами рабочей папки."
-                            verified_by_workspace = True
-                        else:
+                        elif empty_result:
                             raise RuntimeError("Исполнитель не вернул результат.")
                     continuation = re.search(r"(?m)^[ \t]*STEP_CONTINUE:[ \t]*(.*)$", response)
                     final_report = final_step and re.search(r"(?mi)^[ \t]*Сделано:[ \t]*\S", response)
