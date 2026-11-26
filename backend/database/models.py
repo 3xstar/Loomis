@@ -9,6 +9,7 @@ from backend.settings import ROOT
 
 from .db import Base
 
+DEFAULT_MOBILE_DOWNLOAD_DIR = "Downloads/Loomis"
 DEFAULT_PROJECTS_DIR = str(ROOT / "workspaces")
 
 def utc_now() -> datetime:
@@ -56,6 +57,9 @@ class User(Base):
     github_token: Mapped[str | None] = mapped_column(Text)
     github_username: Mapped[str | None] = mapped_column(String(100))
     github_avatar_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    mobile_download_dir: Mapped[str] = mapped_column(
+        String(1024), default=DEFAULT_MOBILE_DOWNLOAD_DIR, server_default=DEFAULT_MOBILE_DOWNLOAD_DIR,
+    )
     default_projects_dir: Mapped[str | None] = mapped_column(String(1024), default=DEFAULT_PROJECTS_DIR)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -112,6 +116,7 @@ class Project(Base):
     description: Mapped[str | None] = mapped_column(Text)
     workspace_path: Mapped[str | None] = mapped_column(String(1024))
     git_repo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    delivery_mode: Mapped[str] = mapped_column(String(10), default="desktop", server_default="desktop")
     status: Mapped[str] = mapped_column(String(50), default="draft", server_default="draft")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

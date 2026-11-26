@@ -30,7 +30,7 @@ from backend.api.projects import (
     PresetView, ProjectCreate, ProjectCreateRequest, ProjectPatch, clear_view,
     create_preset, create_project, default_workspace, delete_agent, delete_preset, edit_agent,
     edit_preset, import_presets, list_presets, new_workspace, persist_new_agent,
-    project_commits, project_stats, push_project, remove_project, require_github, retry_agent, rollback_commit,
+    project_commits, project_stats, push_project, remove_project, require_draft, require_github, retry_agent, rollback_commit,
     store_spec_media, test_agent, update_project,
 )
 from backend.api.ws import manager
@@ -39,7 +39,7 @@ from backend.core.doc_parser import parse_document
 from backend.core.github import github_repo_name
 from backend.core.media import MAX_MEDIA_BYTES, MEDIA_TYPES, make_media
 from backend.core.model_performance import model_key
-from backend.core.orchestrator import TEAM_CHAT_WORKING, history_visible, orchestrator, require_team_chat_available
+from backend.core.orchestrator import TEAM_CHAT_WORKING, TEAM_CHAT_WORKING_STATUSES, history_visible, orchestrator, require_team_chat_available
 from backend.core.voice import VoiceTranscriber
 from backend.database.db import async_session_factory
 from backend.database.models import (
@@ -49,10 +49,12 @@ from backend.database.models import (
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
 
+from .delivery import completion_summary
 from .formatting import telegram_html
 from .keyboards import (
     PROJECT_BUTTONS, PROJECT_ROWS, agent_chat_keyboard, cancel_keyboard, first_project_keyboard, inline_menu,
-    main_menu, profile_keyboard, project_keyboard, project_reply_keyboard, projects_keyboard, spec_keyboard,
+    main_menu, pause_keyboard, profile_keyboard, project_keyboard, project_mode_keyboard, project_reply_keyboard,
+    projects_keyboard, review_keyboard, spec_keyboard,
 )
 from .i18n import RUSSIAN_LABELS, bot_language, status_label, translate
 from .middlewares import AccountMiddleware
@@ -270,12 +272,23 @@ async def code_input(message: Message, state: FSMContext, session: AsyncSession)
 async def new_project(message: Message, state: FSMContext, account: User | None):
     if account is None:
         await message.answer(LINK_HELP, reply_markup=main_menu(False))
-    elif await state.get_state() == ProjectSetup.spec_buffer.state:
+    elif await state.get_state() in {ProjectSetup.spec_buffer.state, ProjectSetup.spec_edit.state}:
         project_id = (await state.get_data()).get("project_id")
         await message.answer("Сначала завершите текущий буфер ТЗ.", reply_markup=spec_keyboard(project_id))
     else:
-        await state.set_state(ProjectSetup.name)
-        await message.answer("Введите название проекта:", reply_markup=cancel_keyboard())
+        await leave_project(message, state, account)
+        await state.set_state(ProjectSetup.mode)
+        await message.answer("Где вы хотите получить проект?", reply_markup=project_mode_keyboard())
+
+
+@router.callback_query(ProjectSetup.mode, F.data.in_({"project_mode:desktop", "project_mode:mobile"}))
+async def choose_project_mode(callback: CallbackQuery, state: FSMContext, account: User | None):
+    await callback.answer()
+    if account is None:
+        return
+    await state.update_data(delivery_mode=callback.data.split(":")[1])
+    await state.set_state(ProjectSetup.name)
+    await callback.message.answer("Введите название проекта:", reply_markup=cancel_keyboard())
 
 
 @router.message(Command("projects"))
@@ -334,11 +347,7 @@ async def link_callback(callback: CallbackQuery, state: FSMContext, account: Use
 @router.callback_query(F.data == "new_project")
 async def new_project_callback(callback: CallbackQuery, state: FSMContext, account: User | None):
     await callback.answer()
-    if account is None:
-        await callback.message.answer(LINK_HELP, reply_markup=main_menu(False))
-    else:
-        await state.set_state(ProjectSetup.name)
-        await callback.message.answer("Введите название проекта:", reply_markup=cancel_keyboard())
+    await new_project(callback.message, state, account)
 
 
 @router.callback_query(F.data == "projects")
@@ -501,6 +510,36 @@ async def save_projects_dir(message: Message, state: FSMContext, session: AsyncS
     await show_account_settings(message, account)
 
 
+@router.callback_query(F.data == "profile:mobile_folder")
+async def mobile_folder(callback: CallbackQuery, state: FSMContext, account: User | None):
+    await callback.answer()
+    if account is None:
+        return
+    await state.set_state(AccountSetup.mobile_download_dir)
+    await callback.message.answer(
+        f"Папка сохранения на телефоне: {account.mobile_download_dir}\n"
+        "Введите новый путь, например Downloads/Loomis или Documents/Projects.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@router.message(AccountSetup.mobile_download_dir)
+async def save_mobile_folder(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
+    if account is None:
+        await state.clear()
+        return
+    path = (message.text or "").strip().replace(chr(92), "/")
+    if (not path or len(path) > 450 or re.search(r'[<>:"|?*\x00-\x1f\x7f]', path)
+            or any(part in {"", ".", ".."} for part in path.removeprefix("/").split("/"))):
+        await message.answer("Введите путь к папке в памяти телефона, например Downloads/Loomis.")
+        return
+    account.mobile_download_dir = path
+    await session.commit()
+    await state.set_state(None)
+    await message.answer(f"Папка сохранения на телефоне: {path}",
+                         reply_markup=profile_keyboard(bool(account.github_username)))
+
+
 @router.callback_query(F.data == "profile:new_password")
 async def new_password_callback(callback: CallbackQuery, session: AsyncSession, account: User | None):
     if account is None:
@@ -554,6 +593,9 @@ async def project_card(callback: CallbackQuery, state: FSMContext, session: Asyn
         await callback.message.answer("Проект не найден.")
         return
     await select_project(callback.message, state, account, project.id)
+    if project.status == "completed":
+        await callback.message.answer(await completion_summary(project), reply_markup=project_keyboard(project))
+        return
     count = await session.scalar(select(func.count(SpecItem.id)).where(SpecItem.project_id == project.id))
     created = project.created_at.strftime("%Y-%m-%d %H:%M") if project.created_at else "—"
     updated = project.updated_at.strftime("%Y-%m-%d %H:%M") if getattr(project, "updated_at", None) else "—"
@@ -564,6 +606,8 @@ async def project_card(callback: CallbackQuery, state: FSMContext, session: Asyn
 
 
 def workspace_details(project: Project) -> str:
+    if project.delivery_mode == "mobile":
+        return "Результат придёт в Telegram."
     path = str(Path(project.workspace_path).absolute()) if project.workspace_path else default_workspace(project)
     return f"Папка проекта на ПК: {path}" + (f"\nGit-репозиторий: {project.git_repo_url}" if project.git_repo_url else "")
 
@@ -588,6 +632,112 @@ async def open_buffer(callback: CallbackQuery, state: FSMContext, session: Async
         await callback.message.answer(f"Буфер ТЗ — {count} записей. Отправьте текст, изображение, аудио или документ.", reply_markup=spec_keyboard(project.id))
 
 
+@router.callback_query(F.data.startswith("spec_items:"))
+async def list_buffer_items(callback: CallbackQuery, state: FSMContext, session: AsyncSession, account: User | None):
+    _, project_id, page = callback.data.split(":")
+    project = await buffer_project(session, account, int(project_id))
+    await callback.answer()
+    if project is None:
+        await callback.message.answer("Буфер ТЗ доступен в черновике.")
+        return
+    await select_project(callback.message, state, account, project.id)
+    await state.set_state(ProjectSetup.spec_buffer)
+    page = max(int(page), 0)
+    size = 8
+    items = list(await session.scalars(
+        select(SpecItem).where(SpecItem.project_id == project.id)
+        .order_by(SpecItem.position, SpecItem.id).offset(page * size).limit(size + 1)
+    ))
+    rows = []
+    for item in items[:size]:
+        preview = " ".join((item.content if item.title == "Текст" else item.title).split())[:52]
+        rows.append([(preview or item.title, f"spec_entry:{project.id}:{item.id}:view")])
+    pages = []
+    if page:
+        pages.append(("Назад", f"spec_items:{project.id}:{page - 1}"))
+    if len(items) > size:
+        pages.append(("Далее", f"spec_items:{project.id}:{page + 1}"))
+    if pages:
+        rows.append(pages)
+    rows.append([("В буфер ТЗ", f"open_buffer:{project.id}")])
+    await callback.message.answer("Фрагменты ТЗ" if items else "На этой странице нет фрагментов ТЗ.",
+                                  reply_markup=inline_menu(rows))
+
+
+async def buffer_entry(session, project, item_id):
+    return await session.scalar(select(SpecItem).where(SpecItem.id == item_id, SpecItem.project_id == project.id))
+
+
+@router.callback_query(F.data.startswith("spec_entry:"))
+async def manage_buffer_entry(callback: CallbackQuery, state: FSMContext, session: AsyncSession, account: User | None):
+    _, project_id, item_id, action = callback.data.split(":")
+    project = await buffer_project(session, account, int(project_id))
+    await callback.answer()
+    if project is None:
+        await callback.message.answer("Буфер ТЗ доступен в черновике.")
+        return
+    try:
+        async with orchestrator.runtime(project.id).execution_lock:
+            await require_draft(session, project)
+            item = await buffer_entry(session, project, int(item_id))
+            if item is None:
+                raise HTTPException(404, "Фрагмент ТЗ не найден.")
+            if action == "delete":
+                await session.delete(item)
+                await session.commit()
+    except HTTPException as exc:
+        await answer_error(callback.message, exc)
+        return
+
+    await select_project(callback.message, state, account, project.id)
+    await state.set_state(ProjectSetup.spec_buffer)
+    if action == "view":
+        prefix = f"spec_entry:{project.id}:{item.id}:"
+        await answer_formatted(callback.message, item.content)
+        await callback.message.answer("Действия с фрагментом", reply_markup=inline_menu([
+            [("Редактировать", prefix + "edit"), ("Удалить", prefix + "delete")],
+            [("Фрагменты ТЗ", f"spec_items:{project.id}:0")],
+        ]))
+    elif action == "edit":
+        await state.update_data(spec_item_id=item.id)
+        await state.set_state(ProjectSetup.spec_edit)
+        await callback.message.answer("Отправьте новый текст фрагмента.", reply_markup=inline_menu([
+            [("Отмена", f"spec_items:{project.id}:0")],
+        ]))
+    elif action == "delete":
+        await manager.publish_log(project.id, "Фрагмент ТЗ удалён.")
+        await callback.message.answer("Фрагмент ТЗ удалён.", reply_markup=spec_keyboard(project.id))
+
+
+@router.message(ProjectSetup.spec_edit)
+async def save_buffer_entry(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
+    data = await state.get_data()
+    project = await buffer_project(session, account, data.get("project_id"))
+    if project is None:
+        await state.set_state(None)
+        await message.answer("Буфер ТЗ доступен в черновике.")
+        return
+    content = (message.text or "").strip()
+    if not content:
+        await message.answer("Отправьте новый текст фрагмента.")
+        return
+    try:
+        async with orchestrator.runtime(project.id).execution_lock:
+            await require_draft(session, project)
+            item = await buffer_entry(session, project, data.get("spec_item_id"))
+            if item is None:
+                raise HTTPException(404, "Фрагмент ТЗ не найден.")
+            item.content = content
+            await session.commit()
+    except HTTPException as exc:
+        await answer_error(message, exc)
+    else:
+        await manager.publish_log(project.id, "Фрагмент ТЗ обновлён.")
+        await message.answer("Фрагмент ТЗ обновлён.", reply_markup=spec_keyboard(project.id))
+    await state.set_data({"project_id": project.id})
+    await state.set_state(ProjectSetup.spec_buffer)
+
+
 @router.callback_query(F.data.startswith("view_spec:"))
 async def view_spec(callback: CallbackQuery, session: AsyncSession, account: User | None):
     project_id = int(callback.data.split(":", 1)[1])
@@ -607,16 +757,22 @@ def project_repo_confirmation(repo: str) -> str:
     return sha256(repo.lower().encode()).hexdigest()[:24]
 
 
-async def confirm_project_deletion(message: Message, project: Project, repo: str):
+async def confirm_project_deletion(message: Message, project: Project, repo: str | None):
     callback = f"delete_project:{project.id}"
-    await message.answer(
-        f"Удалить проект «{project.name}»?\nРепозиторий GitHub — {repo}",
-        reply_markup=inline_menu([
-            [("Удалить только в Loomis", f"{callback}:local")],
-            [("Удалить в Loomis + на GitHub", f"{callback}:{project_repo_confirmation(repo)}")],
-            [("Отмена", f"{callback}:cancel")],
-        ]),
-    )
+    rows = [
+        [("Удалить только в Loomis", f"{callback}:local")],
+        [("Удалить также папку проекта", f"{callback}:folder")],
+    ]
+    text = f"Удалить проект «{project.name}»?"
+    if repo:
+        text += f"\nРепозиторий GitHub — {repo}"
+        key = project_repo_confirmation(repo)
+        rows.extend([
+            [("Удалить в Loomis + на GitHub", f"{callback}:{key}")],
+            [("Удалить папку и репозиторий GitHub", f"{callback}:folder:{key}")],
+        ])
+    rows.append([("Отмена", f"{callback}:cancel")])
+    await message.answer(text, reply_markup=inline_menu(rows))
 
 
 @router.callback_query(F.data.startswith("delete_project:"))
@@ -634,23 +790,23 @@ async def delete_project_callback(callback: CallbackQuery, state: FSMContext, se
         await callback.message.answer("Проект не найден.")
         return
     repo = github_repo_name(project.git_repo_url)
-    if not choice and repo:
+    if not choice:
         await confirm_project_deletion(callback.message, project, repo)
         return
-    delete_remote = bool(choice and choice != "local")
-    if delete_remote and (not repo or choice != project_repo_confirmation(repo)):
+    delete_folder = choice == "folder" or choice.startswith("folder:")
+    delete_remote = choice not in {"local", "folder"}
+    if delete_remote and (not repo or choice.removeprefix("folder:") != project_repo_confirmation(repo)):
         await callback.message.edit_reply_markup(reply_markup=None)
         await callback.message.answer("Связанный репозиторий изменился. Откройте удаление проекта заново.")
         return
     if choice:
         await callback.message.edit_reply_markup(reply_markup=None)
-    result = await remove_project(project, session, account, delete_remote=delete_remote)
+    result = await remove_project(project, session, account, delete_remote=delete_remote,
+                                  delete_local_folder=delete_folder)
     if orchestrator.telegram_projects.get(account.id) == project.id:
         await leave_project(callback.message, state, account)
-    if result.github_repo_deleted:
-        await callback.message.answer("Проект и репозиторий GitHub удалены.")
-    else:
-        await callback.message.answer("Проект удалён." + (f"\n{result.warning}" if result.warning else ""))
+    result_text = "Проект и репозиторий GitHub удалены." if result.github_repo_deleted else "Проект удалён."
+    await callback.message.answer(result_text + (f"\n{result.warning}" if result.warning else ""))
     await show_projects(callback.message, session, account)
 
 
@@ -665,7 +821,10 @@ async def project_name(message: Message, state: FSMContext, account: User | None
         await message.answer("Введите название проекта текстом, до 255 символов.")
         return
     await state.update_data(project_name=data.name, default_projects_dir=account.default_projects_dir)
-    await prompt_workspace(message, state, account)
+    if (await state.get_data()).get("delivery_mode") == "mobile":
+        await new_project_options(message, state)
+    else:
+        await prompt_workspace(message, state, account)
 
 
 async def prompt_workspace(message, state, account):
@@ -781,18 +940,19 @@ async def new_project_options(message, state):
     data = await new_project_data(state)
     await state.set_state(ProjectSetup.options)
     rows = setting_rows(data, "new_option:")
-    rows.extend([
-        [(f"Дедлайн · {data.deadline_minutes} мин.", "new_option:deadline")],
-        [("Изменить папку", "new_option:workspace"), ("Настроить GitHub", "new_option:git")],
-        [("Создать проект", "new_option:save"), ("Отмена", "cancel")],
-    ])
-    git = data.git_repo_url or {"private": "создать приватный", "public": "создать публичный"}.get(
-        data.github_visibility, "без репозитория",
-    )
-    path = data.workspace_path or new_workspace(data.name, (await state.get_data()).get("default_projects_dir"))
+    rows.append([(f"Дедлайн · {data.deadline_minutes} мин.", "new_option:deadline")])
+    if data.delivery_mode == "mobile":
+        destination = "Результат придёт в Telegram."
+    else:
+        rows.append([("Изменить папку", "new_option:workspace"), ("Настроить GitHub", "new_option:git")])
+        git = data.git_repo_url or {"private": "создать приватный", "public": "создать публичный"}.get(
+            data.github_visibility, "без репозитория",
+        )
+        path = data.workspace_path or new_workspace(data.name, (await state.get_data()).get("default_projects_dir"))
+        destination = f"Папка на ПК: <code>{escape(path)}</code>\nGitHub: {escape(git)}"
+    rows.append([("Создать проект", "new_option:save"), ("Отмена", "cancel")])
     await message.answer(
-        f"Настройки нового проекта · <b>{escape(data.name)}</b>\n"
-        f"Папка на ПК: <code>{escape(path)}</code>\nGitHub: {escape(git)}",
+        f"Настройки нового проекта · <b>{escape(data.name)}</b>\n{destination}",
         parse_mode="HTML", reply_markup=inline_menu(rows),
     )
 
@@ -807,9 +967,9 @@ async def change_new_project(callback: CallbackQuery, state: FSMContext, session
     if field == "deadline":
         await state.set_state(ProjectSetup.deadline)
         await message.answer(DEADLINE_PROMPT, reply_markup=cancel_keyboard())
-    elif field == "workspace":
+    elif field == "workspace" and (await new_project_data(state)).delivery_mode == "desktop":
         await prompt_workspace(message, state, account)
-    elif field == "git":
+    elif field == "git" and (await new_project_data(state)).delivery_mode == "desktop":
         await prompt_project_git(message, state, account, (await state.get_data()).get("workspace_path"))
     elif field == "save":
         await finish_new_project(message, state, session, account)
@@ -924,9 +1084,18 @@ async def spec_item(message: Message, bot: Bot, state: FSMContext, session: Asyn
     if not content:
         await message.answer("В сообщении или файле не найден текст.")
         return
-    count, last_position = (await session.execute(select(func.count(SpecItem.id), func.max(SpecItem.position)).where(SpecItem.project_id == project.id))).one()
-    session.add(SpecItem(project_id=project.id, title=title[:500], content=content, position=(last_position or 0) + 1))
-    await session.commit()
+    try:
+        async with orchestrator.runtime(project.id).execution_lock:
+            await require_draft(session, project)
+            count, last_position = (await session.execute(
+                select(func.count(SpecItem.id), func.max(SpecItem.position)).where(SpecItem.project_id == project.id)
+            )).one()
+            session.add(SpecItem(project_id=project.id, title=title[:500], content=content,
+                                 position=(last_position or 0) + 1))
+            await session.commit()
+    except HTTPException as exc:
+        await answer_error(message, exc)
+        return
     await manager.publish_log(project.id, "Добавлена запись в буфер ТЗ.")
     await message.answer(f"Буфер ТЗ — записей: {count + 1}.", reply_markup=spec_keyboard(project.id))
 
@@ -944,11 +1113,19 @@ async def finish_spec(callback: CallbackQuery, state: FSMContext, session: Async
         return
     await callback.answer()
     try:
-        if not project.workspace_path:
-            project.workspace_path = default_workspace(project)
-        await build_spec(session, project)
-        project.status = "planning"
-        await session.commit()
+        async with orchestrator.runtime(project.id).execution_lock:
+            await require_draft(session, project)
+            item = await session.scalar(select(SpecItem.id).where(SpecItem.project_id == project.id).limit(1))
+            if item is None:
+                raise HTTPException(409, "Добавьте хотя бы одну запись в буфер ТЗ.")
+            if not project.workspace_path:
+                project.workspace_path = default_workspace(project)
+            await build_spec(session, project)
+            project.status = "planning"
+            await session.commit()
+    except HTTPException as exc:
+        await answer_error(callback.message, exc)
+        return
     except Exception:
         await session.rollback()
         logger.exception("Could not assemble SPEC.md for project %s", project_id)
@@ -968,14 +1145,23 @@ async def cancel_project(callback: CallbackQuery, state: FSMContext, session: As
     if project is None:
         await callback.message.answer("Черновик проекта не найден.")
         return
-    if repo := github_repo_name(project.git_repo_url):
-        await confirm_project_deletion(callback.message, project, repo)
+    await confirm_project_deletion(callback.message, project, github_repo_name(project.git_repo_url))
+
+
+@router.callback_query(F.data.startswith("mobile_result:"))
+async def resend_mobile_result(callback: CallbackQuery, session: AsyncSession, account: User | None):
+    project = await owned_project(session, account, int(callback.data.split(":")[1]))
+    await callback.answer()
+    if project is None or project.delivery_mode != "mobile":
         return
-    await session.delete(project)
-    await session.commit()
-    if orchestrator.telegram_projects.get(account.id) == project.id:
-        await leave_project(callback.message, state, account)
-    await callback.message.answer("Черновик проекта и его буфер ТЗ удалены.", reply_markup=main_menu(True))
+
+    async def deliver():
+        async with orchestrator.runtime(project.id).execution_lock:
+            current, _ = await orchestrator.load(project.id)
+            if current and current.status in {"review_pending", "completed"}:
+                await orchestrator.deliver_mobile_project(current)
+
+    orchestrator.background_reply(deliver())
 
 
 @router.message(ProjectSetup.spec_buffer)
@@ -989,6 +1175,9 @@ async def project_action(callback: CallbackQuery, session: AsyncSession, account
     project = await owned_project(session, account, int(project_id))
     await callback.answer()
     if project is None:
+        return
+    if action == "confirm_completion" and project.status == "completed":
+        await callback.message.answer(await completion_summary(project), reply_markup=project_keyboard(project))
         return
     run_project_action(callback.message, project, action)
 
@@ -1012,15 +1201,11 @@ def run_project_action(message, project, action, **options):
         try:
             project.status = await orchestrator.action(project.id, action, **options)
         except (OSError, ValueError, RuntimeError) as exc:
-            await answer_formatted(message, str(exc))
+            await answer_formatted(message, str(exc), project.id)
         else:
             text = "Последний шаг откачен." if action == "rollback" else f"Статус проекта — {status_label(project.status)}."
-            markup = project_keyboard(project)
-            if action == "confirm_completion":
-                markup.inline_keyboard.insert(0, inline_menu([[
-                    ("Вернуться к проекту", f"project_action:{project.id}:reopen_project"),
-                ]]).inline_keyboard[0])
-            await message.answer(text, reply_markup=markup)
+            if action != "confirm_completion":
+                await message.answer(text, reply_markup=project_keyboard(project))
 
     orchestrator.background_reply(reply())
 
@@ -1157,8 +1342,7 @@ async def agent_chat_question(message: Message, bot: Bot, state: FSMContext,
         await state.clear()
         return
     try:
-        if "agent_id" not in data:
-            require_team_chat_available(project.status)
+        require_team_chat_available(project.status)
         question = (message.text or message.caption or "").strip()
         media = await read_media(message, bot, project.id)
         if message.document and media is None:
@@ -1176,7 +1360,7 @@ async def agent_chat_question(message: Message, bot: Bot, state: FSMContext,
         if data.get("plan_feedback") and media is not None:
             raise ValueError("Отправьте правки к плану текстом или документом.")
     except (OSError, ValueError) as exc:
-        await answer_formatted(message, str(exc))
+        await answer_formatted(message, str(exc), project.id)
         return
     except Exception:
         logger.exception("Could not download Telegram media for project %s", project.id)
@@ -1201,7 +1385,7 @@ async def agent_chat_question(message: Message, bot: Bot, state: FSMContext,
             else:
                 await orchestrator.chat(project.id, question, targets, media=media)
         except (OSError, ValueError) as exc:
-            await answer_formatted(message, str(exc))
+            await answer_formatted(message, str(exc), project.id)
 
     orchestrator.background_reply(reply())
 
@@ -1221,9 +1405,9 @@ async def permit_command(callback: CallbackQuery, session: AsyncSession, account
         await callback.answer("Решение принято.")
 
 
-async def answer_formatted(message, content):
+async def answer_formatted(message, content, project_id=None):
     if content == TEAM_CHAT_WORKING:
-        await message.answer(TEAM_CHAT_BUSY_REPLY)
+        await message.answer(TEAM_CHAT_BUSY_REPLY, reply_markup=pause_keyboard(project_id) if project_id else None)
         return
     for part in telegram_html(content):
         await message.answer(part, parse_mode="HTML")
@@ -1297,9 +1481,9 @@ async def show_plan(message, project):
     if project.status == "awaiting_approval":
         rows.append([("Утвердить план и запустить", action + "approve")])
     if project.status == "review_pending":
-        rows.append([("Подтвердить завершение", action + "confirm_completion")])
+        await message.answer("Результат готов к проверке.", reply_markup=review_keyboard(project.id))
     elif project.status == "completed":
-        rows.append([("Вернуться к проекту", action + "reopen_project")])
+        rows.append([("↩️ Вернуться к проекту", action + "reopen_project")])
     if project.status in {"paused", "completed"}:
         rows.append([("Откатить к прошлому коммиту", action + "rollback")])
     await message.answer(f"Обсуждение плана · {status_label(project.status)}", reply_markup=inline_menu(rows) if rows else None)
@@ -1326,8 +1510,11 @@ async def show_settings(message, project):
     prefix = f"settings:{project.id}:"
     rows = [
         [("Изменить название", prefix + "name")],
-        [("Изменить папку на ПК", prefix + "workspace")],
-        [("Настроить GitHub-репозиторий", prefix + "git")],
+        *(
+            [[("Изменить папку на ПК", prefix + "workspace")],
+             [("Настроить GitHub-репозиторий", prefix + "git")]]
+            if project.delivery_mode == "desktop" else []
+        ),
         [(f"Дедлайн · {project.deadline_minutes} мин.", prefix + "deadline")],
         *setting_rows(project, prefix),
         [("⚙️ Настройки аккаунта", "profile")],
@@ -1817,5 +2004,9 @@ async def hub_model(message: Message, state: FSMContext, session: AsyncSession, 
 
 
 @router.message(StateFilter(None))
-async def help_message(message: Message, account: User | None):
+async def help_message(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
+    project = await owned_project(session, account, (await state.get_data()).get("project_id"))
+    if project and project.status in TEAM_CHAT_WORKING_STATUSES:
+        await answer_formatted(message, TEAM_CHAT_WORKING, project.id)
+        return
     await message.answer("Выберите действие в меню.", reply_markup=main_menu(account is not None))

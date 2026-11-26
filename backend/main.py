@@ -41,6 +41,7 @@ def initialize_schema(connection) -> None:
                   "github_avatar_url": "VARCHAR", "telegram_username": "VARCHAR",
                   "telegram_avatar_url": "VARCHAR",
                   "default_projects_dir": "VARCHAR(1024)",
+                  "mobile_download_dir": "VARCHAR(1024) NOT NULL DEFAULT 'Downloads/Loomis'",
                   "language": "VARCHAR(5) NOT NULL DEFAULT 'ru' "
                               "CONSTRAINT ck_users_language CHECK (language IN ('ru', 'en'))"},
         "agent_messages": {
@@ -55,6 +56,7 @@ def initialize_schema(connection) -> None:
             "agent_role_type": "VARCHAR(20) NOT NULL DEFAULT 'conversational'",
         },
         "projects": {
+            "delivery_mode": "VARCHAR(10) NOT NULL DEFAULT 'desktop'",
             "commit_mode": "VARCHAR(20) NOT NULL DEFAULT 'sequential'",
             "auto_push_mode": "VARCHAR(20) NOT NULL DEFAULT 'after_each'",
             "history_state": "JSON",

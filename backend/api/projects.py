@@ -7,7 +7,7 @@ import sys
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
@@ -53,6 +53,7 @@ VerbosityLevel = Literal["concise", "balanced", "detailed"]
 class ProjectCreate(BaseModel):
     name: ProjectName
     description: str | None = None
+    delivery_mode: Literal["desktop", "mobile"] = "desktop"
     workspace_path: str | None = Field(default=None, min_length=1, max_length=1024)
     git_repo_url: GitRepoURL | None = None
 
@@ -219,26 +220,37 @@ async def create_project(session: AsyncSession, owner_id: int, data: ProjectCrea
     fields = data.model_dump()
     visibility = fields.pop("github_visibility", None)
     project = Project(owner_id=owner_id, **fields)
+    mobile = project.delivery_mode == "mobile"
+    if mobile and (project.workspace_path or project.git_repo_url or visibility):
+        raise HTTPException(422, "Для режима Telegram папка создаётся автоматически.")
     if visibility and project.git_repo_url:
         raise HTTPException(422, "Выберите адрес существующего репозитория или автоматическое создание.")
     owner = await session.get(User, owner_id)
     if visibility:
         require_github(owner)
-    requested_path = project.workspace_path or new_workspace(project.name, owner.default_projects_dir)
     session.add(project)
     await session.flush()
+    temporary_path = None
     try:
-        path = await available_workspace(session, project, requested_path)
+        if mobile:
+            temporary_path = path = mkdtemp(prefix=f"loomis-mobile-{project.id}-")
+        else:
+            requested_path = project.workspace_path or new_workspace(project.name, owner.default_projects_dir)
+            path = await available_workspace(session, project, requested_path)
         project.workspace_path = await prepare_workspace(
             path, project.id, project.git_repo_url,
         )
         if visibility:
             project.git_repo_url = await provision_project_repo(session, project, project.workspace_path,
                                                                project.name, visibility)
-    except HTTPException:
+        await session.commit()
+    except BaseException as exc:
         await session.rollback()
+        if temporary_path:
+            await asyncio.to_thread(shutil.rmtree, temporary_path, ignore_errors=True)
+        if isinstance(exc, OSError):
+            raise HTTPException(422, "Не удалось создать папку проекта. Проверьте путь и права доступа.") from exc
         raise
-    await session.commit()
     return project
 
 
@@ -424,6 +436,8 @@ async def edit_project(data: ProjectPatch, project: Project, session: AsyncSessi
     boundary = orchestrator.runtime(project.id).execution_lock if configure_workspace else nullcontext()
     async with boundary:
         await session.refresh(project)
+        if configure_workspace and project.delivery_mode == "mobile":
+            raise HTTPException(422, "Для режима Telegram папка создаётся автоматически.")
         if project.status in {"running", "council"} and "workspace_path" in updates:
             raise HTTPException(409, "Сначала приостановите проект.")
         if configure_workspace:
@@ -471,10 +485,22 @@ async def remove_project(
                 result.warning = await github.delete_github_repo(token, repo_url)
                 result.github_repo_deleted = result.warning is None
     if delete_local_folder and project.workspace_path:
-        workspace = Path(project.workspace_path).resolve()
-        workspaces_root = (ROOT / "workspaces").resolve()
-        if workspace != Path(workspace.anchor) and workspace != workspaces_root and workspace.exists():
-            shutil.rmtree(workspace, ignore_errors=True)
+        try:
+            workspace = Path(project.workspace_path).resolve()
+            root = ROOT.resolve()
+            workspaces = (ROOT / "workspaces").resolve()
+            if root.is_relative_to(workspace) or workspaces == workspace:
+                raise OSError("Protected workspace")
+            other_paths = await session.scalars(select(Project.workspace_path).where(
+                Project.id != project.id, Project.workspace_path.is_not(None),
+            ))
+            if any(Path(path).resolve().is_relative_to(workspace) for path in other_paths):
+                raise OSError("Workspace contains another project")
+            if workspace.exists():
+                await asyncio.to_thread(shutil.rmtree, workspace)
+        except (OSError, RuntimeError):
+            warning = "Не удалось удалить папку проекта."
+            result.warning = f"{result.warning}\n{warning}" if result.warning else warning
     await session.delete(project)
     await session.commit()
     await manager.close_project(project.id)

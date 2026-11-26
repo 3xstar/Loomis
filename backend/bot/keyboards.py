@@ -6,7 +6,7 @@ from .i18n import status_label, translate
 
 PROJECT_ROWS = (
     ("Общий чат ИИ", "Личный чат с ИИ"),
-    ("Агенты проекта", "План и Консилиум"),
+    ("Агенты проекта", "Обсуждение плана"),
     ("▶️ Старт / Пауза", "⚙️ Настройки проекта"),
     ("Статистика", "Все проекты"),
     ("История коммитов", "Push в Git"),
@@ -32,12 +32,31 @@ def inline_menu(rows) -> InlineKeyboardMarkup:
     ])
 
 
+def project_mode_keyboard() -> InlineKeyboardMarkup:
+    return inline_menu([
+        [("🖥 Создать для ПК", "project_mode:desktop")],
+        [("📱 Сделать полностью в Telegram", "project_mode:mobile")],
+        [("Отмена", "cancel")],
+    ])
+
+
+def review_keyboard(project_id: int) -> InlineKeyboardMarkup:
+    return inline_menu([
+        [("✅ Подтвердить завершение", f"project_action:{project_id}:confirm_completion")],
+        [("Продолжить разработку", f"review_continue:{project_id}")],
+    ])
+
+
+def pause_keyboard(project_id: int) -> InlineKeyboardMarkup:
+    return inline_menu([[("⏸ Пауза", f"project_action:{project_id}:pause")]])
+
+
 def main_menu(account_exists: bool) -> InlineKeyboardMarkup:
     if not account_exists:
         rows = [[InlineKeyboardButton(text="⚡ Быстрая регистрация", callback_data="quick_register")],
                 [InlineKeyboardButton(text="Привязать по коду", callback_data="link_account")]]
     else:
-        rows = [[InlineKeyboardButton(text="➕ Новый проект", callback_data="new_project")],
+        rows = [[InlineKeyboardButton(text="➕ Создать проект", callback_data="new_project")],
                 [InlineKeyboardButton(text="Мои проекты", callback_data="projects")],
                 [InlineKeyboardButton(text="Хаб нейросетей", callback_data="hub")],
                 [InlineKeyboardButton(text="⚙️ Настройки аккаунта", callback_data="profile")]]
@@ -49,6 +68,7 @@ def profile_keyboard(github_linked: bool) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Отвязать GitHub" if github_linked else "Войти через GitHub",
                               callback_data="profile:unlink" if github_linked else "profile:github")],
         [InlineKeyboardButton(text="Изменить общую папку для проектов", callback_data="profile:folder")],
+        [InlineKeyboardButton(text="Папка сохранения на телефоне", callback_data="profile:mobile_folder")],
         [InlineKeyboardButton(text="Переключить рабочие логи в Telegram", callback_data="profile:logs")],
         [InlineKeyboardButton(text="Язык / Language", callback_data="profile:language")],
         [InlineKeyboardButton(text="🔑 Сгенерировать новый пароль", callback_data="profile:new_password")],
@@ -77,7 +97,8 @@ def first_project_keyboard() -> InlineKeyboardMarkup:
 
 def spec_keyboard(project_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ ТЗ загружено — собрать SPEC.md", callback_data=f"build_spec:{project_id}")],
+        [InlineKeyboardButton(text="Фрагменты ТЗ", callback_data=f"spec_items:{project_id}:0")],
+        [InlineKeyboardButton(text="✅ Собрать ТЗ проекта", callback_data=f"build_spec:{project_id}")],
         [InlineKeyboardButton(text="❌ Отменить проект", callback_data=f"cancel_project:{project_id}")],
     ])
 
@@ -85,13 +106,15 @@ def spec_keyboard(project_id: int) -> InlineKeyboardMarkup:
 def projects_keyboard(projects) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=f"{p.name} · {status_label(p.status)}", callback_data=f"project:{p.id}")]
             for p in projects]
-    rows.append([InlineKeyboardButton(text="➕ Новый проект", callback_data="new_project")])
+    rows.append([InlineKeyboardButton(text="➕ Создать проект", callback_data="new_project")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def project_keyboard(project) -> InlineKeyboardMarkup:
     project_id = project.id
     rows = []
+    if project.status == "review_pending":
+        rows.extend(review_keyboard(project_id).inline_keyboard)
     if project.status == "draft":
         rows.append([InlineKeyboardButton(text="Открыть буфер ТЗ", callback_data=f"open_buffer:{project_id}")])
     else:
@@ -102,16 +125,20 @@ def project_keyboard(project) -> InlineKeyboardMarkup:
              InlineKeyboardButton(text="Общий чат", callback_data=f"team_chat:{project_id}")],
         ])
         actions = {
-            "planning": [("Запустить стартовый консилиум", "council")],
+            "planning": [("Составить план", "council")],
             "awaiting_approval": [("Утвердить план и запустить", "approve")],
-            "running": [("Пауза", "pause")],
+            "council": [("⏸ Пауза", "pause")],
+            "running": [("⏸ Пауза", "pause")],
             "paused": [("Возобновить", "resume"), ("⏪ Откатить шаг", "rollback")],
-            "completed": [("⏪ Откатить шаг", "rollback")],
+            "completed": [("↩️ Вернуться к проекту", "reopen_project"),
+                          ("⏪ Откатить шаг", "rollback")],
         }
         for label, action in actions.get(project.status, []):
             rows.append([InlineKeyboardButton(text=label, callback_data=f"project_action:{project_id}:{action}")])
+    if project.delivery_mode == "mobile" and project.status in {"review_pending", "completed"}:
+        rows.append([InlineKeyboardButton(text="Отправить архив", callback_data=f"mobile_result:{project_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows + [
-        [InlineKeyboardButton(text="Посмотреть SPEC.md", callback_data=f"view_spec:{project_id}")],
+        [InlineKeyboardButton(text="Посмотреть ТЗ проекта", callback_data=f"view_spec:{project_id}")],
         [InlineKeyboardButton(text="Удалить проект", callback_data=f"delete_project:{project_id}")],
         [InlineKeyboardButton(text="Мои проекты", callback_data="projects")],
     ])

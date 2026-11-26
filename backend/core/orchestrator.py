@@ -21,7 +21,8 @@ from PIL import Image
 
 from backend.api.ws import manager, workers
 from backend.bot.formatting import telegram_html
-from backend.bot.i18n import EN, STATUS, bot_language, localize_markup, translate
+from backend.bot.delivery import completion_summary, send_mobile_result
+from backend.bot.i18n import bot_language, localize_markup, translate
 from backend.database.db import async_session_factory
 from backend.database.models import AgentConfig, AgentMessage, CommitState, Project, ProjectMedia, ResponseCache, TaskLog, User, UserModelPreset
 from worker.adapters import CLI_PROVIDERS, build_agent
@@ -85,15 +86,6 @@ def project_tree_map(workspace):
         lines.append("Рабочая папка пуста.")
     return "\n".join(lines)
 
-
-STATUS["review_pending"] = ("На проверке", "Pending review")
-EN.update({
-    "Результат готов к проверке.": "The result is ready for review.",
-    "Подтвердить завершение": "Confirm completion",
-    "Продолжить разработку": "Continue development",
-    "Вернуться к проекту": "Return to project",
-    "Проект больше не ожидает проверки.": "The project is no longer pending review.",
-})
 
 COMMIT_INSTRUCTION = (
     "COMMIT_MSG: <тип>: <совершённый факт в прошедшем времени>. "
@@ -685,6 +677,17 @@ class Orchestrator:
                 finally:
                     bot_language.reset(locale)
 
+    async def deliver_mobile_project(self, project):
+        if self.bot is None or project.delivery_mode != "mobile":
+            return
+        async with async_session_factory() as session:
+            owner = await session.get(User, project.owner_id)
+        if owner:
+            try:
+                await send_mobile_result(self.bot, project, owner)
+            except Exception:
+                logger.exception("Mobile result notification failed for project %s", project.id)
+
     async def request_approval(self, project_id, command, *, kind="command", config=None):
         if kind == "command":
             project, _ = await self.load(project_id)
@@ -798,6 +801,13 @@ class Orchestrator:
                 if project.status != source:
                     raise ValueError("Действие недоступно в текущем статусе.")
                 await self.status(project_id, target)
+                if target == "completed" and self.bot:
+                    await self.deliver_mobile_project(project)
+                    from backend.bot.keyboards import project_keyboard
+
+                    project.status = target
+                    summary = await completion_summary(project)
+                    await self.notify(project_id, summary, project_keyboard(project), event_type="completion")
                 return target
             if action in {"council", "regenerate_plan"} and project.status not in {"draft", "council"}:
                 if not configs:
@@ -805,7 +815,7 @@ class Orchestrator:
                 selected = [item for item in self.select_agents(configs, target_agent_ids)
                             if item.agent_role_type != "image_gen"]
                 if not selected:
-                    raise ValueError("Для консилиума выберите хотя бы одну универсальную модель.")
+                    raise ValueError("Для обсуждения плана выберите хотя бы одну универсальную модель.")
                 if feedback is not None:
                     if not project.plan_content:
                         raise ValueError("Сначала создайте план.")
@@ -847,6 +857,12 @@ class Orchestrator:
                 digest = self.require_plan(project, configs, approved=True)
                 if any(config.tested_at is None for config in configs):
                     raise ValueError("Проверьте всех активных агентов.")
+            elif action == "pause" and project.status == "council":
+                if runtime.council and not runtime.council.done():
+                    runtime.council.cancel()
+                    await asyncio.gather(runtime.council, return_exceptions=True)
+                await self.status(project_id, "planning")
+                return "planning"
             elif action == "pause" and project.status == "running":
                 runtime.ready.clear()
                 await self.status(project_id, "paused")
@@ -976,7 +992,7 @@ class Orchestrator:
             await self.notify(project_id, plan, project_keyboard(project))
         except Exception as exc:
             await self.status(project_id, "planning")
-            await self.notify(project_id, f"Ошибка консилиума. {exc}", critical=True)
+            await self.notify(project_id, f"Не удалось обсудить план. {exc}", critical=True)
 
     async def chat(self, project_id, question, target_agent_ids=None, *, media=None):
         runtime = self.runtime(project_id)
@@ -1643,12 +1659,10 @@ class Orchestrator:
         if complete:
             if not committed:
                 await self.status(project.id, "review_pending", turn_state=runtime.snapshot())
-            markup = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="Подтвердить завершение",
-                                     callback_data=f"project_action:{project.id}:confirm_completion"),
-                InlineKeyboardButton(text="Продолжить разработку", callback_data=f"review_continue:{project.id}"),
-            ]])
-            await self.notify(project.id, "Результат готов к проверке.", markup, event_type="review")
+            from backend.bot.keyboards import review_keyboard
+
+            await self.deliver_mobile_project(project)
+            await self.notify(project.id, "Результат готов к проверке.", review_keyboard(project.id), event_type="review")
             return
         if project.autonomy_mode == "step_by_step":
             runtime.ready.clear()

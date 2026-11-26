@@ -2,18 +2,21 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class ProjectSetup(StatesGroup):
+    mode = State()
     name = State()
     workspace = State()
     git = State()
     options = State()
     deadline = State()
     spec_buffer = State()
+    spec_edit = State()
 
 
 class AccountSetup(StatesGroup):
     username = State()
     link_code = State()
     projects_dir = State()
+    mobile_download_dir = State()
 
 
 class AgentInteraction(StatesGroup):
