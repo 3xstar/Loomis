@@ -58,6 +58,8 @@ const LoomisI18n = (() => {
     "Открыть на GitHub": "Open on GitHub",
     "Удалить проект": "Delete project",
     "Также удалить связанный репозиторий на GitHub": "Also delete linked GitHub repository",
+    "Также удалить папку проекта с компьютера (включая все файлы)": "Also delete project folder from PC (including all files)",
+    "Отпустите файлы, чтобы добавить в ТЗ": "Release files to add them to the specification",
     "Проект удалён.": "Project deleted.",
     "Проект и репозиторий GitHub удалены.": "Project and GitHub repository deleted.",
     "GitHub не подключён. Репозиторий не удалён.": "GitHub is disconnected. The repository was not deleted.",

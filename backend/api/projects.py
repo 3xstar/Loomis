@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import shutil
 import subprocess
 import sys
 from contextlib import nullcontext
@@ -454,6 +455,7 @@ class ProjectDeletionResult(BaseModel):
 
 async def remove_project(
     project: Project, session: AsyncSession, user: User, *, delete_remote: bool = False,
+    delete_local_folder: bool = False,
 ) -> ProjectDeletionResult:
     await orchestrator.stop(project.id)
     result = ProjectDeletionResult()
@@ -468,6 +470,11 @@ async def remove_project(
             else:
                 result.warning = await github.delete_github_repo(token, repo_url)
                 result.github_repo_deleted = result.warning is None
+    if delete_local_folder and project.workspace_path:
+        workspace = Path(project.workspace_path).resolve()
+        workspaces_root = (ROOT / "workspaces").resolve()
+        if workspace != Path(workspace.anchor) and workspace != workspaces_root and workspace.exists():
+            shutil.rmtree(workspace, ignore_errors=True)
     await session.delete(project)
     await session.commit()
     await manager.close_project(project.id)
@@ -477,9 +484,11 @@ async def remove_project(
 @router.delete("/{project_id}", response_model=ProjectDeletionResult, responses={204: {"description": "Project deleted"}})
 async def delete_project(
     project: OwnedProject, session: Session, user: CurrentUser, delete_github_repo: bool = False,
+    delete_local_folder: bool = False,
 ) -> ProjectDeletionResult | Response:
-    result = await remove_project(project, session, user, delete_remote=delete_github_repo)
-    return result if delete_github_repo else Response(status_code=204)
+    result = await remove_project(project, session, user, delete_remote=delete_github_repo,
+                                  delete_local_folder=delete_local_folder)
+    return result if delete_github_repo or delete_local_folder else Response(status_code=204)
 
 
 async def owned_agent(agent_id: int, project: OwnedProject, session: Session) -> AgentConfig:

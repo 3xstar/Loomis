@@ -564,6 +564,9 @@ option { background: var(--base); }
   border-width: 0 2px 2px 0;
   transform: translateY(-1px) rotate(45deg);
 }
+#delete-local-folder { appearance: none; display: grid; place-items: center; width: 18px; height: 18px; margin: 2px 0 0; padding: 0; flex-shrink: 0; border: 1px solid var(--muted); border-radius: 5px; cursor: pointer; }
+#delete-local-folder:checked { background: #b91c1c; border-color: #b91c1c; }
+#delete-local-folder:checked::after { content: ""; width: 5px; height: 9px; border: solid white; border-width: 0 2px 2px 0; transform: translateY(-1px) rotate(45deg); }
 @media (forced-colors: active) {
   #delete-github-repo { appearance: auto; }
   #delete-github-repo:checked::after { content: none; }
@@ -582,6 +585,7 @@ option { background: var(--base); }
   overflow-wrap: anywhere;
 }
 #delete-modal .modal-actions { margin-top: 20px; gap: 10px; }
+#completion-confirm-modal .modal-actions { margin-top: 22px; }
 #confirm-delete { color: var(--delete-ink); border-color: var(--delete-line); font-weight: 650; }
 #delete-modal:has(:where(#delete-github-option:not(.hidden) :checked)) #confirm-delete {
   background: var(--delete-fill);
@@ -1328,6 +1332,8 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
 #project-page.is-completed > :not(.completion-scene) {
   display: none !important;
 }
+#spec-panel.spec-drop-active { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent); }
+#spec-panel.spec-drop-active::after { content: "Отпустите файлы, чтобы добавить в ТЗ"; display: block; color: var(--text-secondary); text-align: center; padding: 8px; }
 .completion-scene {
   --completion-rise-time: 1.55s;
   --completion-muted: #dedede;

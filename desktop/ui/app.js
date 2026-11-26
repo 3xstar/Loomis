@@ -966,6 +966,17 @@ for (const [picker, trigger, image] of [
   };
 }
 
+const specPanel = byId("spec-panel");
+specPanel.addEventListener("dragover", (event) => { if (event.dataTransfer?.types.includes("Files")) { event.preventDefault(); specPanel.classList.add("spec-drop-active"); } });
+specPanel.addEventListener("dragleave", (event) => { if (!specPanel.contains(event.relatedTarget)) specPanel.classList.remove("spec-drop-active"); });
+specPanel.addEventListener("drop", (event) => {
+  event.preventDefault(); specPanel.classList.remove("spec-drop-active");
+  if (project?.status !== "draft" || specBusy || actionBusy) return;
+  const allowed = /\.(docx|pdf|md|txt|py|js|ts|jsx|tsx|html|css|json|yaml|yml|csv|png|jpe?g|webp|gif|svg)$/i;
+  const files = Array.from(event.dataTransfer.files).filter((file) => allowed.test(file.name)).map((file) => ({file, image: /\.(png|jpe?g|webp|gif|svg)$/i.test(file.name)}));
+  if (files.length) { specAttachments.push(...files); renderSpecAttachments(); }
+});
+
 function showCommandApproval({id, command, kind}, projectId) {
   if (Array.from(byId("command-approvals").children).some((panel) => panel.dataset.approvalId === id)) return;
   const panel = document.createElement("section");
@@ -1741,13 +1752,17 @@ function confirmContextDeletion(target) {
     ? new URL(target.item.github_repo_url.trim()).pathname.replace(/^\/|\/+$/g, "").replace(/\.git$/, "")
     : "";
   const checkbox = byId("delete-github-repo");
+  const localCheckbox = byId("delete-local-folder");
   checkbox.checked = false;
+  localCheckbox.checked = false;
+  byId("delete-local-option").classList.toggle("hidden", !isProject);
+  byId("delete-local-path").textContent = isProject ? (target.item.workspace_path || "") : "";
   byId("delete-github-option").classList.toggle("hidden", !repo);
   byId("delete-github-name").textContent = repo;
   byId("delete-title").textContent = `Удалить ${kind} «${target.item.name}»?`;
   showModal("delete-modal");
   byId("confirm-delete").onclick = ({currentTarget}) => {
-    const path = isProject ? `${target.path}?delete_github_repo=${Boolean(repo && checkbox.checked)}` : target.path;
+    const path = isProject ? `${target.path}?delete_github_repo=${Boolean(repo && checkbox.checked)}&delete_local_folder=${Boolean(localCheckbox.checked)}` : target.path;
     mutateFromModal(currentTarget, {...target, path}, "DELETE");
   };
 }

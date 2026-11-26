@@ -127,7 +127,6 @@
           <h1 id="completion-name" data-user-content></h1>
           <div class="completion-status">
             <p>Проект завершён</p>
-            <button id="completion-chat" class="text-action" type="button">Общий чат ИИ</button>
           </div>
           <div id="completion-actions" class="completion-actions" inert>
             <button id="completion-home" class="button" type="button" aria-labelledby="completion-home-label" aria-describedby="completion-home-hint">
@@ -467,6 +466,10 @@
           </span>
         </label>
       </div>
+      <label id="delete-local-option" class="delete-repo-option">
+        <input id="delete-local-folder" type="checkbox" aria-labelledby="delete-local-label" aria-describedby="delete-local-path">
+        <span class="delete-repo-copy"><span id="delete-local-label">Также удалить папку проекта с компьютера (включая все файлы)</span><code id="delete-local-path" data-user-content></code></span>
+      </label>
       <div class="modal-actions">
         <button class="button secondary close-modal" type="button">Отмена</button>
         <button id="confirm-delete" class="button danger" type="button">Удалить</button>

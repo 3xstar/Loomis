@@ -1447,6 +1447,9 @@ class Orchestrator:
                     exhausted = response == WORKSPACE_ROUND_EXHAUSTED
                     if empty_result or exhausted:
                         target = workspace_file(workspace, expected_path) if expected_path != "-" else None
+                        blocked = re.search(r"(?m)^LOOMIS_BLOCKED:[ \t]*(.+)$", response)
+                        if blocked:
+                            raise RuntimeError(blocked[1])
                         target_ready = (
                             target is not None and target.is_file()
                             and target.stat().st_size > (500 if target.suffix.lower() == ".docx" else 0)
