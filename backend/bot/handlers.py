@@ -5,6 +5,7 @@ import re
 import secrets
 from contextlib import suppress
 from datetime import datetime
+from hashlib import sha256
 from time import time
 from html import escape
 from pathlib import Path
@@ -29,12 +30,13 @@ from backend.api.projects import (
     PresetView, ProjectCreate, ProjectCreateRequest, ProjectPatch, clear_view,
     create_preset, create_project, default_workspace, delete_agent, delete_preset, edit_agent,
     edit_preset, import_presets, list_presets, new_workspace, persist_new_agent,
-    project_commits, project_stats, push_project, require_github, retry_agent, rollback_commit,
+    project_commits, project_stats, push_project, remove_project, require_github, retry_agent, rollback_commit,
     store_spec_media, test_agent, update_project,
 )
 from backend.api.ws import manager
 from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
+from backend.core.github import github_repo_name
 from backend.core.media import MAX_MEDIA_BYTES, MEDIA_TYPES, make_media
 from backend.core.model_performance import model_key
 from backend.core.orchestrator import history_visible, orchestrator
@@ -601,21 +603,54 @@ async def view_spec(callback: CallbackQuery, session: AsyncSession, account: Use
             await callback.message.answer(part, parse_mode="HTML")
 
 
+def project_repo_confirmation(repo: str) -> str:
+    return sha256(repo.lower().encode()).hexdigest()[:24]
+
+
+async def confirm_project_deletion(message: Message, project: Project, repo: str):
+    callback = f"delete_project:{project.id}"
+    await message.answer(
+        f"Удалить проект «{project.name}»?\nРепозиторий GitHub — {repo}",
+        reply_markup=inline_menu([
+            [("Удалить только в Loomis", f"{callback}:local")],
+            [("Удалить в Loomis + на GitHub", f"{callback}:{project_repo_confirmation(repo)}")],
+            [("Отмена", f"{callback}:cancel")],
+        ]),
+    )
+
+
 @router.callback_query(F.data.startswith("delete_project:"))
 async def delete_project_callback(callback: CallbackQuery, state: FSMContext, session: AsyncSession, account: User | None):
-    project_id = int(callback.data.split(":", 1)[1])
+    _, _, payload = callback.data.partition(":")
+    project_id, _, choice = payload.partition(":")
+    project_id = int(project_id)
+    if choice == "cancel":
+        await callback.answer()
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
     project = await owned_project(session, account, project_id)
     await callback.answer()
     if project is None:
         await callback.message.answer("Проект не найден.")
         return
-    await orchestrator.stop(project.id)
-    await session.delete(project)
-    await session.commit()
-    await manager.close_project(project.id)
+    repo = github_repo_name(project.git_repo_url)
+    if not choice and repo:
+        await confirm_project_deletion(callback.message, project, repo)
+        return
+    delete_remote = bool(choice and choice != "local")
+    if delete_remote and (not repo or choice != project_repo_confirmation(repo)):
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer("Связанный репозиторий изменился. Откройте удаление проекта заново.")
+        return
+    if choice:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    result = await remove_project(project, session, account, delete_remote=delete_remote)
     if orchestrator.telegram_projects.get(account.id) == project.id:
         await leave_project(callback.message, state, account)
-    await callback.message.answer("Проект удалён.")
+    if result.github_repo_deleted:
+        await callback.message.answer("Проект и репозиторий GitHub удалены.")
+    else:
+        await callback.message.answer("Проект удалён." + (f"\n{result.warning}" if result.warning else ""))
     await show_projects(callback.message, session, account)
 
 
@@ -932,6 +967,9 @@ async def cancel_project(callback: CallbackQuery, state: FSMContext, session: As
     await callback.answer()
     if project is None:
         await callback.message.answer("Черновик проекта не найден.")
+        return
+    if repo := github_repo_name(project.git_repo_url):
+        await confirm_project_deletion(callback.message, project, repo)
         return
     await session.delete(project)
     await session.commit()

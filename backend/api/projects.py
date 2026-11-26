@@ -21,6 +21,7 @@ from backend.api.auth import CurrentUser, Session
 from backend.api.ws import manager
 from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
+from backend.core import github
 from backend.core.github import create_github_repo
 from backend.core.media import MAX_MEDIA_BYTES, make_media, media_spec_content
 from backend.core.model_performance import model_key
@@ -90,6 +91,11 @@ class ProjectView(ProjectCreate):
     status: str
     created_at: datetime
     updated_at: datetime
+
+    @computed_field
+    @property
+    def github_repo_url(self) -> str | None:
+        return self.git_repo_url if github.github_repo_name(self.git_repo_url) else None
 
     @field_serializer("workspace_path")
     def absolute_workspace(self, value: str | None) -> str:
@@ -438,12 +444,39 @@ async def edit_project(data: ProjectPatch, project: Project, session: AsyncSessi
     return project
 
 
-@router.delete("/{project_id}", status_code=204)
-async def delete_project(project: OwnedProject, session: Session):
+class ProjectDeletionResult(BaseModel):
+    github_repo_deleted: bool = False
+    warning: str | None = None
+
+
+async def remove_project(
+    project: Project, session: AsyncSession, user: User, *, delete_remote: bool = False,
+) -> ProjectDeletionResult:
     await orchestrator.stop(project.id)
+    result = ProjectDeletionResult()
+    if delete_remote and (repo_url := project.git_repo_url) and github.github_repo_name(repo_url):
+        if not user.github_token:
+            result.warning = "GitHub не подключён. Репозиторий не удалён."
+        else:
+            try:
+                token = github.github_token(user.github_token)
+            except ValueError as exc:
+                result.warning = str(exc)
+            else:
+                result.warning = await github.delete_github_repo(token, repo_url)
+                result.github_repo_deleted = result.warning is None
     await session.delete(project)
     await session.commit()
     await manager.close_project(project.id)
+    return result
+
+
+@router.delete("/{project_id}", response_model=ProjectDeletionResult, responses={204: {"description": "Project deleted"}})
+async def delete_project(
+    project: OwnedProject, session: Session, user: CurrentUser, delete_github_repo: bool = False,
+) -> ProjectDeletionResult | Response:
+    result = await remove_project(project, session, user, delete_remote=delete_github_repo)
+    return result if delete_github_repo else Response(status_code=204)
 
 
 async def owned_agent(agent_id: int, project: OwnedProject, session: Session) -> AgentConfig:

@@ -1672,10 +1672,21 @@ byId("context-delete").onclick = () => {
 };
 
 function confirmContextDeletion(target) {
-  const kind = target.kind === "project" ? "проект" : "агента";
+  const isProject = target.kind === "project";
+  const kind = isProject ? "проект" : "агента";
+  const repo = isProject && githubUsername && target.item.github_repo_url
+    ? new URL(target.item.github_repo_url.trim()).pathname.replace(/^\/|\/+$/g, "").replace(/\.git$/, "")
+    : "";
+  const checkbox = byId("delete-github-repo");
+  checkbox.checked = false;
+  byId("delete-github-option").classList.toggle("hidden", !repo);
+  byId("delete-github-name").textContent = repo;
   byId("delete-title").textContent = `Удалить ${kind} «${target.item.name}»?`;
   showModal("delete-modal");
-  byId("confirm-delete").onclick = ({currentTarget}) => mutateFromModal(currentTarget, target, "DELETE");
+  byId("confirm-delete").onclick = ({currentTarget}) => {
+    const path = isProject ? `${target.path}?delete_github_repo=${Boolean(repo && checkbox.checked)}` : target.path;
+    mutateFromModal(currentTarget, {...target, path}, "DELETE");
+  };
 }
 
 function removeAgentHistory({id, name}) {
@@ -1696,9 +1707,13 @@ async function mutateFromModal(button, target, method, body, onError = (error) =
   const session = token;
   button.disabled = true;
   try {
-    await api(target.path, body, session, method);
+    const result = await api(target.path, body, session, method);
     if (revision === modalRevision) showModal();
     if (session !== token) return;
+    if (target.kind === "project" && method === "DELETE") {
+      notify(result?.github_repo_deleted ? "Проект и репозиторий GitHub удалены." : "Проект удалён.");
+      if (result?.warning) notify(result.warning);
+    }
     try {
       if (target.kind === "project") await loadProjects(project?.id, true);
       else if (target.current === selection) {
@@ -2253,6 +2268,10 @@ byId("project-settings-button").onclick = () => {
   refreshIntegrations();
 };
 
+byId("settings-delete-project").onclick = () => {
+  if (project) confirmContextDeletion({kind: "project", item: project, path: "projects/" + project.id});
+};
+
 function renderIntegrations(user) {
   telegramId = user.telegram_id;
   githubUsername = user.github_username;
@@ -2518,6 +2537,7 @@ locationForm.onsubmit = async (event) => {
     if (project !== target) return;
     target.workspace_path = saved.workspace_path;
     target.git_repo_url = saved.git_repo_url;
+    target.github_repo_url = saved.github_repo_url;
     for (const key of Object.keys(projectSettings)) {
       target[key] = saved[key];
     }

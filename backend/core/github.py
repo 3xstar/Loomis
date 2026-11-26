@@ -35,14 +35,42 @@ def github_token(encrypted: str) -> str:
         raise ValueError("Не удалось прочитать токен. Привяжите GitHub заново.") from None
 
 
+def github_repo_name(repo_url: str | None) -> str | None:
+    url = (repo_url or "").strip().rstrip("/").removesuffix(".git")
+    return url.split("/", 3)[-1] if is_github_repo(url) else None
+
+
+async def _github_request(token: str, method: str, path: str, **kwargs) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
+        return await client.request(method, "https://api.github.com" + path, headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }, **kwargs)
+
+
+async def delete_github_repo(token: str, repo_url: str) -> str | None:
+    name = github_repo_name(repo_url)
+    if not name:
+        return "Адрес репозитория GitHub недействителен."
+    try:
+        response = await _github_request(token, "DELETE", f"/repos/{name}")
+    except httpx.RequestError:
+        return "Не удалось подтвердить удаление репозитория. Проверьте его в GitHub."
+    if response.status_code == 204:
+        return None
+    if response.status_code == 403:
+        return "GitHub запретил удаление. Проверьте право delete_repo или право Administration: write для токена с ограниченным доступом."
+    if response.status_code == 404:
+        return "Репозиторий GitHub не найден или недоступен для этого токена."
+    if response.status_code == 401:
+        return "GitHub отклонил токен. Привяжите GitHub заново."
+    return "Не удалось подтвердить удаление репозитория. Проверьте его в GitHub."
+
+
 async def _request(token: str, method: str, path: str, **kwargs) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
-            response = await client.request(method, "https://api.github.com" + path, headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            }, **kwargs)
+        response = await _github_request(token, method, path, **kwargs)
     except httpx.RequestError:
         raise HTTPException(502, "GitHub недоступен. Проверьте подключение и повторите попытку.") from None
     if response.status_code in {401, 403, 429}:

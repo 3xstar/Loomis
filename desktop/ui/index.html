@@ -446,6 +446,14 @@
     </div>
     <div id="delete-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="delete-title">
       <div class="modal-head"><h3 id="delete-title"></h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <div id="delete-github-option" class="hidden">
+        <label class="choice-chip">
+          <input id="delete-github-repo" type="checkbox" aria-describedby="delete-github-name">
+          <span><span>Также удалить связанный репозиторий на GitHub</span><br>
+            <code id="delete-github-name" data-user-content></code>
+          </span>
+        </label>
+      </div>
       <div class="modal-actions">
         <button class="button secondary close-modal" type="button">Отмена</button>
         <button id="confirm-delete" class="button danger" type="button">Удалить</button>
@@ -549,7 +557,10 @@
             <option value="manual_finish">Вручную по завершении</option>
           </select>
         </label>
-          <button class="button secondary" type="submit">Сохранить</button>
+          <div class="modal-actions">
+            <button id="settings-delete-project" class="button danger" type="button">Удалить проект</button>
+            <button class="button secondary" type="submit">Сохранить</button>
+          </div>
         </form>
     </div>
 
