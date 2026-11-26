@@ -3198,17 +3198,17 @@ byId("completion-scene").addEventListener("lighterclosed", (event) => {
 byId("completion-home").onclick = openDashboard;
 byId("completion-stats").onclick = () => byId("stats-button").onclick();
 byId("completion-return").onclick = () => confirmCompletionAction(true);
-byId("completion-chat").onclick = () => {
+byId("completion-chat")?.addEventListener("click", () => {
   const scene = byId("completion-scene");
   scene.dataset.chat = scene.dataset.project;
   syncCompletionScreen();
   selectView("team");
   byId("message-input").focus();
-};
+});
 byId("back-to-completion").onclick = () => {
   delete byId("completion-scene").dataset.chat;
   syncCompletionScreen();
-  byId("completion-chat").focus();
+  byId("completion-chat")?.focus();
 };
 
 const statsNumber = new Intl.NumberFormat("ru");
