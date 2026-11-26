@@ -429,6 +429,7 @@ const LoomisI18n = (() => {
     [/^Редактировать (.+)$/, "Edit $1"],
     [/^Удалить (.+)$/, "Delete $1"],
     [/^Доля выполненных задач: (.+)$/, "Share of completed tasks: $1"],
+    [/^Добавлено: (.+)$/, "Added: $1"],
     [/^Проект создан\. Не удалось сохранить шаблон ТЗ: (.+)$/, "Project created. Could not save the specification template: $1"],
     [/^Проект создан\. (.+)$/, "Project created. $1"],
     [/^Откатить файлы и контекст ИИ до коммита (.+)\?$/, "Roll back files and AI context to commit $1?"],

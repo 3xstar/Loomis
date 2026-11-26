@@ -4,7 +4,7 @@ import re
 import subprocess
 import sys
 from contextlib import nullcontext
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Annotated, Literal
@@ -844,6 +844,13 @@ class PresetView(PresetCreate):
     owner_id: int
     created_at: datetime
     total_tokens_used: int
+
+    @field_serializer("created_at", when_used="json")
+    def serialize_created_at(self, value: datetime) -> str:
+        # SQLite returns UTC timestamps without timezone information.
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
 
     @field_serializer("config_json")
     def public_config(self, config: PresetConfig):

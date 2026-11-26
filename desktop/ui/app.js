@@ -948,16 +948,18 @@ function connect(projectId, current) {
 
 let clearPageTransition;
 
-function playPageTransition(target, className, duration) {
-  const restarting = target.classList.contains(className);
+function playPageTransition(className, duration, ...targets) {
+  const restarting = targets.some((target) => target.classList.contains(className));
   clearPageTransition?.();
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   // Commit the removal before reapplying the same animation.
-  if (restarting) getComputedStyle(target).animationName;
-  target.classList.add(className);
+  if (restarting) {
+    for (const target of targets) void target.offsetWidth;
+  }
+  for (const target of targets) target.classList.add(className);
   const cleanup = () => {
     clearTimeout(timer);
-    target.classList.remove(className);
+    for (const target of targets) target.classList.remove(className);
     clearPageTransition = undefined;
   };
   const timer = setTimeout(cleanup, duration);
@@ -1008,9 +1010,11 @@ async function selectProject(item) {
   selectedAgent = undefined;
   renderDirectAgents([]);
   renderProjectTitle();
-  if (switchingProject) playPageTransition(byId("project-work-area"), "project-tab-switch", 140);
   selectView("team");
   setStatus(item?.status || "—");
+  if (switchingProject) {
+    playPageTransition("project-tab-switch", 140, byId("project-work-area"), byId("completion-scene"));
+  }
   all(".project-button").forEach((button) => button.setAttribute("aria-current", button.dataset.id === String(item?.id)));
   byId("stats-button").disabled = byId("add-agent-button").disabled = !item;
   if (!item) return;
@@ -2659,6 +2663,7 @@ const hubSearch = byId("hub-search");
 const hubSort = byId("hub-sort");
 const hubStatus = byId("hub-status");
 const hubCollator = new Intl.Collator("ru");
+const hubDateFormat = new Intl.DateTimeFormat("ru", {dateStyle: "short", timeStyle: "short"});
 const hubComparators = {
   tokens: (a, b) => b.total_tokens_used - a.total_tokens_used,
   name: (a, b) => hubCollator.compare(a.name, b.name),
@@ -2720,6 +2725,12 @@ function renderHubModels() {
         remove.disabled = false;
       }
     };
+    const createdAt = Date.parse(preset.created_at);
+    if (Number.isFinite(createdAt)) {
+      const added = element("time", "hub-model-added", "Добавлено: " + hubDateFormat.format(createdAt));
+      added.dateTime = preset.created_at;
+      actions.append(added);
+    }
     actions.append(edit, remove);
     const provider = [...hubProvider.options].find((option) => option.value === preset.adapter_type)?.text || preset.adapter_type;
     const usage = element("div", "hub-usage");
@@ -2762,7 +2773,7 @@ function showHubPage(open) {
   const modeChanged = open === hubPage.classList.contains("hidden");
   projectPage.classList.toggle("hidden", open);
   hubPage.classList.toggle("hidden", !open);
-  if (modeChanged) playPageTransition(open ? hubPage : projectPage, "hub-projects-morph", 200);
+  if (modeChanged) playPageTransition("hub-projects-morph", 200, open ? hubPage : projectPage);
   const button = byId("hub-button");
   button.classList.toggle("shows-projects", open);
   button.title = open ? "Проекты" : "Хаб нейросетей";

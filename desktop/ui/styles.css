@@ -663,7 +663,9 @@ option { background: var(--base); }
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .project-tab-switch { animation: projectTabSwitch 0.14s cubic-bezier(0.22, 1, 0.36, 1); }
+  :is(#project-work-area, #completion-scene).project-tab-switch {
+    animation: projectTabSwitch 140ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
   .hub-projects-morph { animation: hubProjectsMorph 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
 }
 
@@ -942,6 +944,7 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
 .hub-usage strong { color: var(--accent); font-size: 1.6rem; font-variant-numeric: tabular-nums; }
 .hub-model-actions, .work-header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .hub-model-actions { justify-content: flex-end; margin-top: 5px; padding-top: 10px; border-top: 1px solid var(--line); }
+.hub-model-added { margin-inline-end: auto; color: var(--muted); font-size: .75rem; }
 #hub-button {
   display: grid;
   place-items: center;
