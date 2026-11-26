@@ -946,7 +946,27 @@ function connect(projectId, current) {
   };
 }
 
+let clearPageTransition;
+
+function playPageTransition(target, className, duration) {
+  const restarting = target.classList.contains(className);
+  clearPageTransition?.();
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  // Commit the removal before reapplying the same animation.
+  if (restarting) getComputedStyle(target).animationName;
+  target.classList.add(className);
+  const cleanup = () => {
+    clearTimeout(timer);
+    target.classList.remove(className);
+    clearPageTransition = undefined;
+  };
+  const timer = setTimeout(cleanup, duration);
+  clearPageTransition = cleanup;
+}
+
 async function selectProject(item) {
+  const switchingProject = project && item && project.id !== item.id
+    && byId("hub-page").classList.contains("hidden");
   const current = ++selection;
   closeContextMenu();
   byId("git-commits").replaceChildren();
@@ -988,6 +1008,7 @@ async function selectProject(item) {
   selectedAgent = undefined;
   renderDirectAgents([]);
   renderProjectTitle();
+  if (switchingProject) playPageTransition(byId("project-work-area"), "project-tab-switch", 140);
   selectView("team");
   setStatus(item?.status || "—");
   all(".project-button").forEach((button) => button.setAttribute("aria-current", button.dataset.id === String(item?.id)));
@@ -2736,8 +2757,12 @@ async function loadHubModels() {
 }
 
 function showHubPage(open) {
-  byId("project-page").classList.toggle("hidden", open);
-  byId("hub-page").classList.toggle("hidden", !open);
+  const projectPage = byId("project-page");
+  const hubPage = byId("hub-page");
+  const modeChanged = open === hubPage.classList.contains("hidden");
+  projectPage.classList.toggle("hidden", open);
+  hubPage.classList.toggle("hidden", !open);
+  if (modeChanged) playPageTransition(open ? hubPage : projectPage, "hub-projects-morph", 200);
   const button = byId("hub-button");
   button.classList.toggle("shows-projects", open);
   button.title = open ? "Проекты" : "Хаб нейросетей";
