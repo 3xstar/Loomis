@@ -1829,7 +1829,7 @@ function renderTelegramLogs() {
 }
 
 function renderProjectTitle() {
-  for (const id of ["project-heading", "project-status", "dashboard-button", "project-settings-button",
+  for (const id of ["project-heading", "project-status", "project-settings-button",
     "stats-button", "project-stepper", "project-work-area"]) {
     byId(id).classList.toggle("hidden", !project);
   }
@@ -1845,10 +1845,17 @@ function renderProjectTitle() {
   byId("current-project-git").textContent = project?.git_repo_url ? "Git-репозиторий: " + project.git_repo_url : "";
 }
 
-byId("dashboard-button").onclick = () => {
+function openDashboard() {
+  showHubPage(false);
   selectProject();
+  if (byId("sidebar").classList.contains("open")) {
+    byId("sidebar").classList.remove("open");
+    byId("mobile-menu").focus();
+  }
   loadProjects().catch((error) => notify(error.message));
-};
+}
+
+byId("brand-home").onclick = openDashboard;
 
 const workspaceControls = byId("workspace-controls");
 const workspaceTabs = [...all(".workspace-tabs .tab")];
@@ -2905,7 +2912,7 @@ function confirmCompletionAction(reopen) {
 byId("review-folder").onclick = openProjectFolder;
 byId("review-continue").onclick = () => byId("message-input").focus();
 byId("review-complete").onclick = () => confirmCompletionAction(false);
-byId("completion-home").onclick = byId("dashboard-button").onclick;
+byId("completion-home").onclick = openDashboard;
 byId("completion-stats").onclick = () => byId("stats-button").onclick();
 byId("completion-return").onclick = () => confirmCompletionAction(true);
 

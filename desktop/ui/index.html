@@ -66,7 +66,7 @@
   <section id="app-screen" class="screen app-screen hidden" inert>
     <aside id="sidebar" class="sidebar glass-panel">
       <div class="sidebar-head">
-        <div class="brand-row"><span class="logo-mark small" aria-hidden="true"><img class="logo-dark" src="/static/logo-dark.png" alt=""><img class="logo-light" src="/static/logo-light.png" alt=""></span><div><strong>Loomis</strong></div></div>
+        <button id="brand-home" class="brand-row" type="button" title="Стартовый дашборд" aria-label="Стартовый дашборд"><span class="logo-mark small" aria-hidden="true"><img class="logo-dark" src="/static/logo-dark.png" alt=""><img class="logo-light" src="/static/logo-light.png" alt=""></span><strong>Loomis</strong></button>
         <button id="sidebar-toggle" class="icon-button" type="button" title="Свернуть в значки" aria-label="Свернуть в значки" aria-controls="sidebar" aria-expanded="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14m7-10-3 3 3 3"/></svg></button>
       </div>
 
@@ -103,7 +103,6 @@
           <span id="project-status" class="status-pill hidden"></span>
         </div>
         <div class="topbar-actions">
-          <button id="dashboard-button" class="button secondary hidden" type="button" title="Стартовый дашборд" aria-label="Стартовый дашборд"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-6H9v6H3Z"/></svg></button>
           <button id="project-settings-button" class="button secondary hidden" type="button" disabled>Настройки проекта</button>
           <button id="git-push" class="button secondary hidden" type="button">Push в Git</button>
           <button id="stats-button" class="button secondary hidden" type="button" disabled><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/></svg> Статистика</button>
