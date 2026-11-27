@@ -27,7 +27,8 @@ from backend.database.db import async_session_factory
 from backend.database.models import AgentConfig, AgentMessage, CommitState, Project, ProjectMedia, ResponseCache, TaskLog, User, UserModelPreset
 from worker.adapters import CLI_PROVIDERS, build_agent
 from worker.adapters.api_adapter import (
-    REVIEW_INSTRUCTION, WORKSPACE_ROUND_EXHAUSTED, ApiAgent, api_system_prompt, run_workspace_command,
+    REVIEW_INSTRUCTION, TOOL_BINARIES, WORKSPACE_ROUND_EXHAUSTED, ApiAgent, api_system_prompt,
+    find_tool, run_workspace_command, saved_tool_paths,
 )
 from worker.adapters.base import AgentResult, BaseAgent
 from worker.adapters.media import refuses_media
@@ -47,6 +48,37 @@ MAX_AUTO_RETRIES = 3
 # The project is idle in "planning" until the council task starts.
 TEAM_CHAT_WORKING_STATUSES = frozenset({"council", "running", "in_progress"})
 TEAM_CHAT_WORKING = "Агенты выполняют задачу — дождитесь завершения этапа или нажмите «Пауза»"
+REQUIRED_TOOLS_INSTRUCTION = (
+    "\nЕсли для сборки или запуска нужны внешние системные инструменты, добавь отдельную строку "
+    "REQUIRED_TOOLS: tool1, tool2 со всеми нужными инструментами из списка: "
+    + ", ".join(TOOL_BINARIES)
+    + ". Если таких инструментов нет, укажи REQUIRED_TOOLS: none. "
+    "Строка должна быть обычным текстом без Markdown-оформления."
+)
+
+
+class MissingRequiredTools(ValueError):
+    pass
+
+
+def environment_preflight(plan, custom_paths=None):
+    declared = re.findall(r"^[ \t]*REQUIRED_TOOLS:[ \t]*([^\r\n]*)", plan or "", re.MULTILINE | re.IGNORECASE)
+    required = dict.fromkeys(
+        name for line in declared for item in line.split(",")
+        if (name := item.strip().lower()) and name != "none"
+    )
+    paths = saved_tool_paths()
+    if custom_paths:
+        paths.update(custom_paths)
+    tools = [{"tool": name, "installed": find_tool(name, paths) is not None} for name in required]
+    return {"ready": all(item["installed"] for item in tools), "tools": tools}
+
+
+def require_environment(project):
+    missing = [item["tool"] for item in environment_preflight(project.plan_content)["tools"]
+               if not item["installed"]]
+    if missing:
+        raise MissingRequiredTools("Не найдены обязательные инструменты: " + ", ".join(missing))
 
 
 def require_team_chat_available(status: str | None) -> None:
@@ -761,6 +793,7 @@ class Orchestrator:
                 raise ValueError("Сначала завершите текущий повтор или ответьте на вопрос агента.")
             if any(item.tested_at is None for item in configs):
                 raise ValueError("Проверьте всех активных агентов.")
+            require_environment(project)
             await self.cancel_gate(runtime)
             runtime.pending_failover = None
             runtime.handoff = (agent_id, saved["handoff"])
@@ -827,6 +860,7 @@ class Orchestrator:
                 return "council"
             if action == "approve" and project.status == "awaiting_approval":
                 digest = self.require_plan(project, configs, approved=False)
+                require_environment(project)
                 for config in configs:
                     if config.tested_at is None:
                         try:
@@ -895,11 +929,12 @@ class Orchestrator:
                     project, runtime, runtime.pending_failover, "failover"
                 )
             runtime.pending_failover = None
-            return await self.start_running(project_id, runtime, digest)
+            return await self.start_running(project, runtime, digest)
 
-    async def start_running(self, project_id, runtime, digest):
-        await self.status(project_id, "running", approved_plan_digest=digest, turn_state=runtime.snapshot())
-        self.wake(project_id, runtime)
+    async def start_running(self, project, runtime, digest):
+        require_environment(project)
+        await self.status(project.id, "running", approved_plan_digest=digest, turn_state=runtime.snapshot())
+        self.wake(project.id, runtime)
         return "running"
 
     def wake(self, project_id, runtime):
@@ -923,11 +958,12 @@ class Orchestrator:
                 digest = self.require_plan(project, configs, approved=True)
                 if any(item.tested_at is None for item in configs):
                     raise ValueError("Проверьте всех активных агентов.")
+                require_environment(project)
+                runtime.pending_failover = None
+                await self.start_running(project, runtime, digest)
             except (ValueError, OSError) as exc:
                 await self.notify(project_id, str(exc), critical=True)
                 return
-            runtime.pending_failover = None
-            await self.start_running(project_id, runtime, digest)
 
     @staticmethod
     def select_agents(configs, target_agent_ids):
@@ -958,7 +994,9 @@ class Orchestrator:
         async def synthesize(agent, prompt, context, step_title):
             images = await self.spec_images(project_id)
             async with self.runtime(project_id).execution_lock:
-                return await agent.run_with_spec_images("plan", prompt, context, images=images, step_title=step_title)
+                return await agent.run_with_spec_images(
+                    "plan", prompt + REQUIRED_TOOLS_INSTRUCTION, context, images=images, step_title=step_title,
+                )
 
         async def rank_members(members):
             _, current = await self.load(project_id)
@@ -984,8 +1022,11 @@ class Orchestrator:
             await self.status(project_id, "awaiting_approval", plan_content=plan, plan_digest=self.plan_digest(project),
                               turn_state=runtime.snapshot())
             if project.autonomy_mode == "autonomous":
-                await self.action(project_id, "approve")
-                return
+                try:
+                    await self.action(project_id, "approve")
+                    return
+                except MissingRequiredTools as exc:
+                    await self.notify(project_id, str(exc), critical=True)
             from backend.bot.keyboards import project_keyboard
 
             project.status = "awaiting_approval"
@@ -1021,6 +1062,7 @@ class Orchestrator:
                 f"Сохрани первые {runtime.plan_step} уже выполненных шагов очереди буквально. "
                 "Сохрани формат очереди и используй только доступных исполнителей: "
                 + ", ".join(item.name for item in configs)
+                + REQUIRED_TOOLS_INSTRUCTION
             )
             if project.autonomy_mode == "autonomous":
                 context += "\nПри обсуждении проекта не запрашивай у пользователя решений о ходе работ."
@@ -1082,14 +1124,20 @@ class Orchestrator:
                                       approved_plan_digest=digest if previously_approved else None,
                                       turn_state=runtime.snapshot())
                     if resume:
-                        await self.start_running(project_id, runtime, digest)
+                        try:
+                            await self.start_running(project, runtime, digest)
+                        except MissingRequiredTools as exc:
+                            await self.notify(project_id, str(exc), critical=True)
             response.message = re.sub(r"(?m)^.*LOOMIS_QUESTION.*$", "", reply).strip()
             media_id = await self.message(project_id, config.name, "@User", "team_chat", response.message, config,
                                           step_title=STEP_TITLES["chat"])
             responses = [{"media_id": media_id, "agent_id": config.id, "status": response.status,
                           "message": response.message, "tokens": response.tokens}]
         if auto_approve:
-            await self.action(project_id, "approve")
+            try:
+                await self.action(project_id, "approve")
+            except MissingRequiredTools as exc:
+                await self.notify(project_id, str(exc), critical=True)
         return responses
 
     async def generate_image(self, project, config, prompt, path):
@@ -1198,7 +1246,11 @@ class Orchestrator:
                     await self.traffic(config, "waiting")
                     if project.autonomy_mode in {"with_questions", "consultative"}:
                         digest = self.require_plan(project, configs, approved=True)
-                        await self.start_running(project_id, runtime, digest)
+                        try:
+                            await self.start_running(project, runtime, digest)
+                        except MissingRequiredTools as exc:
+                            await self.save_turn(project_id, runtime)
+                            await self.notify(project_id, str(exc), critical=True)
                     else:
                         await self.save_turn(project_id, runtime)
                 media_id = await self.message(project_id, config.name, "@User", "direct", result.message, config,

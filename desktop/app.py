@@ -86,6 +86,18 @@ class DesktopAPI:
             return folders or None
         return folders[0] if folders else None
 
+    def select_tool_path(self, folder: bool = False) -> str | None:
+        if folder:
+            return self.select_folder()
+        file_dialog = getattr(webview, "FileDialog", None)
+        open_dialog = file_dialog.OPEN if file_dialog is not None else webview.OPEN_DIALOG
+        files = self._window.create_file_dialog(
+            open_dialog, allow_multiple=False, file_types=("Executable (*.exe)",),
+        )
+        if isinstance(files, str):
+            return files or None
+        return files[0] if files else None
+
 
 def set_dark_title_bar(window) -> None:
     from ctypes import byref, c_int, windll

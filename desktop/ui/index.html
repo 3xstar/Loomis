@@ -213,9 +213,15 @@
             <section id="workspace-cycle" role="tabpanel" aria-labelledby="workspace-cycle-tab" hidden>
               <p id="cycle-empty" class="hint">Действия цикла пока недоступны.</p>
               <div id="project-controls" class="hidden">
+                <section id="environment-preflight" class="glass-card hidden" aria-labelledby="environment-preflight-title">
+                  <h3 id="environment-preflight-title">Проверка окружения на ПК</h3>
+                  <p id="environment-preflight-status" class="hint" role="status"></p>
+                  <ul id="environment-preflight-tools"></ul>
+                  <button id="environment-preflight-retry" class="button secondary small" type="button">Проверить снова</button>
+                </section>
                 <div class="controls-grid">
                   <button class="control-button" data-action="council"><svg class="control-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/></svg><span><strong>Составить план</strong><small>стартовый план</small></span></button>
-                  <button class="control-button" data-action="approve"><svg class="control-icon" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg><span><strong>Утвердить план</strong><small>начать исполнение</small></span></button>
+                  <button class="control-button" data-action="approve" disabled><svg class="control-icon" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg><span><strong>Запустить разработку</strong></span></button>
                   <button class="control-button" data-action="pause"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg><span><strong>Пауза</strong></span></button>
                   <button class="control-button danger" data-action="rollback"><svg class="control-icon" viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h10a6 6 0 0 1 6 6"/></svg><span><strong>Откатить к прошлому коммиту</strong></span></button>
                 </div>
@@ -689,7 +695,17 @@
       <div class="modal-head"><h3 id="stats-modal-title">Статистика проекта</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <div id="stats-body" aria-live="polite"></div>
     </div>
-    <div id="rollback-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="rollback-title">
+      <div id="tool-path-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="tool-path-title">
+        <div class="modal-head">
+          <h3 id="tool-path-title">Указать путь</h3>
+          <button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+        </div>
+        <div class="modal-actions">
+          <button id="tool-path-file" type="button" class="button secondary">Выбрать файл .exe</button>
+          <button id="tool-path-folder" type="button" class="button secondary">Выбрать папку</button>
+        </div>
+      </div>
+      <div id="rollback-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="rollback-title">
       <div class="modal-head">
         <h3 id="rollback-title">Откатить к прошлому коммиту?</h3>
         <button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button>

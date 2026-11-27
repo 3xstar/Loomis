@@ -1,5 +1,15 @@
 const LoomisI18n = (() => {
   const en = {
+    "Проверка окружения на ПК": "Environment Preflight Check",
+    "✓ Установлен": "✓ Installed",
+    "✕ Не найден": "✕ Not found",
+    "Указать путь": "Set path",
+    "Проверить снова": "Check again",
+    "Запустить разработку": "Start development",
+    "Выбрать файл .exe": "Choose an .exe file",
+    "Выбрать папку": "Choose a folder",
+    "Проверяем инструменты…": "Checking tools…",
+    "Не удалось проверить окружение.": "Could not check the environment.",
     "На проверке": "Pending review",
     "Готово": "Done",
     "История коммитов": "Commit history",

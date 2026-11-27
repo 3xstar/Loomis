@@ -14,13 +14,18 @@ let sessionWrite = Promise.resolve();
 let preferencesWrite = Promise.resolve();
 let desktopPreferences = {};
 let token = null;
+let environmentPreflight;
 
 function saveDesktopPreferences(changes) {
   Object.assign(desktopPreferences, changes);
   preferencesWrite = preferencesWrite.then(async () => {
     const bridge = await desktopSessionAPI;
     await bridge?.save_preferences(changes);
-  }).catch(error => notify(error.message));
+    return true;
+  }).catch(error => {
+    notify(error.message);
+    return false;
+  });
   return preferencesWrite;
 }
 
@@ -641,6 +646,86 @@ const workCenter = byId("work-center");
 workCenter.querySelectorAll("[data-view]").forEach((button) => button.onclick = () => selectView(button.dataset.view));
 selectView(view);
 
+function needsEnvironmentCheck() {
+  return ["awaiting_approval", "paused"].includes(project?.status);
+}
+
+async function checkEnvironment(reveal = false) {
+  if (!needsEnvironmentCheck()) return;
+  const check = {pending: true};
+  environmentPreflight = check;
+  renderEnvironmentCheck();
+  renderProjectControls();
+  try {
+    Object.assign(check, await api("projects/" + project.id + "/preflight", {}));
+  } catch {
+    check.error = true;
+  } finally {
+    if (check === environmentPreflight) {
+      check.pending = false;
+      if (reveal && check.ready === false && !workspaceControls.open) {
+        selectWorkspaceTab(byId("workspace-cycle-tab"));
+        workspaceControls.open = true;
+      }
+      renderEnvironmentCheck();
+      renderProjectControls();
+    }
+  }
+}
+
+function renderEnvironmentCheck() {
+  const check = environmentPreflight;
+  byId("environment-preflight").classList.toggle("hidden",
+    !check || !(check.pending || check.error || check.tools?.length));
+  byId("environment-preflight-status").textContent = check?.pending ? "Проверяем инструменты…"
+    : check?.error ? "Не удалось проверить окружение." : "";
+  byId("environment-preflight-retry").disabled = Boolean(check?.pending);
+  byId("environment-preflight-tools").replaceChildren(...(check?.tools || []).map(({tool, installed}) => {
+    const row = document.createElement("li");
+    const name = document.createElement("strong");
+    const status = document.createElement("span");
+    name.textContent = tool;
+    name.dataset.userContent = "";
+    status.className = installed ? "tool-status installed" : "tool-status";
+    status.textContent = installed ? "✓ Установлен" : "✕ Не найден";
+    row.append(name, status);
+    if (!installed && (window.pywebview || new URLSearchParams(location.search).get("desktop") === "1")) {
+      const picker = document.createElement("button");
+      picker.type = "button";
+      picker.className = "button secondary small";
+      picker.textContent = "Указать путь";
+      picker.onclick = () => openToolPathPicker(tool);
+      row.append(picker);
+    }
+    return row;
+  }));
+}
+
+function openToolPathPicker(tool) {
+  showModal("tool-path-modal");
+  const current = selection;
+  for (const [id, folder] of [["tool-path-file", false], ["tool-path-folder", true]]) {
+    byId(id).onclick = async () => {
+      showModal();
+      try {
+        const bridge = await desktopSessionAPI;
+        const path = await bridge.select_tool_path(folder);
+        if (!path) return;
+        const previous = desktopPreferences.customToolPaths;
+        const paths = {...previous, [tool]: path};
+        if (!await saveDesktopPreferences({customToolPaths: paths}) && desktopPreferences.customToolPaths === paths) {
+          desktopPreferences.customToolPaths = previous;
+        }
+        if (current === selection) await checkEnvironment();
+      } catch (error) {
+        notify(error.message);
+      }
+    };
+  }
+}
+
+byId("environment-preflight-retry").onclick = () => checkEnvironment();
+
 function setStatus(status) {
   const previousStatus = project?.status;
   const enteringDraft = status === "draft" && byId("spec-panel").classList.contains("hidden");
@@ -677,6 +762,9 @@ function setStatus(status) {
   const pause = document.querySelector('[data-action="pause"]');
   pause.querySelector("strong").textContent = status === "paused" ? "Продолжить" : "Пауза";
   updateAgentLights();
+  environmentPreflight = undefined;
+  if (needsEnvironmentCheck()) checkEnvironment(status === "awaiting_approval");
+  else renderEnvironmentCheck();
   renderProjectControls();
   renderGitPush();
   if (gitCommitsVisible()) loadGitCommits();
@@ -706,6 +794,7 @@ function renderProjectControls() {
     const visible = available.includes(action);
     button.classList.toggle("hidden", !visible);
     button.disabled = !visible || actionBusy ||
+      ((action === "approve" || (action === "pause" && status === "paused")) && !environmentPreflight?.ready) ||
       (action === "build_spec" && (specBusy || !byId("spec-items").childElementCount));
   });
   const rebuild = document.querySelector('[data-action="regenerate_plan"]');
@@ -745,7 +834,7 @@ function renderTeamEmpty() {
     action = () => document.querySelector('[data-action="council"]').click();
   } else if (status === "awaiting_approval") {
     copy = "План готов. Утвердите его, чтобы начать разработку.";
-    label = "Утвердить план";
+    label = "Запустить разработку";
     action = () => document.querySelector('[data-action="approve"]').click();
   } else {
     copy = status === "council" ? "Агенты готовят план. Сообщения появятся здесь." : "Задайте агентам вопрос о проекте.";
@@ -755,7 +844,8 @@ function renderTeamEmpty() {
   byId("team-empty-copy").textContent = copy;
   button.textContent = label;
   button.onclick = action;
-  button.disabled = actionBusy || (status === "council" && hasAgents && byId("message-input").disabled);
+  button.disabled = actionBusy || (status === "awaiting_approval" && hasAgents && !environmentPreflight?.ready)
+    || (status === "council" && hasAgents && byId("message-input").disabled);
 }
 
 function createSpecItem({id, title, content}) {
@@ -1499,6 +1589,7 @@ async function runProjectAction(button) {
     if (current === selection && revision === statusRevision) setStatus(result.status);
   } catch (error) {
     notify(error.message);
+    if (current === selection && ["approve", "resume"].includes(action)) checkEnvironment();
   } finally {
     if (current === selection) {
       actionBusy = null;

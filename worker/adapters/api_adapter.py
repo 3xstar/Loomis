@@ -8,6 +8,7 @@ import json
 import os
 import re
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from tempfile import TemporaryFile
@@ -32,6 +33,8 @@ COMMAND_INSTRUCTION = (
     "файлов. После каждой команды ты получишь код выхода и вывод терминала в том же диалоге. "
     'Объединяй сборку и проверку в одну команду, например python build.py && python -c "...". '
     "Разбирай ошибки, исправляй их и проверяй, что итоговые файлы созданы, прежде чем завершить задачу."
+    " Если имя бинарника отличается от команды, используй полный путь из переменной "
+    "LOOMIS_TOOL_<ИНСТРУМЕНТ>, например LOOMIS_TOOL_GODOT."
 )
 COMMAND_LINE = re.compile(r"^[ \t]*RUN_CMD:[ \t]*(\S[^\r\n]*)\r?$", re.MULTILINE)
 WORKSPACE_ROUND_LIMIT = 8
@@ -83,6 +86,96 @@ def use_worker_python(command: str) -> str:
     return COMMAND_EXECUTABLE.sub(replace, command)
 
 
+TOOL_BINARIES = {
+    "unity": ("unity",),
+    "godot": ("godot", "godot4", "Godot*_console.exe", "Godot*.exe"),
+    "node": ("node",),
+    "dotnet": ("dotnet",),
+    "gcc": ("gcc",),
+    "java": ("java",),
+    "rust": ("rustc",),
+    "docker": ("docker",),
+}
+
+WINDOWS_TOOL_LOCATIONS = {
+    "unity": ("Unity/Hub/Editor/*/Editor", "Unity/Editor"),
+    "godot": ("Godot", "Godot/*"),
+    "node": ("nodejs",),
+    "dotnet": ("dotnet",),
+    "gcc": ("mingw*/bin", "MSYS2/mingw64/bin", "MSYS2/ucrt64/bin"),
+    "java": ("Java/*/bin", "Eclipse Adoptium/*/bin", "Microsoft/jdk*/bin"),
+    "docker": ("Docker/Docker/resources/bin",),
+}
+
+
+def saved_tool_paths():
+    try:
+        preferences = json.loads(
+            (Path.home() / ".loomis" / "desktop_preferences.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return {}
+    paths = preferences.get("customToolPaths") if isinstance(preferences, dict) else None
+    return paths if isinstance(paths, dict) else {}
+
+
+def binary_in_directory(directory, names):
+    for name in names:
+        if "*" in name:
+            for candidate in sorted(directory.glob(name), reverse=True):
+                if shutil.which(str(candidate)):
+                    return candidate
+        else:
+            filename = name + ".exe" if os.name == "nt" else name
+            candidate = shutil.which(str(directory / filename))
+            if candidate:
+                return Path(candidate)
+    return None
+
+
+def find_tool(tool, custom_paths):
+    names = TOOL_BINARIES.get(tool)
+    if not names:
+        return None
+    custom = custom_paths.get(tool)
+    if isinstance(custom, str) and custom:
+        try:
+            selected = Path(custom).expanduser()
+            if selected.is_absolute():
+                if selected.is_file() and (os.name != "nt" or selected.suffix.lower() == ".exe"):
+                    if shutil.which(str(selected)):
+                        return selected
+                if selected.is_dir():
+                    for folder in (selected, selected / "bin", selected / "Editor"):
+                        if binary := binary_in_directory(folder, names):
+                            return binary
+        except (OSError, ValueError, RuntimeError):
+            pass
+    for name in names:
+        if "*" not in name and (binary := shutil.which(name)):
+            return Path(binary)
+    if os.name != "nt":
+        return None
+    for variable in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        if root := os.environ.get(variable):
+            for pattern in WINDOWS_TOOL_LOCATIONS.get(tool, ()):
+                for folder in sorted(Path(root).glob(pattern), reverse=True):
+                    if binary := binary_in_directory(folder, names):
+                        return binary
+    extra = {
+        "godot": (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Microsoft/WinGet/Links",),
+        "gcc": tuple(Path(os.environ.get("SystemDrive", "C:") + "/") / folder for folder in (
+            "mingw64/bin", "msys64/ucrt64/bin", "msys64/mingw64/bin",
+        )),
+        "java": (Path(os.environ["JAVA_HOME"]) / "bin",) if os.environ.get("JAVA_HOME") else (),
+        "rust": (Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")) / "bin",),
+    }
+    for folder in extra.get(tool, ()):
+        if binary := binary_in_directory(folder, names):
+            return binary
+    return None
+
+
 async def run_workspace_command(workspace: Path, command: str, *, compact_output=False) -> str:
     if not isinstance(command, str) or not command.strip() or len(command) > 16000 or "\0" in command:
         raise ValueError("Expected one nonempty shell command up to 16000 characters")
@@ -99,10 +192,20 @@ async def run_workspace_command(workspace: Path, command: str, *, compact_output
 
 
 def run_host_command(workspace_path: Path, command: str, compact_output=False) -> str:
+    env = os.environ.copy()
+    custom_paths = saved_tool_paths()
+    directories = {}
+    for tool in TOOL_BINARIES:
+        if binary := find_tool(tool, custom_paths):
+            binary = binary.absolute()
+            env[f"LOOMIS_TOOL_{tool.upper()}"] = str(binary)
+            directories[str(binary.parent)] = None
+    if directories:
+        env["PATH"] = os.pathsep.join((*directories, env.get("PATH", "")))
     with TemporaryFile() as output:
         try:
             process = subprocess.run(
-                command, shell=True, cwd=workspace_path, timeout=120,
+                command, shell=True, cwd=workspace_path, timeout=120, env=env,
                 stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
             )
         except subprocess.TimeoutExpired:

@@ -27,7 +27,7 @@ from backend.core.github import create_github_repo
 from backend.core.media import MAX_MEDIA_BYTES, make_media, media_spec_content
 from backend.core.model_performance import model_key
 from backend.core.orchestrator import (
-    count_tokens, history_visible, message_event, orchestrator, probe_agent,
+    count_tokens, environment_preflight, history_visible, message_event, orchestrator, probe_agent,
 )
 from backend.database.models import DEFAULT_PROJECTS_DIR, AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia, ResponseCache, SpecItem, TaskLog, User, UserModelPreset, utc_now
 from backend.settings import ROOT
@@ -864,6 +864,15 @@ class CouncilFeedback(BaseModel):
 
 class ApprovalDecision(BaseModel):
     approved: bool
+
+
+class PreflightRequest(BaseModel):
+    custom_paths: dict[str, str] = Field(default_factory=dict, max_length=8)
+
+
+@router.post("/{project_id}/preflight")
+async def project_preflight(project: OwnedProject, data: PreflightRequest):
+    return await asyncio.to_thread(environment_preflight, project.plan_content, data.custom_paths)
 
 
 @router.post("/{project_id}/actions")

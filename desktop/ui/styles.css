@@ -423,6 +423,23 @@ option { background: var(--base); }
 }
 .agent-card strong, .agent-card small, .control-button small { display: block; overflow-wrap: anywhere; }
 .controls-grid { margin-top: 8px; }
+#environment-preflight { padding: 12px; }
+#environment-preflight h3 { margin: 0; font-size: 14px; }
+#environment-preflight-status:empty, #environment-preflight-tools:empty { display: none; }
+#environment-preflight-tools { padding: 0; margin: 8px 0; list-style: none; }
+#environment-preflight-tools li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+#environment-preflight-tools .tool-status { color: #fca5a5; }
+#environment-preflight-tools .tool-status.installed { color: #86efac; }
+:root[data-theme="light"] #environment-preflight-tools .tool-status { color: #991b1b; }
+:root[data-theme="light"] #environment-preflight-tools .tool-status.installed { color: #166534; }
 .control-button { text-align: left; }
 .control-icon { margin-right: 6px; }
 .control-button > span { display: inline-block; vertical-align: middle; }
