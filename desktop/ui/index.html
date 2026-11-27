@@ -24,14 +24,21 @@
         <div>
           <h1>Loomis</h1>
         </div>
-        <button id="auth-theme" class="button glass-card" type="button" title="Сменить тему">
-          <svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-moon"/></svg>
-          <svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-sun"/></svg>
-          <span>Тёмная тема</span>
-        </button>
+        <div class="auth-tools">
+          <div class="auth-language glass-card" role="group" aria-label="Язык">
+            <button type="button" data-language="ru" lang="ru" aria-pressed="true">RUS</button>
+            <span aria-hidden="true">|</span>
+            <button type="button" data-language="en" lang="en" aria-pressed="false">ENG</button>
+          </div>
+          <button id="auth-theme" class="button glass-card" type="button" title="Сменить тему">
+            <svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-moon"/></svg>
+            <svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-sun"/></svg>
+            <span>Тёмная тема</span>
+          </button>
+        </div>
       </div>
 
-      <form id="password-form" class="stack" autocomplete="on">
+      <form id="password-form" novalidate class="stack" autocomplete="on">
         <h3 id="auth-oauth-title" hidden>Завершение регистрации</h3>
         <label class="field">
           <span id="auth-username-label">Логин или Email</span>
@@ -39,7 +46,7 @@
         </label>
         <label class="field">
           <span>Пароль</span>
-          <input id="auth-password-input" name="password" type="password" autocomplete="current-password" maxlength="1024" required aria-describedby="auth-password-input-hint"><small id="auth-password-input-hint" class="hint">Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей.</small>
+          <input id="auth-password-input" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
         </label>
         <label id="auth-email-field" class="field" hidden><span>Электронная почта</span>
           <input id="auth-email" type="email" autocomplete="email" maxlength="254">
@@ -49,7 +56,7 @@
         <button id="auth-mode-toggle" class="link-button" type="button">Нет аккаунта? Зарегистрироваться</button>
       </form>
 
-      <form id="signup-code-form" class="stack" hidden>
+      <form id="signup-code-form" novalidate class="stack" hidden>
         <p class="hint">Введите 6-значный код из письма.</p>
         <label class="field"><span>Код подтверждения</span>
           <input id="signup-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
@@ -61,13 +68,27 @@
       <div id="auth-recovery-slot">
         <section id="password-recovery" class="stack" aria-labelledby="password-recovery-title" hidden>
           <h3 id="password-recovery-title">Восстановление пароля</h3>
-          <form id="recovery-start" class="stack">
-            <label id="recovery-identifier-field" class="field"><span>Электронная почта или логин</span>
+          <div id="recovery-methods" class="recovery-methods">
+            <button class="button glass-card" type="button" data-recovery-method="email">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+              <span>Восстановить через Почту</span>
+            </button>
+            <button class="button glass-card" type="button" data-recovery-method="github">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-github"/></svg>
+              <span>Восстановить через GitHub</span>
+            </button>
+            <button class="button glass-card" type="button" data-recovery-method="telegram">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-telegram"/></svg>
+              <span>Восстановить через Telegram</span>
+            </button>
+          </div>
+          <form id="recovery-start" novalidate class="stack">
+            <label id="recovery-identifier-field" class="field"><span id="recovery-identifier-label">Электронная почта или логин</span>
               <input id="recovery-identifier" type="text" maxlength="255" autocomplete="username" required>
             </label>
             <button class="button primary wide" type="submit">Продолжить</button>
           </form>
-          <form id="recovery-code-form" class="stack" hidden>
+          <form id="recovery-code-form" novalidate class="stack" hidden>
             <p class="hint">Если к аккаунту привязана почта, мы отправили на неё код.</p>
             <label class="field"><span>Код подтверждения</span>
               <input id="recovery-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
@@ -80,9 +101,9 @@
             <a id="recovery-github-link" class="button glass-card provider-open" href="https://github.com/login/device" target="_blank" rel="noopener noreferrer" hidden>Открыть GitHub</a>
             <button id="recovery-use-github" class="link-button" type="button" hidden>Подтвердить через GitHub</button>
           </div>
-          <form id="recovery-password-form" class="stack" hidden>
+          <form id="recovery-password-form" novalidate class="stack" hidden>
             <label class="field"><span>Новый пароль</span>
-              <input id="recovery-password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" required aria-describedby="recovery-password-hint"><small id="recovery-password-hint" class="hint">Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей.</small>
+              <input id="recovery-password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" required>
             </label>
             <button class="button primary wide" type="submit">Установить новый пароль</button>
           </form>
@@ -643,14 +664,14 @@
 
     <div id="account-credentials-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="account-credentials-title">
       <div class="modal-head"><h3 id="account-credentials-title">Логин и пароль</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
-      <form id="account-credentials-form" class="stack">
+      <form id="account-credentials-form" novalidate class="stack">
         <p class="hint">Оставьте поле пароля пустым, чтобы сохранить текущий пароль.</p>
         <label class="field"><span>Логин</span><input id="account-username" name="username" autocomplete="username" maxlength="255" required></label>
         <label id="account-old-password-field" class="field" hidden><span>Старый пароль</span>
           <input id="account-old-password" type="password" autocomplete="current-password" maxlength="1024">
         </label>
         <button id="account-forgot" class="link-button auth-forgot" type="button" hidden>Не помню старый пароль</button>
-        <label class="field"><span>Новый пароль</span><input id="account-password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" aria-describedby="account-password-hint"><small id="account-password-hint" class="hint">Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей.</small></label>
+        <label class="field"><span>Новый пароль</span><input id="account-password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="1024"></label>
         <p id="account-credentials-error" class="error" role="alert"></p>
         <button id="account-credentials-save" class="button primary wide" type="submit">Сохранить</button>
       </form>
@@ -696,13 +717,14 @@
         <section id="email-card" class="integration-card glass-panel stack" aria-labelledby="email-title">
           <h3 id="email-title">Электронная почта</h3>
           <p id="email-status" class="hint" data-user-content hidden></p>
-          <form id="email-link-form" class="stack">
+          <button id="email-disconnect" class="button glass-card" type="button" hidden>Отвязать</button>
+          <form id="email-link-form" novalidate class="stack">
             <label class="field"><span>Адрес электронной почты</span>
               <input id="email-link-address" type="email" autocomplete="email" maxlength="254" required>
             </label>
             <button class="button glass-card" type="submit">Отправить код</button>
           </form>
-          <form id="email-code-form" class="stack" hidden>
+          <form id="email-code-form" novalidate class="stack" hidden>
             <label class="field"><span>Код подтверждения</span>
               <input id="email-link-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
             </label>
@@ -760,12 +782,21 @@
       </div>
     </div>
     <dialog id="unlink-dialog" class="glass-panel" aria-labelledby="unlink-title" aria-describedby="unlink-message">
-      <form id="unlink-form" class="stack" method="dialog">
+      <form id="unlink-form" novalidate class="stack" method="dialog">
         <h3 id="unlink-title"></h3>
-        <p id="unlink-message">Вы уверены, что хотите отвязать аккаунт?</p>
+        <p id="unlink-message"></p>
+        <label id="unlink-proof-field" class="field" hidden>
+          <span id="unlink-proof-label"></span>
+          <input id="unlink-proof">
+        </label>
+        <div id="unlink-device" class="stack" hidden>
+          <code id="unlink-device-code" data-user-content></code>
+          <a id="unlink-github-link" class="button glass-card provider-open" href="https://github.com/login/device" target="_blank" rel="noopener noreferrer">Открыть GitHub</a>
+        </div>
+        <p id="unlink-error" class="form-error" role="alert"></p>
         <div class="modal-actions">
           <button id="unlink-cancel" class="button secondary" type="button" autofocus>Отмена</button>
-          <button class="button primary" type="submit">Отвязать</button>
+          <button id="unlink-submit" class="button primary" type="submit">Отвязать</button>
         </div>
       </form>
     </dialog>

@@ -26,7 +26,7 @@ from backend.api.auth import (
     GitHubDevicePoll, LoginIdentifier, OAuthRegistration, RecoveryDevicePoll, RecoveryPassword,
     UserPreferences, Username, VerifyCode,
     authenticate, begin_recovery, begin_registration, bind_telegram_account, change_password, confirm_telegram_login_link,
-    complete_recovery, confirm_registration, disconnect_github,
+    complete_recovery, confirm_registration, resolve_telegram_unlink,
     exchange_github_device, finish_oauth_registration, github_login_account, issue_oauth_registration,
     link_telegram, poll_github_device, request_github_device, resolve_telegram_login, save_account,
     password_matches, poll_github_recovery, poll_recovery, resolve_recovery_telegram, start_email_link, start_github_device,
@@ -631,16 +631,8 @@ async def account_setting(callback: CallbackQuery, state: FSMContext, session: A
         await session.commit()
         await session.refresh(account)
         await show_account_settings(message, account)
-    elif action == "unlink":
-        await message.answer("Отвязать GitHub?", reply_markup=inline_menu([
-            [("Отвязать GitHub", "profile:unlink_yes"), ("Отмена", "profile")],
-        ]))
-    elif action == "unlink_yes":
-        if account.id in github_flows:
-            await message.answer("Дождитесь завершения входа через GitHub.")
-            return
-        await disconnect_github(session, account)
-        await show_account_settings(message, account)
+    elif action in {"unlink", "unlink_yes"}:
+        await message.answer("Подтвердите отвязку GitHub в настройках Loomis Desktop.")
     elif account.github_username:
         await show_account_settings(message, account)
     elif account.id in github_flows:
@@ -980,6 +972,20 @@ async def bot_recovery_check(callback: CallbackQuery, state: FSMContext, session
     else:
         await state.clear()
         await callback.answer("Подтверждение недоступно или истекло. Начните заново.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("unlink_tg:"))
+async def bot_confirm_telegram_unlink(callback: CallbackQuery, session: AsyncSession):
+    key = callback.data.split(":", 1)[1]
+    english = (callback.from_user.language_code or "").startswith("en")
+    if await resolve_telegram_unlink(session, callback.from_user.id, key):
+        await callback.answer()
+        await callback.message.edit_text("Telegram unlinked." if english else "Telegram отвязан.")
+    else:
+        await callback.answer(
+            "Confirmation expired or unavailable." if english else "Подтверждение недоступно или истекло.",
+            show_alert=True,
+        )
 
 
 @router.callback_query(F.data.startswith("reset_yes:") | F.data.startswith("reset_no:"))

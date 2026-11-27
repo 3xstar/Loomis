@@ -38,8 +38,28 @@ from backend.services.email_service import send_verification, verification_hint
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 Session = Annotated[AsyncSession, Depends(get_session)]
-Username = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
-                                          max_length=255, pattern=r"^[\w.@-]+$")]
+USERNAME_ERROR = "Логин должен содержать от 3 до 24 латинских букв, цифр или подчёркиваний и хотя бы одну букву."
+EMAIL_ERROR = "Введите корректный адрес электронной почты."
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def validate_username(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_]{3,24}", value) or not re.search(r"[A-Za-z]", value):
+        raise ValueError(USERNAME_ERROR)
+    return value
+
+
+def validate_email_format(value: str) -> str:
+    if len(value) > 254 or not EMAIL_PATTERN.fullmatch(value):
+        raise ValueError(EMAIL_ERROR)
+    return value
+
+
+def validate_login_identifier(value: str) -> str:
+    return validate_email_format(value) if "@" in value else value
+
+
+Username = Annotated[str, StringConstraints(strip_whitespace=True), AfterValidator(validate_username)]
 bearer = HTTPBearer(auto_error=False)
 load_dotenv(ROOT / ".env")
 
@@ -69,7 +89,8 @@ if not SECRET_KEY:
     raise RuntimeError("Loomis .secret_key is empty")
 
 
-LoginIdentifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
+LoginIdentifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+                            AfterValidator(validate_login_identifier)]
 PASSWORD_HINT = "Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей."
 
 
@@ -410,6 +431,7 @@ async def poll_github_device(data: GitHubDevicePoll, session: Session, user: Cur
     result = await exchange_github_device(data, str(user.id))
     if isinstance(result, dict):
         return result
+    await require_same_github(user, result)
     await bind_github(session, user, result, device_flow=True)
     return {"status": "authorized", "user": UserView.model_validate(user)}
 
@@ -555,19 +577,10 @@ async def register_github(data: GitHubRegistration, session: Session):
 
 @router.post("/github", response_model=UserView)
 async def connect_github(data: GitHubCredentials, session: Session, user: CurrentUser):
-    await bind_github(session, user, data.token.get_secret_value())
-    return user
-
-
-@router.delete("/github", response_model=UserView)
-async def disconnect_github(session: Session, user: CurrentUser):
-    if user.github_account_id is not None and user.telegram_id is None and not user.password_hash:
-        raise HTTPException(409, "Задайте пароль перед отвязкой аккаунта.")
-    user.github_token = None
-    user.github_account_id = None
-    user.github_username = None
-    user.github_avatar_url = None
-    await session.commit()
+    token = data.token.get_secret_value().strip()
+    if re.fullmatch(r"(?:ghp_|github_pat_)[A-Za-z0-9_]{1,250}", token):
+        await require_same_github(user, token)
+    await bind_github(session, user, token)
     return user
 
 
@@ -636,20 +649,6 @@ async def generate_link_code(session: Session, user: CurrentUser):
     raise HTTPException(503, "Не удалось создать код. Повторите запрос.")
 
 
-@router.post("/telegram/unlink", response_model=UserView)
-async def disconnect_telegram(session: Session, user: CurrentUser):
-    if user.telegram_id is not None and user.github_account_id is None and not user.password_hash:
-        raise HTTPException(409, "Задайте пароль перед отвязкой аккаунта.")
-    user.telegram_id = None
-    user.telegram_username = None
-    user.telegram_avatar_url = None
-    await session.flush()
-    await session.execute(delete(LinkToken).where(LinkToken.user_id == user.id))
-    await session.execute(delete(TelegramSignIn).where(TelegramSignIn.user_id == user.id))
-    await session.commit()
-    return user
-
-
 async def link_telegram(session: AsyncSession, code: str, telegram_id: int,
                         telegram_username: str | None = None) -> bool:
     try:
@@ -681,7 +680,7 @@ RECOVERY_ERROR = "Подтверждение недоступно или ист�
 
 
 class EmailInput(BaseModel):
-    email: EmailAddress
+    email: Annotated[EmailAddress, AfterValidator(validate_email_format)]
 
     @field_validator("email")
     @classmethod
@@ -692,7 +691,7 @@ class EmailInput(BaseModel):
                 or not re.fullmatch(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+", local)
                 or not re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
                                     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", domain)):
-            raise ValueError("Invalid email address")
+            raise ValueError(EMAIL_ERROR)
         return address
 
 
@@ -705,11 +704,16 @@ class VerifyCode(AuthSecret):
 
 
 class RecoveryMethod(BaseModel):
-    method: Literal["auto", "telegram", "github"] = "auto"
+    method: Literal["auto", "email", "telegram", "github"] = "auto"
 
 
 class RecoveryStart(RecoveryMethod):
-    identifier: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
+    identifier: LoginIdentifier
+
+    @field_validator("identifier")
+    @classmethod
+    def check_recovery_email(cls, value: str, info) -> str:
+        return validate_email_format(value) if info.data.get("method") == "email" else value
 
 
 class RecoveryDevicePoll(GitHubDevicePoll, AuthSecret):
@@ -883,27 +887,195 @@ async def verify_email_link(data: VerifyCode, session: Session, user: CurrentUse
     return user
 
 
+@router.post("/email/unlink/start", status_code=202)
+async def start_email_unlink(session: Session, user: CurrentUser):
+    if not user.email_verified or not user.email:
+        raise HTTPException(409, RECOVERY_ERROR)
+    key = await issue_challenge(session, "unlink", user.id, {"email": user.email},
+                                user=user, address=user.email, language=user.language)
+    return email_challenge_response(key)
+
+
+@router.post("/email/unlink/verify", response_model=UserView)
+async def verify_email_unlink(data: VerifyCode, session: Session, user: CurrentUser):
+    row = await accept_otp(session, data, "unlink", AuthChallenge.user_id == user.id)
+    changed = await session.scalar(update(User).where(
+        User.id == user.id, User.email == row.payload["email"], User.email_verified.is_(True),
+    ).values(email=None, email_verified=False, email_otp_hash=None,
+             email_otp_expires_at=None).returning(User.id))
+    await discard_challenge(session, data.key)
+    await session.commit()
+    if changed is None:
+        raise HTTPException(410, RECOVERY_ERROR)
+    await session.refresh(user)
+    return user
+
+
+async def discard_challenge(session, key):
+    await session.execute(delete(AuthChallenge).execution_options(synchronize_session=False).where(
+        AuthChallenge.key_hash == challenge_key(key),
+    ))
+
+
+@router.post("/telegram/unlink", status_code=202)
+async def start_telegram_unlink(session: Session, user: CurrentUser):
+    from backend.core.orchestrator import orchestrator
+
+    if not user.telegram_id:
+        raise HTTPException(409, RECOVERY_ERROR)
+    if not (user.password_hash or user.github_account_id):
+        raise HTTPException(409, "Задайте пароль перед отвязкой аккаунта.")
+    if orchestrator.bot is None:
+        raise HTTPException(503, "Telegram-бот недоступен.")
+    telegram_id, language = user.telegram_id, user.language
+    key = await issue_challenge(session, "unlink_tg", user.id, {"telegram_id": str(telegram_id)}, user=user)
+    english = language == "en"
+    markup = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Confirm unlink" if english else "Подтвердить отвязку",
+                             callback_data=f"unlink_tg:{key}"),
+    ]])
+    try:
+        await orchestrator.bot.send_message(
+            telegram_id, "Unlink Telegram from Loomis?" if english else "Отвязать Telegram от Loomis?",
+            reply_markup=markup,
+        )
+    except TelegramAPIError as exc:
+        await discard_challenge(session, key)
+        await session.commit()
+        raise HTTPException(502, "Не удалось отправить запрос в Telegram.") from exc
+    return {"key": key}
+
+
+async def resolve_telegram_unlink(session, telegram_id, key):
+    owner_id = await session.scalar(delete(AuthChallenge).execution_options(synchronize_session=False).where(
+        *active_challenge(key, "unlink_tg"),
+        AuthChallenge.payload["telegram_id"].as_string() == str(telegram_id),
+        select(User.id).where(User.id == AuthChallenge.user_id, User.telegram_id == telegram_id).exists(),
+    ).returning(AuthChallenge.user_id))
+    if owner_id is None:
+        return False
+    changed = await session.scalar(update(User).where(
+        User.id == owner_id, User.telegram_id == telegram_id,
+        User.password_hash.is_not(None) | User.github_account_id.is_not(None),
+    ).values(telegram_id=None, telegram_username=None, telegram_avatar_url=None).returning(User.id))
+    if changed is not None:
+        await session.execute(delete(LinkToken).where(LinkToken.user_id == owner_id))
+        await session.execute(delete(TelegramSignIn).where(TelegramSignIn.user_id == owner_id))
+    await session.commit()
+    return changed is not None
+
+
+@router.post("/telegram/unlink/poll")
+async def poll_telegram_unlink(data: AuthSecret, session: Session, user: CurrentUser):
+    if user.telegram_id is None:
+        return {"status": "authorized", "user": UserView.model_validate(user)}
+    pending = await session.scalar(select(AuthChallenge.slot).where(
+        *active_challenge(data.key, "unlink_tg"), AuthChallenge.user_id == user.id,
+    ))
+    return {"status": "pending" if pending else "expired_token"}
+
+
+class GitHubUnlinkPassword(BaseModel):
+    password: SecretStr = Field(min_length=1, max_length=1024)
+
+
+async def linked_github_id(user):
+    if user.github_account_id is not None:
+        return user.github_account_id
+    if user.github_token:
+        account_id, _, _ = await github_profile(github_token(user.github_token))
+        return account_id
+    return None
+
+
+async def require_same_github(user, token):
+    account_id = await linked_github_id(user)
+    if account_id is not None:
+        candidate_id, _, _ = await github_profile(token)
+        if candidate_id != account_id:
+            raise HTTPException(409, "Сначала подтвердите отвязку текущего GitHub.")
+
+
+async def github_unlink_ready(user):
+    if not user.github_username or not (user.github_account_id or user.github_token):
+        raise HTTPException(409, RECOVERY_ERROR)
+    if not user.telegram_id:
+        raise HTTPException(409, "Задайте пароль перед отвязкой аккаунта.")
+    return await linked_github_id(user)
+
+
+async def remove_github(session, user):
+    changed = await session.scalar(update(User).where(
+        User.id == user.id, User.password_hash == user.password_hash,
+        User.github_account_id == user.github_account_id, User.github_token == user.github_token,
+        User.password_hash.is_not(None) | User.telegram_id.is_not(None),
+    ).values(github_token=None, github_account_id=None, github_username=None,
+             github_avatar_url=None).returning(User.id))
+    if changed is None:
+        raise HTTPException(409, RECOVERY_ERROR)
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+@router.delete("/github", response_model=UserView)
+async def disconnect_github(data: GitHubUnlinkPassword, session: Session, user: CurrentUser):
+    if not user.password_hash or not await password_matches(data.password.get_secret_value(), user.password_hash):
+        raise HTTPException(403, "Неверный текущий пароль.")
+    return await remove_github(session, user)
+
+
+@router.post("/github/unlink/start")
+async def start_github_unlink(session: Session, user: CurrentUser):
+    if user.password_hash:
+        raise HTTPException(403, "Введите текущий пароль.")
+    account_id = await github_unlink_ready(user)
+    if account_id is None:
+        raise HTTPException(409, RECOVERY_ERROR)
+    return await request_github_device(f"unlink:{user.id}:{account_id}")
+
+
+@router.post("/github/unlink/poll")
+async def poll_github_unlink(data: GitHubDevicePoll, session: Session, user: CurrentUser):
+    if user.password_hash:
+        raise HTTPException(403, "Введите текущий пароль.")
+    account_id = await github_unlink_ready(user)
+    if account_id is None:
+        raise HTTPException(409, RECOVERY_ERROR)
+    result = await exchange_github_device(data, f"unlink:{user.id}:{account_id}")
+    if isinstance(result, dict):
+        return result
+    confirmed_id, _, _ = await github_profile(result)
+    if confirmed_id != account_id:
+        return {"status": "access_denied"}
+    return {"status": "authorized", "user": UserView.model_validate(await remove_github(session, user))}
+
+
 async def begin_recovery(session, user, identifier, method):
     if user is None:
         name = identifier.casefold()
         if "@" in name:
             user = await session.scalar(select(User).where(User.email == name, User.email_verified.is_(True)))
-        if user is None:
+        if user is None and method != "email":
             user = await session.scalar(select(User).where(User.login_name == name))
+    unavailable = "Для восстановления выбранным способом нужна привязанная интеграция."
     if user is None:
-        return {"method": "email", "key": secrets.token_urlsafe(32)}
+        if method in {"auto", "email"}:
+            return {"method": "email", "key": secrets.token_urlsafe(32)}
+        raise HTTPException(409, unavailable)
     language = user.language
+    methods = []
     if user.email_verified and user.email:
-        selected = "email"
-    else:
-        methods = []
-        if user.telegram_id:
-            methods.append("telegram")
-        if user.github_account_id or (user.github_username and user.github_token):
-            methods.append("github")
-        if not methods or (method != "auto" and method not in methods):
-            raise HTTPException(409, "Для восстановления нужна привязанная почта, Telegram или GitHub.")
-        selected = methods[0] if method == "auto" else method
+        methods.append("email")
+    if user.telegram_id:
+        methods.append("telegram")
+    if user.github_account_id or (user.github_username and user.github_token):
+        methods.append("github")
+    if not methods or (method != "auto" and method not in methods):
+        if method == "email" and identifier:
+            return {"method": "email", "key": secrets.token_urlsafe(32)}
+        raise HTTPException(409, unavailable)
+    selected = methods[0] if method == "auto" else method
     payload = {
         "method": selected,
         "password": _sign(f"recovery-password:{user.password_hash}"),
@@ -1037,8 +1209,8 @@ async def complete_recovery(session, data, *, telegram_id=None, telegram_name=No
     telegram_proof = int(payload["telegram_id"]) if payload["telegram_id"] else None
     proofs = {
         "email": User.email_verified.is_(True) & (User.email == payload["email"]),
-        "telegram": User.email_verified.is_(False) & (User.telegram_id == telegram_proof),
-        "github": User.email_verified.is_(False) & (User.github_account_id == payload["github_id"]),
+        "telegram": User.telegram_id == telegram_proof,
+        "github": User.github_account_id == payload["github_id"],
     }
     filters = [User.id == user.id, User.password_hash == user.password_hash, proofs[payload["method"]]]
     values = {"password_hash": new_hash}

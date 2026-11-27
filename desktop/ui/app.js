@@ -63,7 +63,6 @@ let githubDeviceFlow;
 let integrationsTimer;
 let integrationUpdatePending = false;
 let integrationsRevision = 0;
-let unlinkProvider;
 let historyRequest;
 let activeProjectKey;
 const deletedAgents = new Set();
@@ -81,7 +80,7 @@ async function api(path, body, accessToken = token, method = body === undefined 
   if (response.status === 204) return;
   const data = await response.json();
   if (!response.ok) {
-    const error = new Error(Array.isArray(data.detail) ? data.detail.map((item) => item.msg).join(", ") : data.detail || "Ошибка запроса");
+    const error = new Error(Array.isArray(data.detail) ? data.detail.map((item) => item.msg.replace(/^Value error, /, "")).join(", ") : data.detail || "Ошибка запроса");
     error.status = response.status;
     error.detail = data.detail;
     throw error;
@@ -201,6 +200,36 @@ function validatePassword(password) {
   }
 }
 
+const emailPattern = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+function validatedEmail(value) {
+  const email = value.trim();
+  if (email.length > 254 || !emailPattern.test(email)) {
+    throw new Error("Введите корректный адрес электронной почты.");
+  }
+  return email;
+}
+
+function validatedUsername(value) {
+  const username = value.trim();
+  if (!/^[A-Za-z0-9_]{3,24}$/.test(username) || !/[A-Za-z]/.test(username)) {
+    throw new Error("Логин должен содержать от 3 до 24 латинских букв, цифр или подчёркиваний и хотя бы одну букву.");
+  }
+  return username;
+}
+
+function validatedIdentifier(value) {
+  const identifier = value.trim();
+  if (!identifier) throw new Error("Введите логин или Email.");
+  return identifier.includes("@") ? validatedEmail(identifier) : identifier;
+}
+
+function validatedCode(value) {
+  const code = value.trim();
+  if (!/^[0-9]{6}$/.test(code)) throw new Error("Введите 6-значный код.");
+  return code;
+}
+
 let registering = false;
 let oauthRegistration;
 let signupKey;
@@ -315,7 +344,10 @@ byId("password-form").onsubmit = async (event) => {
   controls.forEach((id) => byId(id).disabled = true);
   byId("auth-error").textContent = "";
   try {
-    const credentials = {username: byId("auth-username").value, password: byId("auth-password-input").value};
+    const rawUsername = byId("auth-username").value;
+    const username = registering || oauthRegistration ? validatedUsername(rawUsername) : validatedIdentifier(rawUsername);
+    const credentials = {username, password: byId("auth-password-input").value};
+    if (!credentials.password) throw new Error("Введите пароль.");
     if (oauthRegistration) {
       if (!oauthRegistration.accessToken) {
         validatePassword(credentials.password);
@@ -331,7 +363,7 @@ byId("password-form").onsubmit = async (event) => {
     if (registering) {
       validatePassword(credentials.password);
       const result = await api("auth/register", {
-        ...credentials, email: byId("auth-email").value, language: LoomisI18n.language,
+        ...credentials, email: validatedEmail(byId("auth-email").value), language: LoomisI18n.language,
       });
       signupKey = result.key;
       byId("auth-password-input").value = "";
@@ -375,7 +407,7 @@ byId("signup-code-form").onsubmit = async (event) => {
   submit.disabled = true;
   byId("auth-error").textContent = "";
   try {
-    const result = await api("auth/register/verify", {key, code: byId("signup-code").value});
+    const result = await api("auth/register/verify", {key, code: validatedCode(byId("signup-code").value)});
     if (key !== signupKey) return;
     await signIn(result.access_token, () => key === signupKey);
     if (key !== signupKey) return;
@@ -390,7 +422,7 @@ byId("signup-code-form").onsubmit = async (event) => {
 };
 
 function showRecoveryStep(step) {
-  for (const id of ["recovery-start", "recovery-code-form", "recovery-provider", "recovery-password-form"]) {
+  for (const id of ["recovery-methods", "recovery-start", "recovery-code-form", "recovery-provider", "recovery-password-form"]) {
     byId(id).hidden = id !== step;
   }
   const input = byId(step).querySelector("input:not(:disabled)");
@@ -415,8 +447,8 @@ function openRecovery(account) {
     byId("password-form").classList.add("hidden");
     byId("auth-providers").classList.add("hidden");
   }
-  showRecoveryStep("recovery-start");
-  if (account) startRecovery();
+  showRecoveryStep("recovery-methods");
+  byId("recovery-methods").querySelector("button").focus();
 }
 
 function closeRecovery() {
@@ -435,7 +467,7 @@ function closeRecovery() {
   }
 }
 
-async function startRecovery(method = "auto") {
+async function startRecovery(method = recovery?.method) {
   const attempt = recovery;
   if (!attempt || attempt.starting) return;
   attempt.starting = true;
@@ -445,7 +477,11 @@ async function startRecovery(method = "auto") {
   byId("recovery-error").textContent = "";
   try {
     const path = attempt.account ? "auth/recovery/account/start" : "auth/recovery/start";
-    const body = attempt.account ? {method} : {method, identifier: byId("recovery-identifier").value};
+    const body = {method};
+    if (!attempt.account) {
+      const value = byId("recovery-identifier").value;
+      body.identifier = method === "email" ? validatedEmail(value) : validatedIdentifier(value);
+    }
     const flow = await api(path, body, attempt.session);
     if (attempt !== recovery) return;
     clearTimeout(recoveryTimer);
@@ -502,7 +538,38 @@ function pollRecovery(attempt, flow) {
 
 byId("auth-forgot").onclick = () => openRecovery(false);
 byId("account-forgot").onclick = () => openRecovery(true);
-byId("recovery-back").onclick = closeRecovery;
+byId("recovery-back").onclick = () => {
+  if (!recovery?.method) {
+    closeRecovery();
+    return;
+  }
+  clearTimeout(recoveryTimer);
+  recovery = {account: recovery.account, session: recovery.session};
+  byId("recovery-code-form").reset();
+  byId("recovery-password-form").reset();
+  byId("recovery-error").textContent = "";
+  showRecoveryStep("recovery-methods");
+  byId("recovery-methods").querySelector("button").focus();
+};
+for (const card of all("[data-recovery-method]")) {
+  card.onclick = () => {
+    const method = card.dataset.recoveryMethod;
+    recovery.method = method;
+    if (recovery.account) {
+      showRecoveryStep();
+      void startRecovery();
+      return;
+    }
+    const email = method === "email";
+    const input = byId("recovery-identifier");
+    input.type = email ? "email" : "text";
+    input.autocomplete = email ? "email" : "username";
+    byId("recovery-identifier-label").textContent = email ? "Адрес электронной почты" : "Электронная почта или логин";
+    input.value = byId("auth-username").value;
+    showRecoveryStep("recovery-start");
+    input.focus();
+  };
+}
 byId("recovery-use-github").onclick = () => startRecovery("github");
 byId("recovery-start").onsubmit = (event) => {
   event.preventDefault();
@@ -516,7 +583,7 @@ byId("recovery-code-form").onsubmit = async (event) => {
   byId("recovery-error").textContent = "";
   try {
     const result = await api("auth/recovery/verify", {
-      key: attempt.flow.key, code: byId("recovery-code").value,
+      key: attempt.flow.key, code: validatedCode(byId("recovery-code").value),
     }, attempt.session);
     if (attempt !== recovery) return;
     attempt.grant = result.key;
@@ -573,7 +640,7 @@ byId("email-link-form").onsubmit = async (event) => {
   event.submitter.disabled = true;
   byId("email-link-error").textContent = "";
   try {
-    const result = await api("auth/email/start", {email: byId("email-link-address").value}, session);
+    const result = await api("auth/email/start", {email: validatedEmail(byId("email-link-address").value)}, session);
     if (token !== session || modalRevision !== revision) return;
     emailLinkKey = result.key;
     event.target.hidden = true;
@@ -593,7 +660,7 @@ byId("email-code-form").onsubmit = async (event) => {
   event.submitter.disabled = true;
   byId("email-link-error").textContent = "";
   try {
-    const user = await api("auth/email/verify", {key, code: byId("email-link-code").value}, session);
+    const user = await api("auth/email/verify", {key, code: validatedCode(byId("email-link-code").value)}, session);
     if (token !== session || key !== emailLinkKey) return;
     integrationsRevision++;
     resetEmailLink();
@@ -2805,10 +2872,13 @@ for (const tab of settingsTabs) {
 
 function applyLanguage(language) {
   LoomisI18n.setLanguage(language);
+  localStorage.setItem("loomis-language", LoomisI18n.language);
   for (const card of all("[data-language]")) {
     card.setAttribute("aria-pressed", card.dataset.language === LoomisI18n.language);
   }
 }
+
+applyLanguage(localStorage.getItem("loomis-language"));
 
 let languageWrite;
 for (const card of all("[data-language]")) {
@@ -2816,8 +2886,9 @@ for (const card of all("[data-language]")) {
     const session = token;
     const previous = LoomisI18n.language;
     const language = card.dataset.language;
-    if (!session || previous === language) return;
+    if (previous === language) return;
     applyLanguage(language);
+    if (!session) return;
 
     if (languageWrite?.session === session) {
       languageWrite.desired = language;
@@ -2880,7 +2951,11 @@ byId("account-credentials-form").onsubmit = async (event) => {
   save.disabled = true;
   errorField.textContent = "";
   try {
-    if (password) validatePassword(password);
+    if (body.username !== undefined) body.username = validatedUsername(body.username);
+    if (password) {
+      validatePassword(password);
+      if (accountHasPassword && !body.old_password) throw new Error("Введите текущий пароль.");
+    }
     const user = await api("auth/credentials", body, session, "PATCH");
     if (token !== session) return;
     renderAccountName(user);
@@ -2935,6 +3010,7 @@ byId("settings-delete-project").onclick = () => {
 function renderIntegrations(user) {
   const verified = Boolean(user.email_verified && user.email);
   byId("email-alert").hidden = verified;
+  byId("email-disconnect").hidden = !verified;
   const emailStatus = byId("email-status");
   emailStatus.hidden = !verified;
   emailStatus.textContent = verified ? user.email : "";
@@ -3101,24 +3177,127 @@ byId("github-connect").onclick = (event) => {
 };
 
 const unlinkDialog = byId("unlink-dialog");
-for (const [provider, title] of [["telegram", "Telegram"], ["github", "GitHub"]]) {
+const unlinkProof = byId("unlink-proof");
+const unlinkSubmit = byId("unlink-submit");
+let unlinkAttempt;
+let unlinkTimer;
+
+function showUnlinkProof(password) {
+  byId("unlink-proof-field").hidden = false;
+  byId("unlink-proof-label").textContent = password ? "Текущий пароль" : "Код подтверждения";
+  unlinkProof.type = password ? "password" : "text";
+  unlinkProof.inputMode = password ? "text" : "numeric";
+  unlinkProof.autocomplete = password ? "current-password" : "one-time-code";
+  unlinkProof.maxLength = password ? 1024 : 6;
+}
+
+for (const [provider, title] of [["email", "Email"], ["telegram", "Telegram"], ["github", "GitHub"]]) {
   byId(provider + "-disconnect").onclick = () => {
-    unlinkProvider = provider;
+    const password = provider === "github" && accountHasPassword;
+    unlinkAttempt = {provider, password, session: token};
     byId("unlink-title").textContent = "Отвязать " + title;
+    byId("unlink-message").textContent = password ? "Введите текущий пароль." : "Вы уверены, что хотите отвязать аккаунт?";
+    byId("unlink-error").textContent = "";
+    byId("unlink-form").reset();
+    byId("unlink-proof-field").hidden = true;
+    byId("unlink-device").hidden = true;
+    unlinkSubmit.hidden = unlinkSubmit.disabled = false;
+    unlinkSubmit.textContent = password ? "Отвязать" : "Продолжить";
+    if (password) showUnlinkProof(true);
     unlinkDialog.showModal();
+    if (password) unlinkProof.focus();
   };
 }
 byId("unlink-cancel").onclick = () => unlinkDialog.close();
-byId("unlink-form").onsubmit = (event) => {
+unlinkDialog.addEventListener("close", () => {
+  if (unlinkDialog.open) return;
+  unlinkAttempt = undefined;
+  clearTimeout(unlinkTimer);
+  byId("unlink-form").reset();
+});
+
+function currentUnlink(attempt) {
+  return unlinkDialog.open && unlinkAttempt === attempt && token === attempt.session;
+}
+
+function finishUnlink(attempt, user) {
+  if (attempt.session !== token) return;
+  integrationsRevision++;
+  renderIntegrations(user);
+  if (currentUnlink(attempt)) unlinkDialog.close();
+}
+
+function pollUnlink(attempt, flow) {
+  const github = attempt.provider === "github";
+  const path = "auth/" + attempt.provider + "/unlink/poll";
+  const body = github ? {
+    device_code: flow.device_code, signature: flow.signature, expires_at: flow.expires_at,
+  } : {key: flow.key};
+  let interval = github ? flow.interval : 3;
+  const poll = async () => {
+    if (!currentUnlink(attempt)) return;
+    try {
+      const result = await api(path, body, attempt.session);
+      if (result.status === "authorized") {
+        finishUnlink(attempt, result.user);
+        return;
+      }
+      if (!currentUnlink(attempt)) return;
+      if (result.status === "slow_down") interval = Math.max(interval + 5, result.interval || 0);
+      else if (!["authorization_pending", "pending"].includes(result.status)) {
+        throw new Error("Подтверждение недоступно или истекло. Начните заново.");
+      }
+      unlinkTimer = setTimeout(poll, interval * 1000);
+    } catch (error) {
+      if (currentUnlink(attempt)) byId("unlink-error").textContent = error.message;
+    }
+  };
+  unlinkTimer = setTimeout(poll, interval * 1000);
+}
+
+byId("unlink-form").onsubmit = async (event) => {
   event.preventDefault();
-  unlinkDialog.close();
-  const provider = unlinkProvider;
-  updateIntegration(byId(provider + "-disconnect"), async (session) => {
-    const user = provider === "telegram"
-      ? await api("auth/telegram/unlink", undefined, session, "POST")
-      : await api("auth/github", undefined, session, "DELETE");
-    if (session === token) renderIntegrations(user);
-  }, event);
+  const attempt = unlinkAttempt;
+  if (!attempt || unlinkSubmit.disabled || unlinkSubmit.hidden) return;
+  const {provider, password, session, key} = attempt;
+  unlinkSubmit.disabled = true;
+  byId("unlink-error").textContent = "";
+  try {
+    if (password || key) {
+      if (password && !unlinkProof.value) throw new Error("Введите текущий пароль.");
+      const user = password
+        ? await api("auth/github", {password: unlinkProof.value}, session, "DELETE")
+        : await api("auth/email/unlink/verify", {key, code: validatedCode(unlinkProof.value)}, session);
+      finishUnlink(attempt, user);
+      return;
+    }
+    const path = "auth/" + provider + "/unlink" + (provider === "telegram" ? "" : "/start");
+    const flow = await api(path, {}, session);
+    if (!currentUnlink(attempt)) return;
+    if (provider === "email") {
+      attempt.key = flow.key;
+      byId("unlink-message").textContent = "Введите 6-значный код из письма.";
+      byId("unlink-error").textContent = flow.hint || "";
+      unlinkSubmit.textContent = "Отвязать";
+      showUnlinkProof(false);
+      unlinkProof.focus();
+      return;
+    }
+    unlinkSubmit.hidden = true;
+    if (provider === "github") {
+      byId("unlink-message").textContent = "Введите этот код на GitHub, чтобы подтвердить отвязку.";
+      byId("unlink-device-code").textContent = flow.user_code;
+      byId("unlink-device").hidden = false;
+    } else {
+      byId("unlink-message").textContent = "Подтвердите отвязку в сообщении от бота Loomis в Telegram.";
+    }
+    byId("unlink-cancel").focus();
+    pollUnlink(attempt, flow);
+  } catch (error) {
+    if (currentUnlink(attempt)) byId("unlink-error").textContent = error.message;
+  } finally {
+    if (currentUnlink(attempt)) unlinkSubmit.disabled = false;
+  }
 };
 
 async function updateIntegration(button, action, event) {
@@ -3906,7 +4085,6 @@ byId("logout-confirm").onclick = async () => {
   if (!token) return;
   showModal();
   token = null;
-  applyLanguage("ru");
   githubUsername = null;
   defaultProjectsDir = "";
   telegramId = null;
