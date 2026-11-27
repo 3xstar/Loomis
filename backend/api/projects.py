@@ -216,11 +216,14 @@ async def prepare_workspace(path: str, project_id: int, repo_url: str | None) ->
     return absolute_path
 
 
-async def create_project(session: AsyncSession, owner_id: int, data: ProjectCreate) -> Project:
+async def create_project(
+    session: AsyncSession, owner_id: int, data: ProjectCreate, *, initiated_from_telegram: bool = False,
+) -> Project:
     fields = data.model_dump()
     visibility = fields.pop("github_visibility", None)
     project = Project(owner_id=owner_id, **fields)
     mobile = project.delivery_mode == "mobile"
+    project.initiated_from_telegram = initiated_from_telegram or mobile
     if mobile and (project.workspace_path or project.git_repo_url or visibility):
         raise HTTPException(422, "Для режима Telegram папка создаётся автоматически.")
     if visibility and project.git_repo_url:
@@ -891,7 +894,7 @@ async def project_action(project: OwnedProject, data: ProjectAction, session: Se
                 await session.commit()
                 await manager.publish_status(project.id, project.status)
             return {"status": project.status}
-        return {"status": await orchestrator.action(project.id, data.action)}
+        return {"status": await orchestrator.action(project.id, data.action, initiated_from_telegram=False)}
     except (ValueError, OSError, RuntimeError) as exc:
         raise HTTPException(409, str(exc)) from exc
 
@@ -900,8 +903,8 @@ async def project_action(project: OwnedProject, data: ProjectAction, session: Se
 async def agent_question(project: OwnedProject, agent: OwnedAgent, data: ChatMessage):
     try:
         if data.target_agent_ids is not None:
-            return {"responses": await orchestrator.chat(project.id, data.question, data.target_agent_ids)}
-        return await orchestrator.question(project.id, agent.id, data.question)
+            return {"responses": await orchestrator.chat(project.id, data.question, data.target_agent_ids, initiated_from_telegram=False)}
+        return await orchestrator.question(project.id, agent.id, data.question, initiated_from_telegram=False)
     except (ValueError, OSError) as exc:
         raise HTTPException(409, str(exc)) from exc
 
@@ -909,7 +912,7 @@ async def agent_question(project: OwnedProject, agent: OwnedAgent, data: ChatMes
 @router.post("/{project_id}/council/feedback")
 async def council_feedback(project: OwnedProject, data: CouncilFeedback):
     try:
-        responses = await orchestrator.chat(project.id, data.feedback, media=None)
+        responses = await orchestrator.chat(project.id, data.feedback, initiated_from_telegram=False)
         updated, _ = await orchestrator.load(project.id)
         return {"status": updated.status, "responses": responses}
     except (ValueError, OSError, RuntimeError) as exc:
@@ -1163,7 +1166,7 @@ async def project_stats(project: OwnedProject, session: Session):
 @router.post("/{project_id}/chat")
 async def project_chat(project: OwnedProject, data: ChatMessage):
     try:
-        return {"responses": await orchestrator.chat(project.id, data.question, data.target_agent_ids)}
+        return {"responses": await orchestrator.chat(project.id, data.question, data.target_agent_ids, initiated_from_telegram=False)}
     except (ValueError, OSError) as exc:
         raise HTTPException(409, str(exc)) from exc
 
@@ -1211,9 +1214,9 @@ async def upload_media(request: Request, project: OwnedProject, session: Session
     prompt = f"{caption.strip() or 'Проанализируй вложение.'}\n\nФайл: {media.filename}"
     try:
         if channel == "direct" and targets and len(targets) == 1:
-            result = await orchestrator.question(project.id, targets[0], prompt, media=media)
+            result = await orchestrator.question(project.id, targets[0], prompt, media=media, initiated_from_telegram=False)
         else:
-            result = {"responses": await orchestrator.chat(project.id, prompt, targets, media=media)}
+            result = {"responses": await orchestrator.chat(project.id, prompt, targets, media=media, initiated_from_telegram=False)}
     except (ValueError, OSError) as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"id": media.id, **result}

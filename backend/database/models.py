@@ -116,6 +116,7 @@ class Project(Base):
     description: Mapped[str | None] = mapped_column(Text)
     workspace_path: Mapped[str | None] = mapped_column(String(1024))
     git_repo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    initiated_from_telegram: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     delivery_mode: Mapped[str] = mapped_column(String(10), default="desktop", server_default="desktop")
     status: Mapped[str] = mapped_column(String(50), default="draft", server_default="draft")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

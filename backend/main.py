@@ -56,6 +56,7 @@ def initialize_schema(connection) -> None:
             "agent_role_type": "VARCHAR(20) NOT NULL DEFAULT 'conversational'",
         },
         "projects": {
+            "initiated_from_telegram": "BOOLEAN NOT NULL DEFAULT FALSE",
             "delivery_mode": "VARCHAR(10) NOT NULL DEFAULT 'desktop'",
             "commit_mode": "VARCHAR(20) NOT NULL DEFAULT 'sequential'",
             "auto_push_mode": "VARCHAR(20) NOT NULL DEFAULT 'after_each'",

@@ -33,9 +33,7 @@ def archive_workspace(workspace: Path, archive: Path) -> None:
                 output.write(path, path.relative_to(workspace))
 
 
-async def send_mobile_result(bot, project, owner) -> None:
-    if project.delivery_mode != "mobile" or not owner.telegram_id:
-        return
+async def send_mobile_result(bot, project, owner, chat_id) -> None:
     try:
         with TemporaryDirectory(prefix="loomis-export-") as folder:
             archive = Path(folder) / f"Loomis-{project.id}.zip"
@@ -47,7 +45,7 @@ async def send_mobile_result(bot, project, owner) -> None:
                 await asyncio.gather(writer, return_exceptions=True)
                 raise
             await bot.send_document(
-                owner.telegram_id, FSInputFile(archive),
+                chat_id, FSInputFile(archive),
                 caption=translate(f"Сохраните архив в папку телефона: {owner.mobile_download_dir}", owner.language),
                 parse_mode=None,
             )
@@ -55,7 +53,7 @@ async def send_mobile_result(bot, project, owner) -> None:
         logger.exception("Could not deliver mobile result for project %s", project.id)
         markup = inline_menu([[("Отправить архив", f"mobile_result:{project.id}")]])
         await bot.send_message(
-            owner.telegram_id, translate("Не удалось отправить архив проекта.", owner.language),
+            chat_id, translate("Не удалось отправить архив проекта.", owner.language),
             reply_markup=localize_markup(markup, owner.language),
         )
 

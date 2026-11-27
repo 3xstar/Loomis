@@ -549,16 +549,10 @@ class Orchestrator:
             await session.commit()
         for row in rows:
             await manager.broadcast(project_id, message_event(row, config.name if config else None))
-        if self.bot and any(row.channel == "team_chat" for row in rows) and self.telegram_projects:
-            async with async_session_factory() as session:
-                owner = await session.scalar(select(User).join(
-                    Project, Project.owner_id == User.id
-                ).where(Project.id == project_id))
-            if owner and owner.telegram_id and self.telegram_projects.get(owner.id) == project_id:
-                self.background_reply(self.send_team_chat(
-                    project_id, owner.id, owner.telegram_id, sender, target, content,
-                    media if sender != "User" else None, owner.language,
-                ))
+        if self.bot and self.telegram_projects and any(row.channel == "team_chat" for row in rows):
+            self.background_reply(self.notify_project_telegram(
+                project_id, content, team_chat=(sender, target, media if sender != "User" else None),
+            ))
         return rows[0].media_id
 
     async def prompt_history(self, project, config, *, direct=False, include_team_chat=False):
@@ -680,7 +674,7 @@ class Orchestrator:
         return Path(project.workspace_path).resolve(strict=True)
 
     async def notify(self, project_id, message, markup=None, event_type="log", config=None, *,
-                     critical=False, in_team_chat=False):
+                     in_team_chat=False):
         event = {"type": event_type, "project_id": project_id, "message": message}
         if config is not None:
             event.update(agent_id=config.id, agent_name=config.name)
@@ -690,35 +684,51 @@ class Orchestrator:
             in_team_chat = True
         if event_type != "step_log":
             await manager.broadcast(project_id, event)
-        if self.bot:
-            async with async_session_factory() as session:
-                owner = await session.scalar(select(User).join(
-                    Project, Project.owner_id == User.id
-                ).where(Project.id == project_id))
-            if owner and owner.telegram_id and (owner.tg_logs_enabled or markup or critical):
-                if in_team_chat and self.telegram_projects.get(owner.id) == project_id:
-                    return
+        await self.notify_project_telegram(project_id, message, markup, in_team_chat=in_team_chat)
+
+    async def notify_project_telegram(self, project, text=None, markup=None, *, in_team_chat=False,
+                                      team_chat=None, archive=False, photo=None, chat_id=None):
+        if self.bot is None:
+            return
+        project_id = project.id if isinstance(project, Project) else project
+        async with async_session_factory() as session:
+            project = await session.get(Project, project_id)
+            owner = await session.get(User, project.owner_id) if project else None
+        if owner is None or not owner.telegram_id:
+            return
+
+        interactive = project.initiated_from_telegram or project.delivery_mode == "mobile"
+        if not (owner.tg_logs_enabled or interactive):
+            return
+        chat_id = chat_id if chat_id is not None else owner.telegram_id
+        viewing = self.telegram_projects.get(owner.id) == project_id
+        try:
+            if archive:
+                if interactive:
+                    await send_mobile_result(self.bot, project, owner, chat_id)
+            elif team_chat is not None:
+                if viewing:
+                    sender, target, media = team_chat
+                    await self.send_team_chat(project_id, owner.id, chat_id, sender, target, text, media,
+                                              owner.language)
+            elif not (in_team_chat and viewing):
                 locale = bot_language.set("ru")
                 try:
-                    localized = translate(message, owner.language)
+                    localized = translate(text, owner.language)
                     for index, part in enumerate(telegram_html(localized)):
-                        await self.bot.send_message(owner.telegram_id, part, parse_mode="HTML",
-                                                    reply_markup=localize_markup(markup, owner.language) if index == 0 else None)
-                except Exception:
-                    logger.exception("Meeting or approval delivery failed for project %s", project_id)
+                        await self.bot.send_message(
+                            chat_id, part, parse_mode="HTML",
+                            reply_markup=localize_markup(markup, owner.language) if index == 0 else None,
+                        )
                 finally:
                     bot_language.reset(locale)
+                if photo is not None:
+                    await self.bot.send_photo(chat_id, photo)
+        except Exception:
+            logger.exception("Telegram delivery failed for project %s", project_id)
 
-    async def deliver_mobile_project(self, project):
-        if self.bot is None or project.delivery_mode != "mobile":
-            return
-        async with async_session_factory() as session:
-            owner = await session.get(User, project.owner_id)
-        if owner:
-            try:
-                await send_mobile_result(self.bot, project, owner)
-            except Exception:
-                logger.exception("Mobile result notification failed for project %s", project.id)
+    async def deliver_mobile_project(self, project, *, chat_id=None):
+        await self.notify_project_telegram(project, archive=True, chat_id=chat_id)
 
     async def request_approval(self, project_id, command, *, kind="command", config=None):
         if kind == "command":
@@ -807,6 +817,7 @@ class Orchestrator:
                 row.last_error = None
                 project_row = await session.get(Project, project_id)
                 project_row.status = "running"
+                project_row.initiated_from_telegram = False
                 project_row.turn_state = runtime.snapshot()
                 await session.commit()
             self.wake(project_id, runtime)
@@ -814,9 +825,10 @@ class Orchestrator:
             await manager.publish_status(project_id, "running")
             return "running"
 
-    async def action(self, project_id, action, *, feedback=None, target_agent_ids=None):
+    async def action(self, project_id, action, *, feedback=None, target_agent_ids=None,
+                     initiated_from_telegram=None):
         if action == "regenerate_plan" and feedback is not None:
-            await self.chat(project_id, feedback)
+            await self.chat(project_id, feedback, initiated_from_telegram=initiated_from_telegram)
             project, _ = await self.load(project_id)
             return project.status
         runtime = self.runtime(project_id)
@@ -855,7 +867,8 @@ class Orchestrator:
                     target = " ".join(f"@{item.name}" for item in selected) if target_agent_ids is not None else "@All"
                     await self.message(project_id, "User", target, "team_chat", feedback)
                 await self.plan_invalidated(project, publish=False)
-                await self.status(project_id, "council", plan_digest=None, approved_plan_digest=None, turn_state=None)
+                await self.status(project_id, "council", plan_digest=None, approved_plan_digest=None, turn_state=None,
+                                  **self.delivery_origin(initiated_from_telegram))
                 runtime.council = asyncio.create_task(self.plan(project_id, project, configs, selected, feedback, target_agent_ids is not None))
                 return "council"
             if action == "approve" and project.status == "awaiting_approval":
@@ -926,14 +939,22 @@ class Orchestrator:
                 raise ValueError("Действие недоступно в текущем статусе.")
             if runtime.pending_failover and project.failover_mode != "auto":
                 return await self.pause_for_approval(
-                    project, runtime, runtime.pending_failover, "failover"
+                    project, runtime, runtime.pending_failover, "failover",
+                    **self.delivery_origin(initiated_from_telegram),
                 )
             runtime.pending_failover = None
-            return await self.start_running(project, runtime, digest)
+            return await self.start_running(project, runtime, digest, initiated_from_telegram=initiated_from_telegram)
 
-    async def start_running(self, project, runtime, digest):
+    @staticmethod
+    def delivery_origin(initiated_from_telegram):
+        if initiated_from_telegram is None:
+            return {}
+        return {"initiated_from_telegram": initiated_from_telegram}
+
+    async def start_running(self, project, runtime, digest, *, initiated_from_telegram=None):
         require_environment(project)
-        await self.status(project.id, "running", approved_plan_digest=digest, turn_state=runtime.snapshot())
+        await self.status(project.id, "running", approved_plan_digest=digest, turn_state=runtime.snapshot(),
+                          **self.delivery_origin(initiated_from_telegram))
         self.wake(project.id, runtime)
         return "running"
 
@@ -942,9 +963,10 @@ class Orchestrator:
         if runtime.task is None or runtime.task.done():
             runtime.task = asyncio.create_task(self.loop(project_id, runtime))
 
-    async def pause_for_approval(self, project, runtime, prompt, kind, config=None, *, digest=None):
+    async def pause_for_approval(self, project, runtime, prompt, kind, config=None, *, digest=None, **updates):
         runtime.ready.clear()
-        updates = {"approved_plan_digest": digest} if digest is not None else {}
+        if digest is not None:
+            updates["approved_plan_digest"] = digest
         await self.status(project.id, "paused", turn_state=runtime.snapshot(), **updates)
         runtime.gate = asyncio.create_task(self.confirm_step(project.id, runtime, prompt, kind, config))
         return "paused"
@@ -962,7 +984,7 @@ class Orchestrator:
                 runtime.pending_failover = None
                 await self.start_running(project, runtime, digest)
             except (ValueError, OSError) as exc:
-                await self.notify(project_id, str(exc), critical=True)
+                await self.notify(project_id, str(exc))
                 return
 
     @staticmethod
@@ -1026,16 +1048,16 @@ class Orchestrator:
                     await self.action(project_id, "approve")
                     return
                 except MissingRequiredTools as exc:
-                    await self.notify(project_id, str(exc), critical=True)
+                    await self.notify(project_id, str(exc))
             from backend.bot.keyboards import project_keyboard
 
             project.status = "awaiting_approval"
             await self.notify(project_id, plan, project_keyboard(project))
         except Exception as exc:
             await self.status(project_id, "planning")
-            await self.notify(project_id, f"Не удалось обсудить план. {exc}", critical=True)
+            await self.notify(project_id, f"Не удалось обсудить план. {exc}")
 
-    async def chat(self, project_id, question, target_agent_ids=None, *, media=None):
+    async def chat(self, project_id, question, target_agent_ids=None, *, media=None, initiated_from_telegram=None):
         runtime = self.runtime(project_id)
         auto_approve = False
         # Reject active work before waiting for its execution lock.
@@ -1125,9 +1147,11 @@ class Orchestrator:
                                       turn_state=runtime.snapshot())
                     if resume:
                         try:
-                            await self.start_running(project, runtime, digest)
+                            await self.start_running(
+                                project, runtime, digest, initiated_from_telegram=initiated_from_telegram,
+                            )
                         except MissingRequiredTools as exc:
-                            await self.notify(project_id, str(exc), critical=True)
+                            await self.notify(project_id, str(exc))
             response.message = re.sub(r"(?m)^.*LOOMIS_QUESTION.*$", "", reply).strip()
             media_id = await self.message(project_id, config.name, "@User", "team_chat", response.message, config,
                                           step_title=STEP_TITLES["chat"])
@@ -1135,9 +1159,9 @@ class Orchestrator:
                           "message": response.message, "tokens": response.tokens}]
         if auto_approve:
             try:
-                await self.action(project_id, "approve")
+                await self.action(project_id, "approve", initiated_from_telegram=initiated_from_telegram)
             except MissingRequiredTools as exc:
-                await self.notify(project_id, str(exc), critical=True)
+                await self.notify(project_id, str(exc))
         return responses
 
     async def generate_image(self, project, config, prompt, path):
@@ -1208,7 +1232,7 @@ class Orchestrator:
             ).order_by(ProjectMedia.id))).all()
         return [tuple(row) for row in rows]
 
-    async def question(self, project_id, agent_id, question, *, media=None):
+    async def question(self, project_id, agent_id, question, *, media=None, initiated_from_telegram=None):
         runtime = self.runtime(project_id)
         async with runtime.execution_lock:
             project, configs = await self.load(project_id)
@@ -1247,10 +1271,12 @@ class Orchestrator:
                     if project.autonomy_mode in {"with_questions", "consultative"}:
                         digest = self.require_plan(project, configs, approved=True)
                         try:
-                            await self.start_running(project, runtime, digest)
+                            await self.start_running(
+                                project, runtime, digest, initiated_from_telegram=initiated_from_telegram,
+                            )
                         except MissingRequiredTools as exc:
                             await self.save_turn(project_id, runtime)
-                            await self.notify(project_id, str(exc), critical=True)
+                            await self.notify(project_id, str(exc))
                     else:
                         await self.save_turn(project_id, runtime)
                 media_id = await self.message(project_id, config.name, "@User", "direct", result.message, config,
@@ -1310,7 +1336,7 @@ class Orchestrator:
             await self.status(project_id, "error" if autonomous else "paused", turn_state=runtime.snapshot())
             report = f"{'Ошибка разработки' if autonomous else 'Разработка приостановлена'}. {exc}"
             await self.message(project_id, "Loomis", "@All", "team_chat", report)
-            await self.notify(project_id, report, critical=True, in_team_chat=True)
+            await self.notify(project_id, report, in_team_chat=True)
 
     async def turn(self, project, configs, runtime):
         now = datetime.now(timezone.utc)
@@ -1355,7 +1381,7 @@ class Orchestrator:
             runtime.ready.clear()
             await self.status(project.id, "error" if project.autonomy_mode == "autonomous" else "paused",
                               turn_state=runtime.snapshot())
-            await self.notify(project.id, "Нет доступного исполнителя.", critical=True)
+            await self.notify(project.id, "Нет доступного исполнителя.")
             return
         is_artist = config.agent_role_type == "image_gen"
         if is_artist and (not planned or planned[0] != config.name):
@@ -1659,7 +1685,7 @@ class Orchestrator:
             await self.traffic(config, "asking", clear_context=True)
             await self.message(project.id, config.name, "@User", "direct", clarification, config)
             await self.notify(project.id, f"{config.name} спрашивает: {clarification}",
-                              event_type="question", config=config, critical=True)
+                              event_type="question", config=config)
             return
         runtime.auto_retries = runtime.continuations = 0
         runtime.continuation_note = ""
@@ -1888,7 +1914,7 @@ class Orchestrator:
         else:
             status = "Git · итоговый коммит отправлен в main." if complete else "Git · коммит шага отправлен в main."
         await self.message(project.id, "Loomis", "@All", "team_chat", status, step_title="Git")
-        await self.notify(project.id, status, event_type="step_log", critical=True, in_team_chat=True)
+        await self.notify(project.id, status, event_type="step_log", in_team_chat=True)
 
     async def diagnose_failure(self, bridge, checkpoint, config, stage, last_output):
         notes = [f"Этап: {stage}."]
@@ -1957,7 +1983,7 @@ class Orchestrator:
                               turn_state=runtime.snapshot())
             report = f"{broken.name}: {error}\n{diagnostic}\nНет доступного агента для передачи задачи."
             await self.message(project.id, broken.name, "@All", "team_chat", report, broken)
-            await self.notify(project.id, report, event_type="step_log", config=broken, critical=True,
+            await self.notify(project.id, report, event_type="step_log", config=broken,
                               in_team_chat=True)
             return
         report = (
@@ -1973,7 +1999,7 @@ class Orchestrator:
         else:
             await self.save_turn(project.id, runtime)
         await self.message(project.id, broken.name, f"@{successor.name}", "team_chat", report, broken)
-        await self.notify(project.id, report, event_type="step_log", config=broken, critical=True,
+        await self.notify(project.id, report, event_type="step_log", config=broken,
                           in_team_chat=True)
 
     async def stop(self, project_id):

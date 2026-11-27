@@ -594,7 +594,9 @@ async def project_card(callback: CallbackQuery, state: FSMContext, session: Asyn
         return
     await select_project(callback.message, state, account, project.id)
     if project.status == "completed":
-        await callback.message.answer(await completion_summary(project), reply_markup=project_keyboard(project))
+        await orchestrator.notify_project_telegram(
+            project, await completion_summary(project), project_keyboard(project), chat_id=callback.message.chat.id,
+        )
         return
     count = await session.scalar(select(func.count(SpecItem.id)).where(SpecItem.project_id == project.id))
     created = project.created_at.strftime("%Y-%m-%d %H:%M") if project.created_at else "—"
@@ -997,7 +999,7 @@ async def finish_new_project(message, state, session, account):
         data = await new_project_data(state)
         if data.git_repo_url or data.github_visibility:
             require_github(account)
-        project = await create_project(session, account.id, data)
+        project = await create_project(session, account.id, data, initiated_from_telegram=True)
     except HTTPException as exc:
         await answer_error(message, exc)
         await new_project_options(message, state)
@@ -1152,14 +1154,14 @@ async def cancel_project(callback: CallbackQuery, state: FSMContext, session: As
 async def resend_mobile_result(callback: CallbackQuery, session: AsyncSession, account: User | None):
     project = await owned_project(session, account, int(callback.data.split(":")[1]))
     await callback.answer()
-    if project is None or project.delivery_mode != "mobile":
+    if project is None:
         return
 
     async def deliver():
         async with orchestrator.runtime(project.id).execution_lock:
             current, _ = await orchestrator.load(project.id)
             if current and current.status in {"review_pending", "completed"}:
-                await orchestrator.deliver_mobile_project(current)
+                await orchestrator.deliver_mobile_project(current, chat_id=callback.message.chat.id)
 
     orchestrator.background_reply(deliver())
 
@@ -1199,7 +1201,7 @@ TEAM_CHAT_BUSY_REPLY = "⏳ Агенты сейчас выполняют тек�
 def run_project_action(message, project, action, **options):
     async def reply():
         try:
-            project.status = await orchestrator.action(project.id, action, **options)
+            project.status = await orchestrator.action(project.id, action, initiated_from_telegram=True, **options)
         except (OSError, ValueError, RuntimeError) as exc:
             await answer_formatted(message, str(exc), project.id)
         else:
@@ -1377,13 +1379,20 @@ async def agent_chat_question(message: Message, bot: Bot, state: FSMContext,
     async def reply():
         try:
             if "agent_id" in data:
-                response = await orchestrator.question(project.id, data["agent_id"], question, media=media)
-                await answer_formatted(message, response["message"] or response["status"])
+                response = await orchestrator.question(
+                    project.id, data["agent_id"], question, media=media, initiated_from_telegram=True,
+                )
+                photo = None
                 if response.get("media_id") is not None:
                     async with async_session_factory() as media_session:
-                        await send_generated_image(message, media_session, project.id, response["media_id"])
+                        generated = await media_session.get(ProjectMedia, response["media_id"])
+                    if generated and generated.project_id == project.id and generated.mime_type.startswith("image/"):
+                        photo = BufferedInputFile(generated.data, Path(generated.filename).name)
+                await orchestrator.notify_project_telegram(
+                    project, response["message"] or response["status"], photo=photo, chat_id=message.chat.id,
+                )
             else:
-                await orchestrator.chat(project.id, question, targets, media=media)
+                await orchestrator.chat(project.id, question, targets, media=media, initiated_from_telegram=True)
         except (OSError, ValueError) as exc:
             await answer_formatted(message, str(exc), project.id)
 
