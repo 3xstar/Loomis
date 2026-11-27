@@ -76,6 +76,7 @@ button:not(:disabled):active, select:not(:disabled):active { transform: scale(0.
 .auth-screen { display: grid; place-items: center; overflow: auto; padding: 20px; }
 .auth-screen:not([data-session-checked]) { visibility: hidden; }
 .auth-card, .modal { width: min(100%, 460px); padding: 30px; }
+.auth-card { width: min(100%, 480px); padding-inline: clamp(10px, 4vw, 30px); }
 .auth-brand, .brand-row, .sidebar-head, .user-card, .section-label,
 .topbar, .project-title, .topbar-actions, .section-head, .terminal-head, .terminal-actions,
 .composer-top, .composer-row, .modal-head { display: flex; align-items: center; gap: 12px; }
@@ -665,8 +666,8 @@ option { background: var(--base); }
 }
 .auth-providers {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
-  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
   margin-top: 16px;
 }
 .auth-providers.hidden { display: none; }
@@ -674,17 +675,35 @@ option { background: var(--base); }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 42px;
+  gap: 10px;
+  height: 48px;
+  min-width: 0;
+  padding-inline: 6px;
+  white-space: nowrap;
   border-radius: 14px;
+  border: 1px solid var(--line);
   background: var(--glass);
 }
-.auth-providers svg, #auth-theme svg, .code-copy svg {
+.auth-providers svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  fill: currentColor;
+  stroke: none;
+}
+@media (max-width: 420px) {
+  .auth-screen { padding-inline: 6px; }
+  .auth-providers .button { font-size: 12px; }
+}
+@media (max-width: 360px) {
+  .auth-card { padding-inline: 8px; }
+  .auth-providers .button { padding-inline: 3px; font-size: clamp(10px, 3.25vw, 12px); }
+}
+#auth-theme svg, .code-copy svg {
   width: 16px;
   height: 16px;
   flex: none;
 }
-.auth-providers svg { fill: currentColor; stroke: none; }
 #auth-theme {
   display: inline-flex;
   align-items: center;

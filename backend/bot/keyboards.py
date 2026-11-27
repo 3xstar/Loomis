@@ -70,6 +70,7 @@ def profile_keyboard(github_linked: bool) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Папка сохранения на телефоне", callback_data="profile:mobile_folder")],
         [InlineKeyboardButton(text="Переключить рабочие логи в Telegram", callback_data="profile:logs")],
         [InlineKeyboardButton(text="Язык / Language", callback_data="profile:language")],
+        [InlineKeyboardButton(text="Изменить логин", callback_data="profile:new_username")],
         [InlineKeyboardButton(text="Задать новый пароль", callback_data="profile:new_password")],
         [InlineKeyboardButton(text="Мои проекты", callback_data="projects")],
     ])
@@ -78,6 +79,7 @@ def profile_keyboard(github_linked: bool) -> InlineKeyboardMarkup:
 def auth_menu(*, desktop: bool = False) -> InlineKeyboardMarkup:
     rows = [[("Войти по логину и паролю", "auth:login")]]
     if not desktop:
+        rows.insert(0, [("Войти через Telegram", "auth:telegram")])
         rows.append([("Войти через GitHub", "auth:github")])
     rows.append([("Зарегистрироваться", "auth:register")])
     if desktop:
@@ -85,11 +87,18 @@ def auth_menu(*, desktop: bool = False) -> InlineKeyboardMarkup:
     return inline_menu(rows)
 
 
-def telegram_login_keyboard(code: str) -> InlineKeyboardMarkup:
+def profile_setup_keyboard() -> InlineKeyboardMarkup:
     return inline_menu([
-        [("Подтвердить вход в Desktop", f"approve:{code}")],
-        [("Отклонить", f"reject:{code}")],
+        [("Задать логин и пароль", "profile:setup"), ("Пропустить", "profile:setup_skip")],
     ])
+
+
+def telegram_login_keyboard(code: str, *, existing: bool = True) -> InlineKeyboardMarkup:
+    rows = [[("Подтвердить вход в Desktop", f"approve:{code}")]]
+    if not existing:
+        rows.append([("Войти по логину и паролю", "auth:login")])
+    rows.append([("Отклонить", f"reject:{code}")])
+    return inline_menu(rows)
 
 
 def cancel_keyboard() -> InlineKeyboardMarkup:

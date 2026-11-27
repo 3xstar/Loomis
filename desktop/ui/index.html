@@ -32,7 +32,6 @@
       </div>
 
       <form id="password-form" class="stack" autocomplete="on">
-        <p id="github-signup-prompt" class="hint hidden">Придумайте логин и пароль для аккаунта Loomis.</p>
         <label class="field">
           <span>Логин</span>
           <input id="auth-username" name="username" type="text" autocomplete="username" maxlength="255" required>
@@ -46,8 +45,8 @@
       </form>
 
       <div id="auth-providers" class="auth-providers">
-        <button id="auth-github" class="button glass-card" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-github"/></svg><span>Войти через GitHub</span></button>
-        <button id="auth-telegram" class="button glass-card" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-telegram"/></svg><span>Войти через Telegram</span></button>
+        <button id="auth-github" class="button glass-card" type="button"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-github"/></svg><span>Войти через GitHub</span></button>
+        <button id="auth-telegram" class="button glass-card" type="button"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-telegram"/></svg><span>Войти через Telegram</span></button>
       </div>
 
       <div id="auth-provider-status" class="stack glass-card auth-provider-status provider-instructions hidden">
@@ -592,6 +591,17 @@
         </form>
     </div>
 
+    <div id="account-credentials-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="account-credentials-title">
+      <div class="modal-head"><h3 id="account-credentials-title">Логин и пароль</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <form id="account-credentials-form" class="stack">
+        <p id="account-credentials-prompt" class="hint" hidden></p>
+        <label class="field"><span>Логин</span><input id="account-username" name="username" autocomplete="username" maxlength="255" required></label>
+        <label class="field"><span>Новый пароль</span><input id="account-password" name="password" type="password" autocomplete="new-password" minlength="4" maxlength="1024"></label>
+        <p id="account-credentials-error" class="error" role="alert"></p>
+        <button id="account-credentials-save" class="button primary wide" type="submit">Сохранить</button>
+        <button id="account-credentials-skip" class="link-button close-modal" type="button" hidden>Пропустить</button>
+      </form>
+    </div>
     <div id="settings-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
       <div class="modal-head"><h3 id="settings-modal-title">Настройки</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <div class="settings-tabs glass-panel" role="tablist" aria-label="Разделы настроек">
@@ -604,6 +614,7 @@
         <button class="language-card glass-panel" type="button" data-language="en" aria-pressed="false"><span lang="en">English (EN)</span><span class="language-check" aria-hidden="true">✓</span></button>
       </div>
       <div id="general-panel" class="stack" role="tabpanel" aria-labelledby="general-tab">
+        <button id="account-credentials-button" class="button secondary" type="button">Изменить логин или пароль</button>
         <form id="projects-dir-form" class="field" aria-labelledby="projects-dir-title">
           <label id="projects-dir-title" for="default-projects-dir">Общая папка для проектов на ПК</label>
           <div class="folder-field">

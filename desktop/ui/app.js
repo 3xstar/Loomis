@@ -157,7 +157,14 @@ function showWorkspace(visible) {
   workspace.classList.toggle("hidden", !visible);
 }
 
-async function signIn(accessToken, isCurrent = () => true) {
+function renderAccountName(user) {
+  byId("user-name").dataset.userContent = "";
+  byId("user-name").textContent = user.username || "Loomis";
+  byId("user-avatar").textContent = byId("user-name").textContent[0].toUpperCase();
+  byId("account-username").defaultValue = user.username || "";
+}
+
+async function signIn(accessToken, isCurrent = () => true, setupProvider) {
   const user = await api("auth/me", undefined, accessToken);
   if (!isCurrent()) return;
   token = accessToken;
@@ -169,10 +176,9 @@ async function signIn(accessToken, isCurrent = () => true) {
   renderTelegramLogs();
   localStorage.setItem(sessionKey, token);
   const saved = writeDesktopSession(token);
-  byId("user-name").dataset.userContent = "";
-  byId("user-name").textContent = user.username || "Loomis";
-  byId("user-avatar").textContent = byId("user-name").textContent[0].toUpperCase();
+  renderAccountName(user);
   showWorkspace(true);
+  if (setupProvider) openAccountCredentials(setupProvider);
   loadHubModels();
   try {
     await loadProjects(Number(localStorage.getItem(activeProjectKey)));
@@ -183,7 +189,6 @@ async function signIn(accessToken, isCurrent = () => true) {
 }
 
 let registering = false;
-let githubSignupKey;
 
 const codeCopyTimers = new WeakMap();
 
@@ -247,11 +252,9 @@ for (const link of [byId("auth-provider-link"), byId("github-device-link")]) {
 }
 
 function renderAuthForm() {
-  const signup = registering || Boolean(githubSignupKey);
+  const signup = registering;
   byId("auth-submit").textContent = signup ? "Зарегистрироваться" : "Войти в Loomis";
   byId("auth-mode-toggle").textContent = signup ? "Уже есть аккаунт? Войти" : "Нет аккаунта? Зарегистрироваться";
-  byId("auth-mode-toggle").classList.toggle("hidden", Boolean(githubSignupKey));
-  byId("github-signup-prompt").classList.toggle("hidden", !githubSignupKey);
   byId("auth-password-input").autocomplete = signup ? "new-password" : "current-password";
   byId("auth-password-input").minLength = signup ? 4 : 1;
 }
@@ -259,7 +262,6 @@ function renderAuthForm() {
 function stopProviderAuth() {
   authAttempt++;
   clearTimeout(authPollTimer);
-  githubSignupKey = undefined;
   byId("auth-provider-link").removeAttribute("href");
   setConfirmationCode("auth-provider-code", "");
   byId("password-form").classList.remove("hidden");
@@ -286,20 +288,13 @@ byId("password-form").onsubmit = async (event) => {
   byId("auth-error").textContent = "";
   try {
     const credentials = {username: byId("auth-username").value, password: byId("auth-password-input").value};
-    const key = githubSignupKey;
-    let result;
-    if (key) {
-      result = await api("auth/github/login/register", {...credentials, key});
-    } else {
-      if (registering) await api("auth/register", credentials);
-      result = await api("auth/login", credentials);
-    }
+    if (registering) await api("auth/register", credentials);
+    const result = await api("auth/login", credentials);
     await signIn(result.access_token);
     event.target.reset();
     registering = false;
     stopProviderAuth();
   } catch (error) {
-    if (error.status === 410 && githubSignupKey) stopProviderAuth();
     byId("auth-error").textContent = error.message;
   } finally {
     controls.forEach((id) => byId(id).disabled = false);
@@ -350,16 +345,8 @@ async function startProviderAuth(provider) {
         if (!current()) return;
         switch (result.status) {
           case "authorized":
-            await signIn(result.access_token, current);
+            await signIn(result.access_token, current, result.needs_credentials ? provider : undefined);
             if (current()) stopProviderAuth();
-            return;
-          case "signup_required":
-            githubSignupKey = result.key;
-            setConfirmationCode("auth-provider-code", "");
-            byId("auth-provider-status").classList.add("hidden");
-            byId("password-form").classList.remove("hidden");
-            renderAuthForm();
-            byId("auth-username").focus();
             return;
           case "slow_down":
             interval = Math.max(interval + 5, result.interval || 0);
@@ -2049,6 +2036,7 @@ async function mutateFromModal(button, target, method, body, onError = (error) =
 function showModal(id) {
   const backdrop = byId("modal-backdrop");
   if (!id && (backdrop.inert || !byId("agent-test-status").classList.contains("hidden"))) return;
+  if (id !== "account-credentials-modal") byId("account-password").value = "";
   modalRevision++;
   clearInterval(integrationsTimer);
   if (id && backdrop.inert) modalTrigger = document.activeElement;
@@ -2542,6 +2530,48 @@ function openSettings(tabId) {
   selectSettingsTab(tab);
   if (tabId === "integrations-tab") tab.focus();
 }
+
+function openAccountCredentials(provider) {
+  const prompt = byId("account-credentials-prompt");
+  prompt.textContent = provider === "github"
+    ? "Аккаунт создан через GitHub! Задайте свой логин и пароль для входа напрямую."
+    : provider === "telegram"
+      ? "Аккаунт создан через Telegram! Задайте свой логин и пароль для входа напрямую."
+      : "Оставьте поле пароля пустым, чтобы сохранить текущий пароль.";
+  prompt.hidden = false;
+  byId("account-credentials-form").reset();
+  byId("account-password").required = Boolean(provider);
+  byId("account-credentials-skip").hidden = !provider;
+  byId("account-credentials-error").textContent = "";
+  showModal("account-credentials-modal");
+}
+
+byId("account-credentials-button").onclick = () => openAccountCredentials();
+byId("account-credentials-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const save = byId("account-credentials-save");
+  const errorField = byId("account-credentials-error");
+  const session = token;
+  const revision = modalRevision;
+  const username = byId("account-username");
+  const body = {};
+  if (username.value !== username.defaultValue) body.username = username.value;
+  const password = byId("account-password").value;
+  if (password) body.password = password;
+  save.disabled = true;
+  errorField.textContent = "";
+  try {
+    const user = await api("auth/credentials", body, session, "PATCH");
+    if (token !== session) return;
+    renderAccountName(user);
+    if (modalRevision === revision) showModal();
+    notify("Данные для входа сохранены.");
+  } catch (error) {
+    if (token === session && modalRevision === revision) errorField.textContent = error.message;
+  } finally {
+    save.disabled = false;
+  }
+};
 
 byId("settings-button").onclick = () => openSettings("general-tab");
 for (const provider of ["telegram", "github"]) {

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import time
 from contextlib import suppress
@@ -17,8 +18,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, computed_field, field_validator
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from backend.core.github import bind_github, encrypt_github_token, github_profile, github_token
 from backend.database.db import get_session
@@ -125,6 +129,42 @@ async def create_account(session: AsyncSession, credentials: SignUpCredentials, 
     return user
 
 
+async def create_provider_account(
+    session: AsyncSession, name: str, identity: ColumnElement[bool], **fields,
+) -> tuple[User, bool]:
+    base = re.sub(r"[^\w.@-]+", "-", name).strip(".@-") or "loomis"
+    insert = sqlite_insert if session.get_bind().dialect.name == "sqlite" else postgresql_insert
+    suffix = 1
+    while True:
+        ending = f"-{suffix}" if suffix > 1 else ""
+        stem = base[:255 - len(ending)]
+        while len(stem.casefold()) + len(ending) > 255:
+            stem = stem[:-1]
+        username = stem + ending
+        user_id = await session.scalar(insert(User).values(
+            username=username, login_name=username.casefold(), **fields,
+        ).on_conflict_do_nothing().returning(User.id))
+        if user_id is not None:
+            return await session.get_one(User, user_id), True
+        user = await session.scalar(select(User).where(identity))
+        if user is not None:
+            return user, False
+        suffix += 1
+
+
+async def telegram_account(session: AsyncSession, telegram_id: int, name: str) -> tuple[User, bool]:
+    identity = User.telegram_id == telegram_id
+    user = await session.scalar(select(User).where(identity))
+    if user is not None:
+        return user, False
+    return await create_provider_account(session, name, identity, telegram_id=telegram_id, telegram_username=name)
+
+
+class AccountCredentialsUpdate(BaseModel):
+    username: Username | None = None
+    password: str | None = Field(default=None, min_length=4, max_length=1024)
+
+
 def _sign(payload: str) -> str:
     return hmac.digest(SECRET_KEY.encode(), payload.encode(), "sha256").hex()
 
@@ -156,6 +196,20 @@ async def current_user(
 
 
 CurrentUser = Annotated[User, Depends(current_user)]
+
+
+@router.patch("/credentials", response_model=UserView)
+async def update_credentials(data: AccountCredentialsUpdate, session: Session, user: CurrentUser):
+    if data.username is not None:
+        login_name = data.username.casefold()
+        if len(login_name) > 255:
+            raise HTTPException(422, "Логин слишком длинный.")
+        user.username = data.username
+        user.login_name = login_name
+    if data.password is not None:
+        await set_password(user, data.password)
+    await save_account(session)
+    return user
 
 
 @router.post("/register", response_model=UserView, status_code=201)
@@ -210,13 +264,13 @@ async def claim_telegram_login(session: AsyncSession, code: str, telegram_id: in
 
 
 async def resolve_telegram_login(
-    session: AsyncSession, code: str, telegram_id: int, user_id: int | None
+    session: AsyncSession, code: str, telegram_id: int, user_id: int | None, *, created: bool = False
 ) -> bool:
+    status = "rejected" if user_id is None else "approved_new" if created else "approved"
     resolved = await session.scalar(update(TelegramSignIn).where(
         TelegramSignIn.code == _telegram_code(code), TelegramSignIn.status == "pending",
         TelegramSignIn.expires_at > utc_now(), TelegramSignIn.telegram_id == telegram_id,
-    ).values(status="approved" if user_id is not None else "rejected", user_id=user_id)
-        .returning(TelegramSignIn.code))
+    ).values(status=status, user_id=user_id).returning(TelegramSignIn.code))
     return resolved is not None
 
 
@@ -228,19 +282,20 @@ async def poll_telegram_login(data: AuthSecret, session: Session):
     ))).one_or_none()
     if row is None:
         return {"status": "expired_token"}
-    if row.status != "approved":
+    if row.status not in {"approved", "approved_new"}:
         return {"status": row.status}
     linked_user = select(User.id).where(
         User.id == TelegramSignIn.user_id, User.telegram_id == TelegramSignIn.telegram_id,
     ).exists()
-    user_id = await session.scalar(delete(TelegramSignIn).where(
-        TelegramSignIn.poll_key == key, TelegramSignIn.status == "approved",
+    authorized = (await session.execute(delete(TelegramSignIn).where(
+        TelegramSignIn.poll_key == key, TelegramSignIn.status.in_(("approved", "approved_new")),
         TelegramSignIn.expires_at > utc_now(), linked_user,
-    ).returning(TelegramSignIn.user_id))
+    ).returning(TelegramSignIn.user_id, TelegramSignIn.status))).one_or_none()
     await session.commit()
-    if user_id is None:
+    if authorized is None:
         return {"status": "rejected"}
-    return {"status": "authorized", **_login_result(user_id)}
+    return {"status": "authorized", "needs_credentials": authorized.status == "approved_new",
+            **_login_result(authorized.user_id)}
 
 
 async def bind_telegram_account(session: AsyncSession, user: User, telegram_id: int, username: str) -> None:
@@ -366,7 +421,20 @@ async def account_for_github(session: AsyncSession, account_id: int, username: s
             if verified_id == account_id:
                 user.github_account_id = account_id
                 return user
-    raise HTTPException(409, "Войдите по логину и паролю и перепривяжите GitHub в настройках.")
+    return None
+
+
+async def github_login_account(session: AsyncSession, token: str) -> tuple[User, bool]:
+    account_id, username, avatar_url = await github_profile(token)
+    user = await account_for_github(session, account_id, username)
+    created = False
+    if user is None:
+        user, created = await create_provider_account(
+            session, username, User.github_account_id == account_id, github_account_id=account_id,
+            github_username=username, github_avatar_url=avatar_url, github_token=encrypt_github_token(token),
+        )
+    user.github_username, user.github_avatar_url = username, avatar_url
+    return user, created
 
 
 @router.post("/github/login/start")
@@ -379,21 +447,9 @@ async def poll_github_login(data: GitHubDevicePoll, session: Session):
     result = await exchange_github_device(data, "desktop")
     if isinstance(result, dict):
         return result
-    account_id, username, avatar_url = await github_profile(result)
-    user = await account_for_github(session, account_id, username)
-    if user is not None:
-        user.github_username, user.github_avatar_url = username, avatar_url
-        await save_account(session)
-        return {"status": "authorized", **_login_result(user.id)}
-
-    key = secrets.token_urlsafe(32)
-    now = utc_now()
-    await session.execute(delete(GitHubSignUp).where(GitHubSignUp.expires_at <= now))
-    session.add(GitHubSignUp(ticket=_sign(f"github-signup:{key}"), account_id=account_id,
-                            username=username, avatar_url=avatar_url, encrypted_token=encrypt_github_token(result),
-                            expires_at=now + timedelta(minutes=10)))
-    await session.commit()
-    return {"status": "signup_required", "key": key}
+    user, created = await github_login_account(session, result)
+    await save_account(session)
+    return {"status": "authorized", "needs_credentials": created, **_login_result(user.id)}
 
 
 @router.post("/github/login/register", status_code=201)
@@ -419,6 +475,8 @@ async def connect_github(data: GitHubCredentials, session: Session, user: Curren
 
 @router.delete("/github", response_model=UserView)
 async def disconnect_github(session: Session, user: CurrentUser):
+    if user.github_account_id is not None and user.telegram_id is None and not user.password_hash:
+        raise HTTPException(409, "Задайте пароль перед отвязкой аккаунта.")
     user.github_token = None
     user.github_account_id = None
     user.github_username = None
@@ -494,8 +552,8 @@ async def generate_link_code(session: Session, user: CurrentUser):
 
 @router.post("/telegram/unlink", response_model=UserView)
 async def disconnect_telegram(session: Session, user: CurrentUser):
-    if user.telegram_id is not None and not user.password_hash:
-        raise HTTPException(409, "Задайте пароль в Telegram перед отвязкой аккаунта.")
+    if user.telegram_id is not None and user.github_account_id is None and not user.password_hash:
+        raise HTTPException(409, "Задайте пароль перед отвязкой аккаунта.")
     user.telegram_id = None
     user.telegram_username = None
     user.telegram_avatar_url = None
