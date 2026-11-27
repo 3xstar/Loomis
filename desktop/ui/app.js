@@ -338,6 +338,7 @@ byId("password-form").onsubmit = async (event) => {
       event.target.classList.add("hidden");
       byId("auth-providers").classList.add("hidden");
       byId("signup-code-form").hidden = false;
+      byId("auth-error").textContent = result.hint || "";
       byId("signup-code").focus();
       return;
     }
@@ -451,6 +452,7 @@ async function startRecovery(method = "auto") {
     attempt.flow = flow;
     if (flow.method === "email") {
       showRecoveryStep("recovery-code-form");
+      byId("recovery-error").textContent = flow.hint || "";
       return;
     }
     const github = flow.method === "github";
@@ -576,6 +578,7 @@ byId("email-link-form").onsubmit = async (event) => {
     emailLinkKey = result.key;
     event.target.hidden = true;
     byId("email-code-form").hidden = false;
+    byId("email-link-error").textContent = result.hint || "";
     byId("email-link-code").focus();
   } catch (error) {
     if (token === session && modalRevision === revision) byId("email-link-error").textContent = error.message;
@@ -2461,10 +2464,11 @@ document.addEventListener("keydown", (event) => {
   else showModal();
 });
 const sidebarToggle = byId("sidebar-toggle");
+const sidebarScreen = byId("app-screen");
 const sidebarRailKey = "loomis-sidebar-rail";
 
 function setSidebarRail(collapsed) {
-  byId("app-screen").classList.toggle("icon-rail", collapsed);
+  sidebarScreen.classList.toggle("icon-rail", collapsed);
   sidebarToggle.title = collapsed ? "Развернуть" : "Свернуть в значки";
   sidebarToggle.setAttribute("aria-label", sidebarToggle.title);
   sidebarToggle.setAttribute("aria-expanded", String(!collapsed));
@@ -2472,7 +2476,7 @@ function setSidebarRail(collapsed) {
 
 setSidebarRail(localStorage.getItem(sidebarRailKey) === "true");
 sidebarToggle.onclick = () => {
-  const collapsed = sidebarToggle.getAttribute("aria-expanded") === "true";
+  const collapsed = !sidebarScreen.classList.contains("icon-rail");
   setSidebarRail(collapsed);
   localStorage.setItem(sidebarRailKey, String(collapsed));
   saveDesktopPreferences({sidebar_collapsed: collapsed});

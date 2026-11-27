@@ -33,7 +33,7 @@ from backend.database.db import get_session
 from backend.database.models import AuthChallenge, DEFAULT_PROJECTS_DIR, GitHubSignUp, LinkToken, TelegramSignIn, User, utc_now
 from backend.settings import ROOT, settings
 
-from backend.services.email_service import SMTP_SETUP_HINT, send_verification
+from backend.services.email_service import send_verification, verification_hint
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -729,8 +729,6 @@ def otp_digest(key: str, code: str) -> str:
 
 
 async def issue_challenge(session, purpose, target, payload, *, user=None, address=None, language="ru"):
-    if address and not settings.smtp_host.strip():
-        raise HTTPException(503, SMTP_SETUP_HINT)
     key = secrets.token_urlsafe(32)
     key_hash = challenge_key(key)
     code = f"{secrets.randbelow(1_000_000):06d}" if address else None
@@ -836,7 +834,15 @@ async def confirm_registration(session, data, *, telegram_id=None, desktop_code=
 
 @router.post("/register", status_code=202)
 async def register(data: EmailRegistration, session: Session):
-    return {"key": await begin_registration(session, data)}
+    key = await begin_registration(session, data)
+    return email_challenge_response(key)
+
+
+def email_challenge_response(key: str) -> dict[str, str]:
+    result = {"key": key}
+    if hint := verification_hint():
+        result["hint"] = hint
+    return result
 
 
 @router.post("/register/verify", status_code=201)
@@ -852,7 +858,7 @@ async def start_email_link(data: EmailInput, session: Session, user: CurrentUser
     await available_email(session, data.email, user.id)
     key = await issue_challenge(session, "link", user.id, {"email": data.email},
                                 user=user, address=data.email, language=user.language)
-    return {"key": key}
+    return email_challenge_response(key)
 
 
 @router.post("/email/verify", response_model=UserView)
@@ -908,7 +914,8 @@ async def begin_recovery(session, user, identifier, method):
     key = await issue_challenge(session, "reset", f"{user.id}:{selected}", payload, user=user,
                                 address=payload["email"], language=language)
     try:
-        result = {"key": key, "method": selected}
+        result = email_challenge_response(key) if selected == "email" else {"key": key}
+        result["method"] = selected
         if selected == "github":
             result.update(await request_github_device(f"reset:{challenge_key(key)}"))
         elif selected == "telegram":

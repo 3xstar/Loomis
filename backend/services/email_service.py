@@ -1,14 +1,20 @@
 """Loomis transactional email."""
 
 import asyncio
+import logging
 import smtplib
 import ssl
+from email.headerregistry import Address
 from email.message import EmailMessage
-from email.utils import parseaddr
+
+import httpx
 
 from backend.settings import ROOT, settings
 
-SMTP_SETUP_HINT = "Укажите SMTP_HOST, SMTP_USER и SMTP_PASSWORD в файле .env."
+logger = logging.getLogger(__name__)
+BREVO_URL = "https://api.brevo.com/v3/smtp/email"
+DEV_MODE_HINT = "[Dev Mode] Код подтверждения записан в журнал сервера."
+LOGO = '<img src="cid:loomis-lighter@loomis" alt="" width="48" height="48">'
 
 COPY = {
     "ru": {
@@ -33,7 +39,7 @@ def verification_message(address: str, code: str, purpose: str, language: str) -
     copy = COPY[language]
     message = EmailMessage()
     message["Subject"] = copy[purpose]
-    message["From"] = settings.smtp_from or settings.smtp_user
+    message["From"] = _sender(settings.email_sender)
     message["To"] = address
     message.set_content(f'Loomis\n\n{copy[purpose]}\n{copy["instructions"]}\n\n{code}\n\n{copy["expiry"]}', charset="utf-8")
     message.add_alternative(f"""<!doctype html>
@@ -44,7 +50,7 @@ def verification_message(address: str, code: str, purpose: str, language: str) -
       <table role="presentation" width="100%" cellspacing="0" cellpadding="28"
              style="max-width:480px;background:#121215;border:1px solid #44444a;border-radius:24px;color:#f4f4f5">
         <tr><td align="center">
-          <img src="cid:loomis-lighter@loomis" alt="" width="48" height="48">
+          {LOGO}
           <h1 style="margin:10px 0 24px;font-size:28px">Loomis</h1>
           <h2 style="font-size:19px">{copy[purpose]}</h2>
           <p style="color:#d4d4d8">{copy["instructions"]}</p>
@@ -57,31 +63,73 @@ def verification_message(address: str, code: str, purpose: str, language: str) -
   </table>
 </body>
 </html>""", subtype="html", charset="utf-8")
-    message.get_payload()[-1].add_related(
-        (ROOT / "desktop/ui/favicon.png").read_bytes(), maintype="image", subtype="png",
-        cid="<loomis-lighter@loomis>", disposition="inline",
-    )
     return message
+
+
+def _sender(address: str) -> Address:
+    return Address(display_name=settings.email_sender_name, addr_spec=address)
+
+
+async def _deliver_brevo(message: EmailMessage, api_key: str) -> None:
+    payload = {
+        "sender": {"email": settings.email_sender, "name": settings.email_sender_name},
+        "to": [{"email": message["To"].addresses[0].addr_spec}],
+        "subject": str(message["Subject"]),
+        "htmlContent": message.get_body(("html",)).get_content().replace(LOGO, ""),
+        "textContent": message.get_body(("plain",)).get_content(),
+    }
+    async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+        response = await client.post(BREVO_URL, headers={"api-key": api_key}, json=payload)
+        response.raise_for_status()
 
 
 def _deliver(message: EmailMessage) -> None:
     context = ssl.create_default_context()
-    sender = parseaddr(message["From"])[1]
-    if not sender:
-        raise ValueError("SMTP_FROM or SMTP_USER is required")
+    sender = message["From"].addresses[0].addr_spec
+    if settings.smtp_from:
+        sender = settings.smtp_from
+        message.replace_header("From", _sender(sender))
+    message.get_body(("html",)).add_related(
+        (ROOT / "desktop/ui/favicon.png").read_bytes(), maintype="image", subtype="png",
+        cid="<loomis-lighter@loomis>", disposition="inline",
+    )
+    host = settings.smtp_host.strip() or "smtp.gmail.com"
     if settings.smtp_port == 465:
-        connection = smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=10, context=context)
+        connection = smtplib.SMTP_SSL(host, settings.smtp_port, timeout=10, context=context)
     else:
-        connection = smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10)
+        connection = smtplib.SMTP(host, settings.smtp_port, timeout=10)
     with connection as client:
         if settings.smtp_port != 465:
             client.starttls(context=context)
-        if settings.smtp_user:
-            client.login(settings.smtp_user, settings.smtp_password)
+        client.login(settings.smtp_user or sender, settings.smtp_password)
         client.send_message(message, from_addr=sender)
 
 
-async def send_verification(address: str, code: str, purpose: str, language: str) -> None:
-    if not settings.smtp_host.strip():
-        raise ValueError(SMTP_SETUP_HINT)
-    await asyncio.to_thread(_deliver, verification_message(address, code, purpose, language))
+def verification_hint() -> str | None:
+    if (settings.api_host in {"127.0.0.1", "::1", "localhost"}
+            and not settings.brevo_api_key.strip() and not settings.smtp_password.strip()):
+        return DEV_MODE_HINT
+    return None
+
+
+async def send_verification(address: str, code: str, purpose: str, language: str) -> str | None:
+    hint = verification_hint()
+    if hint:
+        logger.warning("[Dev Mode] Loomis %s code for %s: %s", purpose, address, code)
+        return hint
+
+    message = verification_message(address, code, purpose, language)
+    api_key = settings.brevo_api_key.strip()
+    if api_key:
+        try:
+            await _deliver_brevo(message, api_key)
+            return None
+        except httpx.HTTPStatusError as exc:
+            logger.warning("Brevo OTP delivery failed with HTTP %s", exc.response.status_code)
+        except httpx.RequestError as exc:
+            logger.warning("Brevo OTP delivery failed (%s)", type(exc).__name__)
+
+    if not settings.smtp_password.strip():
+        raise OSError("No SMTP fallback available")
+    await asyncio.to_thread(_deliver, message)
+    return None

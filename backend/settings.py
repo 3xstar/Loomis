@@ -15,7 +15,10 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./loomis.db"
     whisper_model: str = "base"
     secret_key: str = ""
-    smtp_host: str = ""
+    brevo_api_key: str = ""
+    email_sender: str = "loomis.auth@gmail.com"
+    email_sender_name: str = "Loomis"
+    smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587
     smtp_user: str = ""
     smtp_password: str = ""
