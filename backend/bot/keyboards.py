@@ -71,6 +71,7 @@ def profile_keyboard(github_linked: bool) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Переключить рабочие логи в Telegram", callback_data="profile:logs")],
         [InlineKeyboardButton(text="Язык / Language", callback_data="profile:language")],
         [InlineKeyboardButton(text="Изменить логин", callback_data="profile:new_username")],
+        [InlineKeyboardButton(text="Электронная почта", callback_data="profile:email")],
         [InlineKeyboardButton(text="Задать новый пароль", callback_data="profile:new_password")],
         [InlineKeyboardButton(text="Мои проекты", callback_data="projects")],
     ])
@@ -82,6 +83,8 @@ def auth_menu(*, desktop: bool = False) -> InlineKeyboardMarkup:
         rows.insert(0, [("Войти через Telegram", "auth:telegram")])
         rows.append([("Войти через GitHub", "auth:github")])
     rows.append([("Зарегистрироваться", "auth:register")])
+    if not desktop:
+        rows.append([("Забыли пароль?", "auth:reset")])
     if desktop:
         rows.append([("Отмена", "cancel")])
     return inline_menu(rows)

@@ -1733,3 +1733,9 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
   :root[data-theme="light"] .completion-scene::before,
   :root[data-theme="light"] .completion-scene::after { display: none; }
 }
+
+
+.auth-forgot { justify-self: start; align-self: flex-start; }
+#email-card h3, #password-recovery h3 { margin: 0; }
+#recovery-github-code { font-size: 1.25rem; user-select: text; }
+#auth-screen [hidden], #account-credentials-modal [hidden] { display: none; }

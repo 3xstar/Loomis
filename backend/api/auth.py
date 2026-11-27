@@ -1,5 +1,7 @@
 import asyncio
 import hashlib
+import logging
+import smtplib
 import hmac
 import os
 import re
@@ -12,6 +14,7 @@ from tempfile import NamedTemporaryFile
 from typing import Annotated, Literal
 
 import httpx
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.exceptions import TelegramAPIError
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,9 +29,12 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from backend.core.github import bind_github, encrypt_github_token, github_profile, github_token
 from backend.database.db import get_session
-from backend.database.models import DEFAULT_PROJECTS_DIR, GitHubSignUp, LinkToken, TelegramSignIn, User, utc_now
+from backend.database.models import AuthChallenge, DEFAULT_PROJECTS_DIR, GitHubSignUp, LinkToken, TelegramSignIn, User, utc_now
 from backend.settings import ROOT, settings
 
+from backend.services.email_service import send_verification
+
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 Session = Annotated[AsyncSession, Depends(get_session)]
 Username = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
@@ -86,6 +92,9 @@ class UserView(BaseModel):
     username: str | None
     telegram_id: int | None
     tg_logs_enabled: bool
+    email: str | None
+    email_verified: bool
+    has_password: bool
     language: Literal["ru", "en"]
     github_username: str | None
     github_avatar_url: str | None
@@ -108,10 +117,30 @@ def _derive(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 600_000).hex()
 
 
-async def set_password(user: User, password: str) -> None:
+async def password_hash(password: str) -> str:
     salt = secrets.token_hex(16)
     digest = await asyncio.to_thread(_derive, password, salt)
-    user.password_hash = f"{salt}:{digest}"
+    return f"{salt}:{digest}"
+
+
+async def set_password(user: User, password: str) -> None:
+    user.password_hash = await password_hash(password)
+
+
+async def password_matches(password: str, stored_hash: str | None) -> bool:
+    salt, expected = stored_hash.split(":") if stored_hash else ("0" * 32, "")
+    actual = await asyncio.to_thread(_derive, password, salt)
+    return hmac.compare_digest(actual, expected)
+
+
+async def change_password(session: AsyncSession, user: User, password: str, previous: str | None) -> None:
+    new_hash = await password_hash(password)
+    with session.no_autoflush:
+        changed = await session.scalar(update(User).where(
+            User.id == user.id, User.password_hash == previous,
+        ).values(password_hash=new_hash).returning(User.id))
+    if changed is None:
+        raise HTTPException(409, "Пароль уже изменён. Повторите попытку.")
 
 
 async def save_account(session: AsyncSession) -> None:
@@ -119,7 +148,7 @@ async def save_account(session: AsyncSession) -> None:
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        raise HTTPException(409, "Логин, Telegram или GitHub уже привязан к аккаунту.") from None
+        raise HTTPException(409, "Логин, Email, Telegram или GitHub уже привязан к аккаунту.") from None
 
 
 async def create_account(session: AsyncSession, credentials: SignUpCredentials, **fields) -> User:
@@ -163,6 +192,7 @@ async def telegram_account(session: AsyncSession, telegram_id: int, name: str) -
 class AccountCredentialsUpdate(BaseModel):
     username: Username | None = None
     password: str | None = Field(default=None, min_length=4, max_length=1024)
+    old_password: str | None = Field(default=None, max_length=1024)
 
 
 def _sign(payload: str) -> str:
@@ -207,23 +237,18 @@ async def update_credentials(data: AccountCredentialsUpdate, session: Session, u
         user.username = data.username
         user.login_name = login_name
     if data.password is not None:
-        await set_password(user, data.password)
-    await save_account(session)
-    return user
-
-
-@router.post("/register", response_model=UserView, status_code=201)
-async def register(data: SignUpCredentials, session: Session):
-    user = await create_account(session, data)
+        previous = user.password_hash
+        if previous and not await password_matches(data.old_password or "", previous):
+            raise HTTPException(403, "Неверный старый пароль.")
+        await change_password(session, user, data.password, previous)
     await save_account(session)
     return user
 
 
 async def authenticate(session: AsyncSession, data: Credentials) -> User:
     user = await session.scalar(select(User).where(User.login_name == data.username.casefold()))
-    salt, expected = user.password_hash.split(":") if user and user.password_hash else ("0" * 32, "")
-    digest = await asyncio.to_thread(_derive, data.password, salt)
-    if user is None or not hmac.compare_digest(digest, expected):
+    matches = await password_matches(data.password, user.password_hash if user else None)
+    if user is None or not matches:
         raise HTTPException(401, "Неверное имя пользователя или пароль.")
     return user
 
@@ -586,3 +611,387 @@ async def link_telegram(session: AsyncSession, code: str, telegram_id: int,
         pass
     await session.rollback()
     return False
+
+
+EmailAddress = Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=254)]
+OTPCode = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[0-9]{6}$")]
+CHALLENGE_ERROR = "Код неверен, истёк или исчерпаны попытки. Запросите новый код при необходимости."
+RECOVERY_ERROR = "Подтверждение недоступно или истекло. Начните заново."
+
+
+class EmailInput(BaseModel):
+    email: EmailAddress
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, address: str) -> str:
+        address = address.lower()
+        local, _, domain = address.partition("@")
+        if (len(local) > 64 or ".." in local or local.startswith(".") or local.endswith(".")
+                or not re.fullmatch(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+", local)
+                or not re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+                                    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", domain)):
+            raise ValueError("Invalid email address")
+        return address
+
+
+class EmailRegistration(SignUpCredentials, EmailInput):
+    language: Literal["ru", "en"] = "ru"
+
+
+class VerifyCode(AuthSecret):
+    code: OTPCode
+
+
+class RecoveryMethod(BaseModel):
+    method: Literal["auto", "telegram", "github"] = "auto"
+
+
+class RecoveryStart(RecoveryMethod):
+    identifier: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
+
+
+class RecoveryDevicePoll(GitHubDevicePoll, AuthSecret):
+    pass
+
+
+class RecoveryPassword(AuthSecret):
+    password: str = Field(min_length=4, max_length=1024)
+
+
+def challenge_key(key: str) -> str:
+    return _sign(f"auth-challenge:{key}")
+
+
+def otp_digest(key: str, code: str) -> str:
+    return _sign(f"email-otp:{key}:{code}")
+
+
+async def issue_challenge(session, purpose, target, payload, *, user=None, address=None, language="ru"):
+    key = secrets.token_urlsafe(32)
+    key_hash = challenge_key(key)
+    code = f"{secrets.randbelow(1_000_000):06d}" if address else None
+    now = utc_now()
+    slot = _sign(f"auth-slot:{purpose}:{target}")
+    values = dict(slot=slot, key_hash=key_hash, purpose=purpose, user_id=user.id if user else None,
+                  payload=payload, otp_hash=otp_digest(key, code) if code else None,
+                  attempts=5, approved=False, created_at=now, expires_at=now + timedelta(minutes=10))
+    await session.execute(delete(AuthChallenge).execution_options(synchronize_session=False).where(AuthChallenge.expires_at <= now))
+    insert = sqlite_insert if session.get_bind().dialect.name == "sqlite" else postgresql_insert
+    statement = insert(AuthChallenge).values(**values)
+    issued = await session.scalar(statement.on_conflict_do_update(
+        index_elements=[AuthChallenge.slot], set_=values,
+        where=(AuthChallenge.created_at <= now - timedelta(seconds=60)) &
+              AuthChallenge.approved.is_(False),
+    ).returning(AuthChallenge.slot))
+    if issued is None:
+        await session.rollback()
+        raise HTTPException(429, "Повторите запрос через минуту.")
+    if purpose == "link":
+        user.email_otp_hash = values["otp_hash"]
+        user.email_otp_expires_at = values["expires_at"]
+    await session.commit()
+    if code:
+        try:
+            await send_verification(address, code, purpose, language)
+        except (OSError, ValueError, smtplib.SMTPException):
+            await session.execute(delete(AuthChallenge).execution_options(synchronize_session=False).where(AuthChallenge.key_hash == key_hash))
+            if purpose == "link":
+                await session.execute(update(User).where(
+                    User.id == user.id, User.email_otp_hash == values["otp_hash"],
+                ).values(email_otp_hash=None, email_otp_expires_at=None))
+            await session.commit()
+            logger.warning("Loomis OTP delivery failed")
+            raise HTTPException(502, "Не удалось отправить письмо. Повторите попытку.") from None
+    return key
+
+
+def active_challenge(key, purpose):
+    return (AuthChallenge.key_hash == challenge_key(key), AuthChallenge.purpose == purpose,
+            AuthChallenge.expires_at > utc_now())
+
+
+async def accept_otp(session, data, purpose, *conditions, **values):
+    filters = (*active_challenge(data.key, purpose), AuthChallenge.approved.is_(False),
+               AuthChallenge.attempts > 0, AuthChallenge.otp_hash.is_not(None), *conditions)
+    digest = otp_digest(data.key, data.code)
+    row = (await session.execute(update(AuthChallenge).execution_options(synchronize_session=False).where(
+        *filters, AuthChallenge.otp_hash == digest,
+    ).values(approved=True, otp_hash=None, **values).returning(
+        AuthChallenge.payload, AuthChallenge.user_id,
+    ))).one_or_none()
+    if row is None:
+        await session.execute(update(AuthChallenge).execution_options(synchronize_session=False).where(
+            *filters, AuthChallenge.otp_hash != digest,
+        ).values(attempts=AuthChallenge.attempts - 1))
+        await session.commit()
+        raise HTTPException(400, CHALLENGE_ERROR)
+    return row
+
+
+async def available_email(session, address, user_id=None):
+    owner = await session.scalar(select(User.id).where(User.email == address))
+    if owner is not None and owner != user_id:
+        raise HTTPException(409, "Эта электронная почта уже привязана.")
+
+
+async def begin_registration(session, data, *, telegram_id=None, telegram_name=None):
+    login_name = data.username.casefold()
+    if len(login_name) > 255:
+        raise HTTPException(422, "Логин слишком длинный.")
+    if await session.scalar(select(User.id).where(User.login_name == login_name)):
+        raise HTTPException(409, "Логин уже занят.")
+    await available_email(session, data.email)
+    # Keep only the derived password in the pending registration.
+    payload = dict(username=data.username, login_name=login_name, email=data.email,
+                   password_hash=await password_hash(data.password), language=data.language,
+                   telegram_id=str(telegram_id) if telegram_id is not None else None, telegram_username=telegram_name)
+    return await issue_challenge(session, "register", data.email, payload,
+                                 address=data.email, language=data.language)
+
+
+async def confirm_registration(session, data, *, telegram_id=None, desktop_code=None):
+    row = await accept_otp(session, data, "register",
+                           AuthChallenge.payload["telegram_id"].as_string().is_(None)
+                           if telegram_id is None else
+                           AuthChallenge.payload["telegram_id"].as_string() == str(telegram_id))
+    user = User(**{**row.payload, "telegram_id": telegram_id}, email_verified=True)
+    session.add(user)
+    if desktop_code:
+        try:
+            await session.flush()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(409, "Логин, Email или Telegram уже привязан к аккаунту.") from None
+        if not await resolve_telegram_login(session, desktop_code, telegram_id, user.id):
+            await session.rollback()
+            raise HTTPException(410, RECOVERY_ERROR)
+    await session.execute(delete(AuthChallenge).execution_options(synchronize_session=False).where(AuthChallenge.key_hash == challenge_key(data.key)))
+    await save_account(session)
+    return user
+
+
+@router.post("/register", status_code=202)
+async def register(data: EmailRegistration, session: Session):
+    return {"key": await begin_registration(session, data)}
+
+
+@router.post("/register/verify", status_code=201)
+async def verify_registration(data: VerifyCode, session: Session):
+    user = await confirm_registration(session, data)
+    return _login_result(user.id)
+
+
+@router.post("/email/start", status_code=202)
+async def start_email_link(data: EmailInput, session: Session, user: CurrentUser):
+    if user.email_verified:
+        raise HTTPException(409, "Электронная почта уже подтверждена.")
+    await available_email(session, data.email, user.id)
+    key = await issue_challenge(session, "link", user.id, {"email": data.email},
+                                user=user, address=data.email, language=user.language)
+    return {"key": key}
+
+
+@router.post("/email/verify", response_model=UserView)
+async def verify_email_link(data: VerifyCode, session: Session, user: CurrentUser):
+    row = await accept_otp(session, data, "link", AuthChallenge.user_id == user.id)
+    try:
+        changed = await session.scalar(update(User).execution_options(synchronize_session=False).where(
+            User.id == user.id, User.email_verified.is_(False),
+            User.email_otp_hash == otp_digest(data.key, data.code),
+            User.email_otp_expires_at > utc_now(),
+        ).values(email=row.payload["email"], email_verified=True, email_otp_hash=None,
+                 email_otp_expires_at=None).returning(User.id))
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(409, "Эта электронная почта уже привязана.") from None
+    if changed is None:
+        await session.rollback()
+        raise HTTPException(400, CHALLENGE_ERROR)
+    await session.execute(delete(AuthChallenge).execution_options(synchronize_session=False).where(AuthChallenge.key_hash == challenge_key(data.key)))
+    await save_account(session)
+    await session.refresh(user)
+    return user
+
+
+async def begin_recovery(session, user, identifier, method):
+    if user is None:
+        name = identifier.casefold()
+        if "@" in name:
+            user = await session.scalar(select(User).where(User.email == name, User.email_verified.is_(True)))
+        if user is None:
+            user = await session.scalar(select(User).where(User.login_name == name))
+    if user is None:
+        return {"method": "email", "key": secrets.token_urlsafe(32)}
+    language = user.language
+    if user.email_verified and user.email:
+        selected = "email"
+    else:
+        methods = []
+        if user.telegram_id:
+            methods.append("telegram")
+        if user.github_account_id or (user.github_username and user.github_token):
+            methods.append("github")
+        if not methods or (method != "auto" and method not in methods):
+            raise HTTPException(409, "Для восстановления нужна привязанная почта, Telegram или GitHub.")
+        selected = methods[0] if method == "auto" else method
+    payload = {
+        "method": selected,
+        "password": _sign(f"recovery-password:{user.password_hash}"),
+        "email": user.email if selected == "email" else None,
+        "telegram_id": str(user.telegram_id) if selected == "telegram" else None,
+        "github_id": user.github_account_id if selected == "github" else None,
+    }
+    key = await issue_challenge(session, "reset", f"{user.id}:{selected}", payload, user=user,
+                                address=payload["email"], language=language)
+    try:
+        result = {"key": key, "method": selected}
+        if selected == "github":
+            result.update(await request_github_device(f"reset:{challenge_key(key)}"))
+        elif selected == "telegram":
+            await send_recovery_telegram(int(payload["telegram_id"]), key, language)
+            result["github_available"] = "github" in methods
+        return result
+    except (HTTPException, TelegramAPIError) as exc:
+        await session.execute(delete(AuthChallenge).execution_options(synchronize_session=False).where(AuthChallenge.key_hash == challenge_key(key)))
+        await session.commit()
+        if selected == "telegram" and method == "auto" and "github" in methods:
+            return await begin_recovery(session, user, identifier, "github")
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(502, "Не удалось отправить запрос в Telegram.") from exc
+
+
+async def send_recovery_telegram(telegram_id, key, language):
+    from backend.bot.i18n import bot_language
+    from backend.core.orchestrator import orchestrator
+
+    if orchestrator.bot is None:
+        raise HTTPException(503, "Telegram-бот недоступен.")
+    markup = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Подтвердить сброс", callback_data=f"reset_yes:{key}"),
+        InlineKeyboardButton(text="Отклонить сброс", callback_data=f"reset_no:{key}"),
+    ]])
+    locale = bot_language.set(language)
+    try:
+        await orchestrator.bot.send_message(telegram_id, "Подтвердить сброс пароля Loomis?", reply_markup=markup)
+    finally:
+        bot_language.reset(locale)
+
+
+async def resolve_recovery_telegram(session, telegram_id, key, approved):
+    # The callback carries the ticket, but only the bound Telegram identity can approve it.
+    linked = select(User.id).where(User.id == AuthChallenge.user_id,
+                                   User.telegram_id == telegram_id).exists()
+    resolved = await session.scalar(update(AuthChallenge).where(
+        *active_challenge(key, "reset"), AuthChallenge.approved.is_(False),
+        AuthChallenge.attempts > 0, linked, AuthChallenge.payload["method"].as_string() == "telegram",
+        AuthChallenge.payload["telegram_id"].as_string() == str(telegram_id),
+    ).values(approved=approved, attempts=0 if not approved else AuthChallenge.attempts).returning(AuthChallenge.slot))
+    await session.commit()
+    return resolved is not None
+
+
+@router.post("/recovery/start", status_code=202)
+async def start_recovery(data: RecoveryStart, session: Session):
+    return await begin_recovery(session, None, data.identifier, data.method)
+
+
+@router.post("/recovery/account/start", status_code=202)
+async def start_account_recovery(data: RecoveryMethod, session: Session, user: CurrentUser):
+    return await begin_recovery(session, user, "", data.method)
+
+
+@router.post("/recovery/verify")
+async def verify_recovery(data: VerifyCode, session: Session):
+    grant = secrets.token_urlsafe(32)
+    await accept_otp(session, data, "reset", AuthChallenge.payload["method"].as_string() == "email",
+                     key_hash=challenge_key(grant), expires_at=utc_now() + timedelta(minutes=10))
+    await session.commit()
+    return {"key": grant}
+
+
+@router.post("/recovery/poll")
+async def poll_recovery(data: AuthSecret, session: Session):
+    row = (await session.execute(select(AuthChallenge.approved, AuthChallenge.attempts).where(
+        *active_challenge(data.key, "reset"), AuthChallenge.payload["method"].as_string() == "telegram",
+    ))).one_or_none()
+    if row is None:
+        return {"status": "expired_token"}
+    if row.attempts == 0:
+        return {"status": "access_denied"}
+    return {"status": "authorized" if row.approved else "pending"}
+
+
+@router.post("/recovery/github/poll")
+async def poll_github_recovery(data: RecoveryDevicePoll, session: Session):
+    filters = (*active_challenge(data.key, "reset"), AuthChallenge.payload["method"].as_string() == "github",
+               AuthChallenge.approved.is_(False))
+    ticket = await session.scalar(select(AuthChallenge).where(*filters))
+    if ticket is None:
+        return {"status": "expired_token"}
+    result = await exchange_github_device(data, f"reset:{challenge_key(data.key)}")
+    if isinstance(result, dict):
+        return result
+    account_id, username, _ = await github_profile(result)
+    user = await account_for_github(session, account_id, username)
+    if user is None or user.id != ticket.user_id:
+        await session.execute(delete(AuthChallenge).execution_options(synchronize_session=False).where(*filters))
+        await session.commit()
+        return {"status": "access_denied"}
+    grant = secrets.token_urlsafe(32)
+    payload = dict(ticket.payload, github_id=account_id)
+    changed = await session.scalar(update(AuthChallenge).execution_options(synchronize_session=False).where(*filters).values(
+        approved=True, key_hash=challenge_key(grant), payload=payload,
+        expires_at=utc_now() + timedelta(minutes=10),
+    ).returning(AuthChallenge.slot))
+    await session.commit()
+    return {"status": "authorized", "key": grant} if changed else {"status": "expired_token"}
+
+
+async def complete_recovery(session, data, *, telegram_id=None, telegram_name=None, require_user_id=None):
+    conditions = [*active_challenge(data.key, "reset"), AuthChallenge.approved.is_(True)]
+    if require_user_id is not None:
+        conditions.append(AuthChallenge.user_id == require_user_id)
+    new_hash = await password_hash(data.password)
+    row = (await session.execute(delete(AuthChallenge).execution_options(synchronize_session=False).where(*conditions).returning(
+        AuthChallenge.user_id, AuthChallenge.payload,
+    ))).one_or_none()
+    if row is None:
+        raise HTTPException(410, RECOVERY_ERROR)
+    user = await session.get(User, row.user_id, populate_existing=True)
+    payload = row.payload
+    if user is None or not hmac.compare_digest(payload["password"], _sign(f"recovery-password:{user.password_hash}")):
+        await session.commit()
+        raise HTTPException(410, RECOVERY_ERROR)
+    telegram_proof = int(payload["telegram_id"]) if payload["telegram_id"] else None
+    proofs = {
+        "email": User.email_verified.is_(True) & (User.email == payload["email"]),
+        "telegram": User.email_verified.is_(False) & (User.telegram_id == telegram_proof),
+        "github": User.email_verified.is_(False) & (User.github_account_id == payload["github_id"]),
+    }
+    filters = [User.id == user.id, User.password_hash == user.password_hash, proofs[payload["method"]]]
+    values = {"password_hash": new_hash}
+    if telegram_id is not None and user.telegram_id is None:
+        filters.append(User.telegram_id.is_(None))
+        values.update(telegram_id=telegram_id, telegram_username=telegram_name)
+    try:
+        changed = await session.scalar(update(User).where(*filters).values(**values).returning(User.id))
+        await save_account(session)
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(409, "Telegram уже привязан к аккаунту.") from None
+    if changed is None:
+        raise HTTPException(410, RECOVERY_ERROR)
+    return changed
+
+
+@router.post("/recovery/finish")
+async def finish_recovery(data: RecoveryPassword, session: Session):
+    return _login_result(await complete_recovery(session, data))
+
+
+@router.post("/recovery/account/finish", response_model=UserView)
+async def finish_account_recovery(data: RecoveryPassword, session: Session, user: CurrentUser):
+    user_id = await complete_recovery(session, data, require_user_id=user.id)
+    return await session.get_one(User, user_id, populate_existing=True)

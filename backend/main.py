@@ -35,7 +35,9 @@ def initialize_schema(connection) -> None:
     Base.metadata.create_all(connection)
     inspector = inspect(connection)
     upgrades = {
-        "users": {"login_name": "VARCHAR(255)", "password_hash": "VARCHAR(255)",
+        "users": {"email": "VARCHAR(254)", "email_verified": "BOOLEAN NOT NULL DEFAULT FALSE",
+                  "email_otp_hash": "VARCHAR(64)", "email_otp_expires_at": "TIMESTAMP",
+                  "login_name": "VARCHAR(255)", "password_hash": "VARCHAR(255)",
                   "tg_logs_enabled": "BOOLEAN NOT NULL DEFAULT TRUE",
                   "github_account_id": "BIGINT", "github_token": "TEXT", "github_username": "VARCHAR(100)",
                   "github_avatar_url": "VARCHAR", "telegram_username": "VARCHAR",
@@ -104,6 +106,7 @@ def initialize_schema(connection) -> None:
                         ), 0)
                     """)
 
+    connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (email)")
     connection.exec_driver_sql(
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_github_account_id ON users (github_account_id)"
     )

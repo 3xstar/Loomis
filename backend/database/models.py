@@ -54,6 +54,10 @@ class User(Base):
     username: Mapped[str | None] = mapped_column(String(255))
     login_name: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str | None] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(254), unique=True, index=True)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    email_otp_hash: Mapped[str | None] = mapped_column(String(64))
+    email_otp_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     github_token: Mapped[str | None] = mapped_column(Text)
     github_account_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True)
     github_username: Mapped[str | None] = mapped_column(String(100))
@@ -67,6 +71,25 @@ class User(Base):
     tg_logs_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
 
     projects: Mapped[list["Project"]] = relationship(back_populates="owner")
+
+    @property
+    def has_password(self) -> bool:
+        return self.password_hash is not None
+
+
+class AuthChallenge(Base):
+    __tablename__ = "auth_challenges"
+
+    slot: Mapped[str] = mapped_column(String(64), primary_key=True)
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    purpose: Mapped[str] = mapped_column(String(16))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    payload: Mapped[dict] = mapped_column(JSON)
+    otp_hash: Mapped[str | None] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(Integer)
+    approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class UserModelPreset(Base):

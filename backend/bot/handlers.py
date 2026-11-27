@@ -22,11 +22,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.auth import (
-    AccountCredentialsUpdate, Credentials, GitHubDevicePoll, SignUpCredentials, UserPreferences, Username,
-    authenticate, bind_telegram_account, claim_telegram_login, create_account, disconnect_github,
+    AccountCredentialsUpdate, Credentials, EmailInput, EmailRegistration, GitHubDevicePoll,
+    RecoveryDevicePoll, RecoveryPassword, UserPreferences, Username, VerifyCode, AuthSecret,
+    authenticate, begin_recovery, begin_registration, bind_telegram_account, change_password, claim_telegram_login,
+    complete_recovery, confirm_registration, disconnect_github,
     exchange_github_device, github_login_account,
     link_telegram, poll_github_device, request_github_device, resolve_telegram_login, save_account,
-    set_password, start_github_device, telegram_account, update_credentials, update_preferences,
+    password_matches, poll_github_recovery, poll_recovery, resolve_recovery_telegram, start_email_link, start_github_device,
+    telegram_account, update_credentials, update_preferences, verify_email_link, verify_recovery,
 )
 from backend.api.projects import (
     AgentCreate, AgentPatch, ClearView, ExistingAgentTest, HubImport, PresetCreate, PresetPatch,
@@ -347,10 +350,18 @@ async def username_input(message: Message, state: FSMContext, session: AsyncSess
         await message.answer("Логин изменён.", reply_markup=profile_keyboard(bool(account.github_username)))
         return
     await state.update_data(auth_username=username)
+    if mode == "register":
+        await state.set_state(AccountSetup.email)
+        await message.answer("Введите адрес электронной почты:", reply_markup=cancel_keyboard())
+        return
     await state.set_state(AccountSetup.password)
-    registering = mode in {"register", "profile_setup"}
-    await message.answer("Придумайте пароль (от 4 символов):" if registering else "Введите пароль Loomis:",
-                         reply_markup=cancel_keyboard())
+    if mode == "profile_setup":
+        await message.answer("Придумайте пароль (от 4 символов):", reply_markup=cancel_keyboard())
+        return
+    markup = cancel_keyboard() if (await state.get_data()).get("desktop_auth_code") else inline_menu([
+        [("Забыли пароль?", "auth:reset")], [("Отмена", "cancel")],
+    ])
+    await message.answer("Введите пароль Loomis:", reply_markup=markup)
 
 
 def telegram_name(sender) -> str:
@@ -413,9 +424,14 @@ async def password_input(message: Message, state: FSMContext, session: AsyncSess
     registering = data["auth_mode"] == "register"
     try:
         if registering:
-            credentials = SignUpCredentials(username=data["auth_username"], password=message.text or "")
-            user = await create_account(session, credentials, telegram_id=sender.id,
-                                        telegram_username=telegram_name(sender))
+            credentials = EmailRegistration(username=data["auth_username"], password=message.text or "",
+                                            email=data["email"], language=bot_language.get())
+            key = await begin_registration(session, credentials, telegram_id=sender.id,
+                                           telegram_name=telegram_name(sender))
+            await state.update_data(email_key=key, email_mode="register")
+            await state.set_state(AccountSetup.email_code)
+            await message.answer("Введите 6-значный код из письма:", reply_markup=cancel_keyboard())
+            return
         else:
             credentials = Credentials(username=data["auth_username"], password=message.text or "")
             user = await authenticate(session, credentials)
@@ -443,8 +459,7 @@ async def password_input(message: Message, state: FSMContext, session: AsyncSess
     if code:
         await message.answer("Вход в Loomis Desktop подтверждён.", reply_markup=main_menu(True))
     else:
-        await message.answer("Аккаунт создан." if registering else "Вы вошли в Loomis.",
-                             reply_markup=main_menu(True))
+        await message.answer("Вы вошли в Loomis.", reply_markup=main_menu(True))
 
 
 github_login_flows = set()
@@ -540,8 +555,10 @@ async def show_account_settings(message, account):
     github = f"@{account.github_username}" if account.github_username else "не привязан"
     logs = "включены" if account.tg_logs_enabled else "выключены"
     folder = account.default_projects_dir or DEFAULT_PROJECTS_DIR
+    email = escape(account.email) if account.email_verified and account.email else translate("Не привязана")
     await message.answer(
         f"<b>Настройки аккаунта</b> · {escape(account.username or account.login_name or 'Loomis')}\n"
+        f"{translate('Электронная почта')}: {email}\n"
         f"GitHub: {escape(github)}\nОбщая папка для проектов: <code>{escape(folder)}</code>\n"
         f"Рабочие логи в Telegram: {logs}", parse_mode="HTML",
         reply_markup=profile_keyboard(bool(account.github_username)),
@@ -725,8 +742,15 @@ async def new_password_callback(callback: CallbackQuery, state: FSMContext, acco
         await callback.answer("Привяжите Telegram к аккаунту Loomis.", show_alert=True)
         return
     await callback.answer()
-    await state.set_state(AccountSetup.new_password)
-    await callback.message.answer("Придумайте пароль (от 4 символов):", reply_markup=cancel_keyboard())
+    await state.clear()
+    if account.has_password:
+        await state.set_state(AccountSetup.old_password)
+        await callback.message.answer("Введите старый пароль:", reply_markup=inline_menu([
+            [("Не помню старый пароль", "profile:reset")], [("Отмена", "cancel")],
+        ]))
+    else:
+        await state.set_state(AccountSetup.new_password)
+        await callback.message.answer("Придумайте пароль (от 4 символов):", reply_markup=cancel_keyboard())
 
 
 @router.callback_query(F.data.in_({"profile:new_username", "profile:setup", "profile:setup_skip"}))
@@ -754,10 +778,254 @@ async def new_password_input(message: Message, state: FSMContext, session: Async
     if not 4 <= len(password) <= 1024:
         await message.answer("Придумайте пароль (от 4 символов):")
         return
-    await set_password(account, password)
-    await session.commit()
+    try:
+        previous = (await state.get_data()).get("verified_password_hash")
+        await change_password(session, account, password, previous)
+        await save_account(session)
+    except HTTPException as exc:
+        await state.clear()
+        await answer_error(message, exc)
+        return
     await state.clear()
     await message.answer("Пароль изменён.", reply_markup=profile_keyboard(bool(account.github_username)))
+
+
+@router.message(AccountSetup.old_password)
+async def old_password_input(message: Message, state: FSMContext, account: User | None):
+    if account is None:
+        await state.clear()
+        return
+    if not message.text or len(message.text) > 1024:
+        await message.answer("Введите старый пароль:")
+        return
+    with suppress(TelegramAPIError):
+        await message.delete()
+    if not await password_matches(message.text, account.password_hash):
+        await message.answer("Неверный старый пароль.")
+        return
+    await state.update_data(verified_password_hash=account.password_hash)
+    await state.set_state(AccountSetup.new_password)
+    await message.answer("Придумайте пароль (от 4 символов):", reply_markup=cancel_keyboard())
+
+
+@router.callback_query(F.data == "profile:email")
+async def profile_email(callback: CallbackQuery, state: FSMContext, account: User | None):
+    await callback.answer()
+    if account is None:
+        return
+    if account.email_verified and account.email:
+        label = translate("Подтверждённый адрес")
+        await callback.message.answer(f"{label}\n<code>{escape(account.email)}</code>", parse_mode="HTML")
+        return
+    await state.clear()
+    await state.update_data(email_mode="link")
+    await state.set_state(AccountSetup.email)
+    await callback.message.answer("Введите адрес электронной почты:", reply_markup=cancel_keyboard())
+
+
+@router.message(AccountSetup.email)
+async def email_input(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
+    try:
+        email = EmailInput(email=message.text or "")
+        if (await state.get_data()).get("email_mode") == "link":
+            if account is None:
+                await state.clear()
+                return
+            result = await start_email_link(email, session, account)
+        else:
+            if account is not None:
+                await state.clear()
+                return
+            await state.update_data(email=email.email)
+            await state.set_state(AccountSetup.password)
+            await message.answer("Придумайте пароль (от 4 символов):", reply_markup=cancel_keyboard())
+            return
+    except ValidationError:
+        await message.answer("Введите корректный адрес электронной почты:")
+        return
+    except HTTPException as exc:
+        await answer_error(message, exc)
+        return
+    await state.update_data(email_key=result["key"])
+    await state.set_state(AccountSetup.email_code)
+    await message.answer("Введите 6-значный код из письма:", reply_markup=cancel_keyboard())
+
+
+@router.message(AccountSetup.email_code)
+async def email_code_input(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
+    data = await state.get_data()
+    registering = data.get("email_mode") == "register"
+    try:
+        proof = VerifyCode(key=data["email_key"], code=message.text or "")
+        with suppress(TelegramAPIError):
+            await message.delete()
+        if registering and account is None:
+            await confirm_registration(session, proof, telegram_id=message.from_user.id,
+                                       desktop_code=data.get("desktop_auth_code"))
+        elif not registering and account is not None:
+            await verify_email_link(proof, session, account)
+        else:
+            await state.clear()
+            return
+    except ValidationError:
+        await message.answer("Введите 6-значный код из письма:")
+        return
+    except HTTPException as exc:
+        await answer_error(message, exc)
+        return
+    await state.clear()
+    if registering:
+        text = "Вход в Loomis Desktop подтверждён." if data.get("desktop_auth_code") else "Аккаунт создан."
+        await message.answer(text, reply_markup=main_menu(True))
+    else:
+        await message.answer("Электронная почта подтверждена.", reply_markup=profile_keyboard(bool(account.github_username)))
+
+
+@router.callback_query(F.data.in_({"auth:reset", "profile:reset"}))
+async def bot_recovery_start(callback: CallbackQuery, state: FSMContext, session: AsyncSession,
+                             account: User | None):
+    await callback.answer()
+    await state.clear()
+    if callback.data == "profile:reset" and account is not None:
+        await prompt_recovery(callback.message, state, session, account, "")
+    elif callback.data == "auth:reset" and account is None:
+        await state.set_state(AccountSetup.recovery_identifier)
+        await callback.message.answer("Введите электронную почту или логин:", reply_markup=cancel_keyboard())
+
+
+@router.message(AccountSetup.recovery_identifier)
+async def bot_recovery_identifier(message: Message, state: FSMContext, session: AsyncSession,
+                                  account: User | None):
+    identifier = (message.text or "").strip()
+    if not 1 <= len(identifier) <= 255:
+        await message.answer("Введите электронную почту или логин:")
+        return
+    await prompt_recovery(message, state, session, account, identifier)
+
+
+async def prompt_recovery(message, state, session, account, identifier, method="auto"):
+    try:
+        flow = await begin_recovery(session, account, identifier, method)
+    except HTTPException as exc:
+        await answer_error(message, exc)
+        return
+    await state.update_data(recovery=flow, recovery_identifier=identifier,
+                            recovery_user=account.id if account else None, next_check=0)
+    if flow["method"] == "email":
+        await state.set_state(AccountSetup.recovery_code)
+        await message.answer("Если к аккаунту привязана почта, мы отправили на неё код.",
+                             reply_markup=cancel_keyboard())
+        await message.answer("Введите 6-значный код из письма:")
+        return
+    await state.set_state(AccountSetup.recovery_wait)
+    rows = [[("Проверить подтверждение", "reset:check")]]
+    if flow.get("github_available"):
+        rows.append([("Подтвердить через GitHub", "reset:github")])
+    rows.append([("Отмена", "cancel")])
+    if flow["method"] == "github":
+        await state.update_data(next_check=time() + flow["interval"])
+        await message.answer(
+            translate("Введите код на GitHub.") + f'\n<code>{escape(flow["user_code"])}</code>\n'
+            'https://github.com/login/device', parse_mode="HTML", reply_markup=inline_menu(rows),
+        )
+    else:
+        await message.answer("Подтвердите сброс в привязанном Telegram.", reply_markup=inline_menu(rows))
+
+
+@router.callback_query(AccountSetup.recovery_wait, F.data.in_({"reset:check", "reset:github"}))
+async def bot_recovery_check(callback: CallbackQuery, state: FSMContext, session: AsyncSession,
+                             account: User | None):
+    data = await state.get_data()
+    flow = data["recovery"]
+    if callback.data == "reset:github":
+        await callback.answer()
+        if flow.get("github_available"):
+            await prompt_recovery(callback.message, state, session, account, data["recovery_identifier"], "github")
+        return
+    if time() < data["next_check"]:
+        await callback.answer("Подтверждение ещё ожидается.")
+        return
+    try:
+        if flow["method"] == "github":
+            result = await poll_github_recovery(RecoveryDevicePoll.model_validate(flow), session)
+            if result["status"] == "slow_down":
+                flow["interval"] = max(flow["interval"] + 5, result.get("interval") or 0)
+            await state.update_data(recovery=flow, next_check=time() + flow["interval"])
+        else:
+            result = await poll_recovery(AuthSecret(key=flow["key"]), session)
+            await state.update_data(next_check=time() + 1)
+    except HTTPException as exc:
+        await callback.answer(str(exc.detail), show_alert=True)
+        return
+    if result["status"] in {"pending", "authorization_pending", "slow_down"}:
+        await callback.answer("Подтверждение ещё ожидается.")
+    elif result["status"] == "authorized":
+        await callback.answer()
+        await bot_recovery_password_prompt(callback.message, state, result.get("key", flow["key"]))
+    else:
+        await state.clear()
+        await callback.answer("Подтверждение недоступно или истекло. Начните заново.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("reset_yes:") | F.data.startswith("reset_no:"))
+async def bot_recovery_telegram(callback: CallbackQuery, session: AsyncSession):
+    action, key = callback.data.split(":", 1)
+    approved = action == "reset_yes"
+    if await resolve_recovery_telegram(session, callback.from_user.id, key, approved):
+        await callback.answer()
+        await callback.message.edit_text("Сброс пароля подтверждён." if approved else "Сброс пароля отклонён.")
+    else:
+        await callback.answer("Подтверждение недоступно или истекло. Начните заново.", show_alert=True)
+
+
+@router.message(AccountSetup.recovery_code)
+async def bot_recovery_code(message: Message, state: FSMContext, session: AsyncSession):
+    try:
+        flow = (await state.get_data())["recovery"]
+        proof = VerifyCode(key=flow["key"], code=message.text or "")
+        with suppress(TelegramAPIError):
+            await message.delete()
+        result = await verify_recovery(proof, session)
+    except ValidationError:
+        await message.answer("Введите 6-значный код из письма:")
+        return
+    except HTTPException as exc:
+        await answer_error(message, exc)
+        return
+    await bot_recovery_password_prompt(message, state, result["key"])
+
+
+async def bot_recovery_password_prompt(message, state, key):
+    await state.update_data(recovery_grant=key)
+    await state.set_state(AccountSetup.recovery_password)
+    await message.answer("Придумайте пароль (от 4 символов):", reply_markup=cancel_keyboard())
+
+
+@router.message(AccountSetup.recovery_password)
+async def bot_recovery_password(message: Message, state: FSMContext, session: AsyncSession):
+    data = await state.get_data()
+    sender = message.from_user
+    if message.text:
+        with suppress(TelegramAPIError):
+            await message.delete()
+    try:
+        proof = RecoveryPassword(key=data["recovery_grant"], password=message.text or "")
+        user_id = await complete_recovery(session, proof, telegram_id=sender.id, telegram_name=telegram_name(sender),
+                                          require_user_id=data["recovery_user"])
+    except ValidationError:
+        await message.answer("Придумайте пароль (от 4 символов):")
+        return
+    except HTTPException as exc:
+        await answer_error(message, exc)
+        return
+    await state.clear()
+    user = await session.get_one(User, user_id)
+    if user.telegram_id == sender.id:
+        await message.answer("Пароль изменён.", reply_markup=main_menu(True))
+    else:
+        await message.answer("Пароль изменён. Откройте Loomis Desktop или привязанный Telegram.",
+                             reply_markup=main_menu(False))
+
 
 
 @router.callback_query(F.data.startswith("approve:") | F.data.startswith("reject:"))

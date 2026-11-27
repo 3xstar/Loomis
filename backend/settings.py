@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./loomis.db"
     whisper_model: str = "base"
     secret_key: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
 
 
 settings = Settings()

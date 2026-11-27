@@ -14,7 +14,9 @@ class AccountMiddleware(BaseMiddleware):
             data["account"] = None if sender is None else await session.scalar(
                 select(User).where(User.telegram_id == sender.id)
             )
-            locale = bot_language.set(data["account"].language if data["account"] else "ru")
+            language = (sender.language_code or "") if sender else ""
+            locale = bot_language.set(data["account"].language if data["account"] else
+                                      "en" if language.startswith("en") else "ru")
             try:
                 return await handler(event, data)
             finally:

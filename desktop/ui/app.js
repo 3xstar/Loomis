@@ -157,7 +157,10 @@ function showWorkspace(visible) {
   workspace.classList.toggle("hidden", !visible);
 }
 
+let accountHasPassword = false;
+
 function renderAccountName(user) {
+  accountHasPassword = user.has_password;
   byId("user-name").dataset.userContent = "";
   byId("user-name").textContent = user.username || "Loomis";
   byId("user-avatar").textContent = byId("user-name").textContent[0].toUpperCase();
@@ -189,6 +192,10 @@ async function signIn(accessToken, isCurrent = () => true, setupProvider) {
 }
 
 let registering = false;
+let signupKey;
+let emailLinkKey;
+let recovery = null;
+let recoveryTimer;
 
 const codeCopyTimers = new WeakMap();
 
@@ -241,7 +248,7 @@ async function copyConfirmationCode(button) {
 for (const button of document.querySelectorAll(".code-copy")) {
   button.onclick = () => copyConfirmationCode(button);
 }
-for (const link of [byId("auth-provider-link"), byId("github-device-link")]) {
+for (const link of [byId("auth-provider-link"), byId("github-device-link"), byId("recovery-github-link")]) {
   link.onclick = async (event) => {
     if (link.hostname !== "github.com") return;
     event.preventDefault();
@@ -253,6 +260,9 @@ for (const link of [byId("auth-provider-link"), byId("github-device-link")]) {
 
 function renderAuthForm() {
   const signup = registering;
+  byId("auth-email-field").hidden = !signup;
+  byId("auth-email").required = signup;
+  byId("auth-forgot").hidden = signup;
   byId("auth-submit").textContent = signup ? "Зарегистрироваться" : "Войти в Loomis";
   byId("auth-mode-toggle").textContent = signup ? "Уже есть аккаунт? Войти" : "Нет аккаунта? Зарегистрироваться";
   byId("auth-password-input").autocomplete = signup ? "new-password" : "current-password";
@@ -283,12 +293,23 @@ byId("auth-mode-toggle").onclick = () => {
 };
 byId("password-form").onsubmit = async (event) => {
   event.preventDefault();
-  const controls = ["auth-submit", "auth-mode-toggle", "auth-github", "auth-telegram", "auth-provider-cancel"];
+  const controls = ["auth-submit", "auth-mode-toggle", "auth-github", "auth-telegram", "auth-provider-cancel", "auth-forgot"];
   controls.forEach((id) => byId(id).disabled = true);
   byId("auth-error").textContent = "";
   try {
     const credentials = {username: byId("auth-username").value, password: byId("auth-password-input").value};
-    if (registering) await api("auth/register", credentials);
+    if (registering) {
+      const result = await api("auth/register", {
+        ...credentials, email: byId("auth-email").value, language: LoomisI18n.language,
+      });
+      signupKey = result.key;
+      byId("auth-password-input").value = "";
+      event.target.classList.add("hidden");
+      byId("auth-providers").classList.add("hidden");
+      byId("signup-code-form").hidden = false;
+      byId("signup-code").focus();
+      return;
+    }
     const result = await api("auth/login", credentials);
     await signIn(result.access_token);
     event.target.reset();
@@ -300,6 +321,252 @@ byId("password-form").onsubmit = async (event) => {
     controls.forEach((id) => byId(id).disabled = false);
   }
 };
+
+function closeSignupCode() {
+  signupKey = undefined;
+  byId("signup-code-form").reset();
+  byId("signup-code-form").hidden = true;
+  byId("auth-error").textContent = "";
+  stopProviderAuth();
+}
+
+byId("signup-code-back").onclick = closeSignupCode;
+byId("signup-code-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const key = signupKey;
+  const submit = event.submitter;
+  submit.disabled = true;
+  byId("auth-error").textContent = "";
+  try {
+    const result = await api("auth/register/verify", {key, code: byId("signup-code").value});
+    if (key !== signupKey) return;
+    await signIn(result.access_token, () => key === signupKey);
+    if (key !== signupKey) return;
+    byId("password-form").reset();
+    registering = false;
+    closeSignupCode();
+  } catch (error) {
+    if (key === signupKey) byId("auth-error").textContent = error.message;
+  } finally {
+    submit.disabled = false;
+  }
+};
+
+function showRecoveryStep(step) {
+  for (const id of ["recovery-start", "recovery-code-form", "recovery-provider", "recovery-password-form"]) {
+    byId(id).hidden = id !== step;
+  }
+  const input = byId(step).querySelector("input:not(:disabled)");
+  if (input && !input.closest("[hidden]")) input.focus();
+}
+
+function openRecovery(account) {
+  recovery = {account, session: account ? token : undefined};
+  byId(account ? "account-recovery-slot" : "auth-recovery-slot").append(byId("password-recovery"));
+  byId("password-recovery").hidden = false;
+  byId("recovery-identifier-field").hidden = account;
+  byId("recovery-identifier").disabled = account;
+  byId("recovery-start").reset();
+  byId("recovery-identifier").value = account ? "" : byId("auth-username").value;
+  if (account) {
+    byId("account-old-password").value = "";
+    byId("account-password").value = "";
+    byId("account-credentials-form").hidden = true;
+  } else {
+    byId("auth-password-input").value = "";
+    byId("auth-error").textContent = "";
+    byId("password-form").classList.add("hidden");
+    byId("auth-providers").classList.add("hidden");
+  }
+  showRecoveryStep("recovery-start");
+  if (account) startRecovery();
+}
+
+function closeRecovery() {
+  if (!recovery) return;
+  const {account} = recovery;
+  recovery = null;
+  clearTimeout(recoveryTimer);
+  byId("password-recovery").hidden = true;
+  byId("recovery-error").textContent = "";
+  byId("recovery-code-form").reset();
+  byId("recovery-password-form").reset();
+  if (account) {
+    byId("account-credentials-form").hidden = false;
+  } else {
+    stopProviderAuth();
+  }
+}
+
+async function startRecovery(method = "auto") {
+  const attempt = recovery;
+  if (!attempt || attempt.starting) return;
+  attempt.starting = true;
+  const githubButton = byId("recovery-use-github");
+  const submit = byId("recovery-start").querySelector("button");
+  submit.disabled = githubButton.disabled = true;
+  byId("recovery-error").textContent = "";
+  try {
+    const path = attempt.account ? "auth/recovery/account/start" : "auth/recovery/start";
+    const body = attempt.account ? {method} : {method, identifier: byId("recovery-identifier").value};
+    const flow = await api(path, body, attempt.session);
+    if (attempt !== recovery) return;
+    clearTimeout(recoveryTimer);
+    attempt.flow = flow;
+    if (flow.method === "email") {
+      showRecoveryStep("recovery-code-form");
+      return;
+    }
+    const github = flow.method === "github";
+    byId("recovery-provider-text").textContent = github
+      ? "Введите код на GitHub." : "Подтвердите сброс в привязанном Telegram.";
+    byId("recovery-github-code").textContent = github ? flow.user_code : "";
+    byId("recovery-github-code").hidden = byId("recovery-github-link").hidden = !github;
+    githubButton.hidden = !flow.github_available;
+    showRecoveryStep("recovery-provider");
+    pollRecovery(attempt, flow);
+  } catch (error) {
+    if (attempt === recovery) byId("recovery-error").textContent = error.message;
+  } finally {
+    attempt.starting = false;
+    submit.disabled = githubButton.disabled = false;
+  }
+}
+
+function pollRecovery(attempt, flow) {
+  const github = flow.method === "github";
+  const path = github ? "auth/recovery/github/poll" : "auth/recovery/poll";
+  const body = github ? {key: flow.key, device_code: flow.device_code,
+    expires_at: flow.expires_at, signature: flow.signature} : {key: flow.key};
+  let interval = github ? flow.interval : 2;
+  const current = () => attempt === recovery && attempt.flow === flow;
+  const poll = async () => {
+    if (!current()) return;
+    try {
+      const result = await api(path, body, attempt.session);
+      if (!current()) return;
+      if (result.status === "authorized") {
+        attempt.grant = result.key || flow.key;
+        showRecoveryStep("recovery-password-form");
+        return;
+      }
+      if (result.status === "slow_down") interval = Math.max(interval + 5, result.interval || 0);
+      else if (!["pending", "authorization_pending"].includes(result.status)) {
+        throw new Error("Подтверждение недоступно или истекло. Начните заново.");
+      }
+      recoveryTimer = setTimeout(poll, interval * 1000);
+    } catch (error) {
+      if (current()) byId("recovery-error").textContent = error.message;
+    }
+  };
+  recoveryTimer = setTimeout(poll, interval * 1000);
+}
+
+byId("auth-forgot").onclick = () => openRecovery(false);
+byId("account-forgot").onclick = () => openRecovery(true);
+byId("recovery-back").onclick = closeRecovery;
+byId("recovery-use-github").onclick = () => startRecovery("github");
+byId("recovery-start").onsubmit = (event) => {
+  event.preventDefault();
+  startRecovery();
+};
+byId("recovery-code-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const attempt = recovery;
+  if (!attempt) return;
+  event.submitter.disabled = true;
+  byId("recovery-error").textContent = "";
+  try {
+    const result = await api("auth/recovery/verify", {
+      key: attempt.flow.key, code: byId("recovery-code").value,
+    }, attempt.session);
+    if (attempt !== recovery) return;
+    attempt.grant = result.key;
+    event.target.reset();
+    showRecoveryStep("recovery-password-form");
+  } catch (error) {
+    if (attempt === recovery) byId("recovery-error").textContent = error.message;
+  } finally {
+    event.submitter.disabled = false;
+  }
+};
+byId("recovery-password-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const attempt = recovery;
+  if (!attempt) return;
+  const current = () => attempt === recovery && (!attempt.account || attempt.session === token);
+  event.submitter.disabled = true;
+  byId("recovery-error").textContent = "";
+  try {
+    const body = {key: attempt.grant, password: byId("recovery-password").value};
+    const path = attempt.account ? "auth/recovery/account/finish" : "auth/recovery/finish";
+    const result = await api(path, body, attempt.session);
+    if (!current()) return;
+    if (attempt.account) {
+      renderAccountName(result);
+      closeRecovery();
+      showModal();
+      notify("Пароль изменён.");
+    } else {
+      await signIn(result.access_token, current);
+      if (current()) closeRecovery();
+    }
+  } catch (error) {
+    if (current()) byId("recovery-error").textContent = error.message;
+  } finally {
+    event.submitter.disabled = false;
+  }
+};
+
+function resetEmailLink() {
+  emailLinkKey = undefined;
+  byId("email-code-form").reset();
+  byId("email-code-form").hidden = true;
+  byId("email-link-form").hidden = !byId("email-status").hidden;
+  byId("email-link-error").textContent = "";
+}
+
+byId("email-link-back").onclick = resetEmailLink;
+byId("email-link-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const session = token;
+  const revision = modalRevision;
+  event.submitter.disabled = true;
+  byId("email-link-error").textContent = "";
+  try {
+    const result = await api("auth/email/start", {email: byId("email-link-address").value}, session);
+    if (token !== session || modalRevision !== revision) return;
+    emailLinkKey = result.key;
+    event.target.hidden = true;
+    byId("email-code-form").hidden = false;
+    byId("email-link-code").focus();
+  } catch (error) {
+    if (token === session && modalRevision === revision) byId("email-link-error").textContent = error.message;
+  } finally {
+    event.submitter.disabled = false;
+  }
+};
+byId("email-code-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const session = token;
+  const key = emailLinkKey;
+  event.submitter.disabled = true;
+  byId("email-link-error").textContent = "";
+  try {
+    const user = await api("auth/email/verify", {key, code: byId("email-link-code").value}, session);
+    if (token !== session || key !== emailLinkKey) return;
+    integrationsRevision++;
+    resetEmailLink();
+    byId("email-link-form").reset();
+    renderIntegrations(user);
+    notify("Электронная почта подтверждена.");
+  } catch (error) {
+    if (token === session && key === emailLinkKey) byId("email-link-error").textContent = error.message;
+  } finally {
+    event.submitter.disabled = false;
+  }
+};
+
 
 async function startProviderAuth(provider) {
   const attempt = ++authAttempt;
@@ -2036,7 +2303,12 @@ async function mutateFromModal(button, target, method, body, onError = (error) =
 function showModal(id) {
   const backdrop = byId("modal-backdrop");
   if (!id && (backdrop.inert || !byId("agent-test-status").classList.contains("hidden"))) return;
-  if (id !== "account-credentials-modal") byId("account-password").value = "";
+  if (id !== "settings-modal") resetEmailLink();
+  if (id !== "account-credentials-modal") {
+    byId("account-password").value = "";
+    byId("account-old-password").value = "";
+    if (recovery?.account) closeRecovery();
+  }
   modalRevision++;
   clearInterval(integrationsTimer);
   if (id && backdrop.inert) modalTrigger = document.activeElement;
@@ -2540,6 +2812,9 @@ function openAccountCredentials(provider) {
       : "Оставьте поле пароля пустым, чтобы сохранить текущий пароль.";
   prompt.hidden = false;
   byId("account-credentials-form").reset();
+  const hasPassword = Boolean(accountHasPassword && !provider);
+  byId("account-old-password-field").hidden = !hasPassword;
+  byId("account-forgot").hidden = !hasPassword;
   byId("account-password").required = Boolean(provider);
   byId("account-credentials-skip").hidden = !provider;
   byId("account-credentials-error").textContent = "";
@@ -2557,7 +2832,10 @@ byId("account-credentials-form").onsubmit = async (event) => {
   const body = {};
   if (username.value !== username.defaultValue) body.username = username.value;
   const password = byId("account-password").value;
-  if (password) body.password = password;
+  if (password) {
+    body.password = password;
+    if (accountHasPassword) body.old_password = byId("account-old-password").value;
+  }
   save.disabled = true;
   errorField.textContent = "";
   try {
@@ -2613,6 +2891,12 @@ byId("settings-delete-project").onclick = () => {
 };
 
 function renderIntegrations(user) {
+  const verified = Boolean(user.email_verified && user.email);
+  const emailStatus = byId("email-status");
+  emailStatus.hidden = !verified;
+  emailStatus.textContent = verified ? user.email : "";
+  byId("email-link-form").hidden = verified || Boolean(emailLinkKey);
+  byId("email-code-form").hidden = verified || !emailLinkKey;
   telegramId = user.telegram_id;
   githubUsername = user.github_username;
   for (const [provider, account, avatarUrl] of [

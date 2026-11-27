@@ -40,9 +40,55 @@
           <span>Пароль</span>
           <input id="auth-password-input" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
         </label>
+        <label id="auth-email-field" class="field" hidden><span>Электронная почта</span>
+          <input id="auth-email" type="email" autocomplete="email" maxlength="254">
+        </label>
+        <button id="auth-forgot" class="link-button auth-forgot" type="button">Забыли пароль?</button>
         <button id="auth-submit" class="button primary wide" type="submit">Войти в Loomis</button>
         <button id="auth-mode-toggle" class="link-button" type="button">Нет аккаунта? Зарегистрироваться</button>
       </form>
+
+      <form id="signup-code-form" class="stack" hidden>
+        <p class="hint">Введите 6-значный код из письма.</p>
+        <label class="field"><span>Код подтверждения</span>
+          <input id="signup-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+        </label>
+        <button class="button primary wide" type="submit">Подтвердить регистрацию</button>
+        <button id="signup-code-back" class="link-button" type="button">Назад</button>
+      </form>
+
+      <div id="auth-recovery-slot">
+        <section id="password-recovery" class="stack" aria-labelledby="password-recovery-title" hidden>
+          <h3 id="password-recovery-title">Восстановление пароля</h3>
+          <form id="recovery-start" class="stack">
+            <label id="recovery-identifier-field" class="field"><span>Электронная почта или логин</span>
+              <input id="recovery-identifier" type="text" maxlength="255" autocomplete="username" required>
+            </label>
+            <button class="button primary wide" type="submit">Продолжить</button>
+          </form>
+          <form id="recovery-code-form" class="stack" hidden>
+            <p class="hint">Если к аккаунту привязана почта, мы отправили на неё код.</p>
+            <label class="field"><span>Код подтверждения</span>
+              <input id="recovery-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+            </label>
+            <button class="button primary wide" type="submit">Подтвердить код</button>
+          </form>
+          <div id="recovery-provider" class="stack glass-card provider-instructions" hidden>
+            <p id="recovery-provider-text" class="hint" role="status"></p>
+            <code id="recovery-github-code" data-user-content hidden></code>
+            <a id="recovery-github-link" class="button glass-card provider-open" href="https://github.com/login/device" target="_blank" rel="noopener noreferrer" hidden>Открыть GitHub</a>
+            <button id="recovery-use-github" class="link-button" type="button" hidden>Подтвердить через GitHub</button>
+          </div>
+          <form id="recovery-password-form" class="stack" hidden>
+            <label class="field"><span>Новый пароль</span>
+              <input id="recovery-password" type="password" autocomplete="new-password" minlength="4" maxlength="1024" required>
+            </label>
+            <button class="button primary wide" type="submit">Установить новый пароль</button>
+          </form>
+          <p id="recovery-error" class="form-error" role="alert"></p>
+          <button id="recovery-back" class="link-button" type="button">Назад</button>
+        </section>
+      </div>
 
       <div id="auth-providers" class="auth-providers">
         <button id="auth-github" class="button glass-card" type="button"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-github"/></svg><span>Войти через GitHub</span></button>
@@ -596,11 +642,16 @@
       <form id="account-credentials-form" class="stack">
         <p id="account-credentials-prompt" class="hint" hidden></p>
         <label class="field"><span>Логин</span><input id="account-username" name="username" autocomplete="username" maxlength="255" required></label>
+        <label id="account-old-password-field" class="field" hidden><span>Старый пароль</span>
+          <input id="account-old-password" type="password" autocomplete="current-password" maxlength="1024">
+        </label>
+        <button id="account-forgot" class="link-button auth-forgot" type="button" hidden>Не помню старый пароль</button>
         <label class="field"><span>Новый пароль</span><input id="account-password" name="password" type="password" autocomplete="new-password" minlength="4" maxlength="1024"></label>
         <p id="account-credentials-error" class="error" role="alert"></p>
         <button id="account-credentials-save" class="button primary wide" type="submit">Сохранить</button>
         <button id="account-credentials-skip" class="link-button close-modal" type="button" hidden>Пропустить</button>
       </form>
+      <div id="account-recovery-slot"></div>
     </div>
     <div id="settings-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
       <div class="modal-head"><h3 id="settings-modal-title">Настройки</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
@@ -639,6 +690,24 @@
         </label>
       </div>
       <div id="integrations-panel" class="stack" role="tabpanel" aria-labelledby="integrations-tab" tabindex="0" hidden>
+        <section id="email-card" class="integration-card glass-panel stack" aria-labelledby="email-title">
+          <h3 id="email-title">Электронная почта</h3>
+          <p id="email-status" class="hint" data-user-content hidden></p>
+          <form id="email-link-form" class="stack">
+            <label class="field"><span>Адрес электронной почты</span>
+              <input id="email-link-address" type="email" autocomplete="email" maxlength="254" required>
+            </label>
+            <button class="button glass-card" type="submit">Отправить код</button>
+          </form>
+          <form id="email-code-form" class="stack" hidden>
+            <label class="field"><span>Код подтверждения</span>
+              <input id="email-link-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+            </label>
+            <button class="button glass-card" type="submit">Подтвердить код</button>
+            <button id="email-link-back" class="link-button" type="button">Изменить адрес</button>
+          </form>
+          <p id="email-link-error" class="form-error" role="alert"></p>
+        </section>
         <section id="telegram-card" class="integration-card glass-panel" aria-labelledby="telegram-title">
           <div class="integration-row">
             <svg class="integration-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M21.6 3.4 2.7 10.7c-1.3.5-1.3 1.2-.2 1.6l4.8 1.5 11-6.9c.5-.3 1-.1.6.2L10 15.3l-.3 4.6c.5 0 .7-.2 1-.5l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.7-.8l3.2-15.1c.3-1.2-.5-1.7-1.1-1.4Z"/></svg>
