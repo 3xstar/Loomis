@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import re
-import secrets
 from contextlib import suppress
 from datetime import datetime
 from hashlib import sha256
@@ -17,13 +16,16 @@ from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message, ReplyKeyboardRemove
 from fastapi import HTTPException
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.auth import (
-    Credentials, GitHubDevicePoll, UserPreferences, create_account, disconnect_github,
-    link_telegram, poll_github_device, set_password, start_github_device, update_preferences,
+    Credentials, GitHubDevicePoll, SignUpCredentials, UserPreferences, Username, account_for_github, authenticate,
+    bind_telegram_account, claim_telegram_login, create_account, disconnect_github, exchange_github_device,
+    link_telegram, poll_github_device, request_github_device, resolve_telegram_login, save_account,
+    set_password, start_github_device, update_preferences,
 )
 from backend.api.projects import (
     AgentCreate, AgentPatch, ClearView, ExistingAgentTest, HubImport, PresetCreate, PresetPatch,
@@ -36,15 +38,15 @@ from backend.api.projects import (
 from backend.api.ws import manager
 from backend.core.context_manager import build_spec
 from backend.core.doc_parser import parse_document
-from backend.core.github import github_repo_name
+from backend.core.github import github_profile, github_repo_name
 from backend.core.media import MAX_MEDIA_BYTES, MEDIA_TYPES, make_media
 from backend.core.model_performance import model_key
 from backend.core.orchestrator import TEAM_CHAT_WORKING, TEAM_CHAT_WORKING_STATUSES, history_visible, orchestrator, require_team_chat_available
 from backend.core.voice import VoiceTranscriber
 from backend.database.db import async_session_factory
 from backend.database.models import (
-    DEFAULT_PROJECTS_DIR, AgentConfig, AgentMessage, MagicLoginRequest, ModelLeaderboard, Project, ProjectMedia,
-    SpecItem, User, utc_now,
+    DEFAULT_PROJECTS_DIR, AgentConfig, AgentMessage, ModelLeaderboard, Project, ProjectMedia,
+    SpecItem, User,
 )
 from backend.settings import ROOT
 from worker.adapters import CLI_PROVIDERS
@@ -52,9 +54,9 @@ from worker.adapters import CLI_PROVIDERS
 from .delivery import completion_summary
 from .formatting import telegram_html
 from .keyboards import (
-    PROJECT_BUTTONS, PROJECT_ROWS, agent_chat_keyboard, cancel_keyboard, first_project_keyboard, inline_menu,
+    PROJECT_BUTTONS, PROJECT_ROWS, agent_chat_keyboard, auth_menu, cancel_keyboard, inline_menu,
     main_menu, pause_keyboard, profile_keyboard, project_keyboard, project_mode_keyboard, project_reply_keyboard,
-    projects_keyboard, review_keyboard, spec_keyboard,
+    projects_keyboard, review_keyboard, spec_keyboard, telegram_login_keyboard,
 )
 from .i18n import RUSSIAN_LABELS, bot_language, status_label, translate
 from .middlewares import AccountMiddleware
@@ -149,9 +151,11 @@ async def project_navigation(message: Message, state: FSMContext, session: Async
             await message.answer(line, parse_mode="HTML")
 
 
-async def prompt_username(message: Message, state: FSMContext):
+async def prompt_username(message: Message, state: FSMContext, mode: str):
+    await state.update_data(auth_mode=mode)
     await state.set_state(AccountSetup.username)
-    await message.answer("Введите желаемый логин (никнейм) без пробелов:", reply_markup=cancel_keyboard())
+    prompt = "Введите желаемый логин (никнейм) без пробелов:" if mode == "register" else "Введите логин Loomis:"
+    await message.answer(prompt, reply_markup=cancel_keyboard())
 
 
 async def prompt_code(message: Message, state: FSMContext):
@@ -163,6 +167,22 @@ async def prompt_code(message: Message, state: FSMContext):
 async def start(message: Message, command: CommandObject, session: AsyncSession,
                 account: User | None, state: FSMContext):
     payload = (command.args or "").strip()
+    if payload.startswith("auth_"):
+        code = payload.removeprefix("auth_")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", code) or not await claim_telegram_login(
+            session, code, message.from_user.id,
+        ):
+            await message.answer("Запрос входа истёк или недоступен.", reply_markup=main_menu(account is not None))
+            return
+        await leave_project(message, state, account)
+        if account:
+            await message.answer("Подтвердите вход в Loomis Desktop, если вы его запросили.",
+                                 reply_markup=telegram_login_keyboard(code))
+        else:
+            await state.update_data(desktop_auth_code=code)
+            await message.answer("Войдите или зарегистрируйтесь, чтобы продолжить в Loomis Desktop.",
+                                 reply_markup=auth_menu(desktop=True))
+        return
     if payload.startswith("link_"):
         await link(message, CommandObject(args=payload.removeprefix("link_")), session, account, state)
         return
@@ -174,37 +194,6 @@ async def start(message: Message, command: CommandObject, session: AsyncSession,
         text = (f"Здравствуйте, {account.username}! Выберите действие." if account else
                 "Добро пожаловать в Loomis. Создайте аккаунт или привяжите существующий.")
         await message.answer(text, reply_markup=main_menu(account is not None))
-
-
-@router.message(Command("quick_register"))
-async def quick_register(message: Message, command: CommandObject, session: AsyncSession,
-                         account: User | None, state: FSMContext):
-    if account:
-        await message.answer("Telegram уже привязан к аккаунту.", reply_markup=main_menu(True))
-    elif (command.args or "").strip():
-        await register_account(message, (command.args or "").strip(), session, state)
-    else:
-        await prompt_username(message, state)
-
-
-async def register_account(message: Message, username: str, session: AsyncSession, state: FSMContext):
-    try:
-        credentials = Credentials(username=username, password=secrets.token_urlsafe(24))
-        user = await create_account(session, credentials.username, credentials.password, message.from_user.id)
-    except ValidationError:
-        await message.answer("Логин должен быть корректным и не содержать пробелов. Попробуйте ещё раз:")
-        await state.set_state(AccountSetup.username)
-    except HTTPException as error:
-        await message.answer(str(error.detail))
-    else:
-        await state.clear()
-        await message.answer(f"Аккаунт создан.\nЛогин: {user.username}\nПароль: {credentials.password}\nСохраните пароль для входа в Loomis.",
-                             reply_markup=first_project_keyboard())
-
-
-@router.message(AccountSetup.username)
-async def username_input(message: Message, state: FSMContext, session: AsyncSession):
-    await register_account(message, (message.text or "").strip(), session, state)
 
 
 @router.message(Command("link"))
@@ -311,7 +300,11 @@ async def show_projects(message, session: AsyncSession, account: User | None):
 @router.message(Command("cancel"))
 @router.message(F.text.in_({"❌ Отмена", "❌ Cancel"}))
 async def cancel(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
-    project = await owned_project(session, account, (await state.get_data()).get("project_id"))
+    data = await state.get_data()
+    if code := data.get("desktop_auth_code"):
+        if await resolve_telegram_login(session, code, message.chat.id, None):
+            await session.commit()
+    project = await owned_project(session, account, data.get("project_id"))
     if project is not None:
         await select_project(message, state, account, project.id)
         await message.answer("Текущее действие отменено.", reply_markup=project_keyboard(project))
@@ -326,13 +319,150 @@ async def cancel_callback(callback: CallbackQuery, state: FSMContext, session: A
     await cancel(callback.message, state, session, account)
 
 
-@router.callback_query(F.data == "quick_register")
-async def quick_register_callback(callback: CallbackQuery, state: FSMContext, account: User | None):
+@router.callback_query(F.data.in_({"auth:login", "auth:register"}))
+async def choose_credentials(callback: CallbackQuery, state: FSMContext, account: User | None):
     await callback.answer()
     if account:
         await callback.message.answer("Telegram уже привязан.", reply_markup=main_menu(True))
+        return
+    await prompt_username(callback.message, state, callback.data.split(":")[1])
+
+
+@router.message(AccountSetup.username)
+async def username_input(message: Message, state: FSMContext):
+    try:
+        username = TypeAdapter(Username).validate_python(message.text or "")
+    except ValidationError:
+        await message.answer("Логин должен быть корректным и не содержать пробелов. Попробуйте ещё раз:")
+        return
+    await state.update_data(auth_username=username)
+    await state.set_state(AccountSetup.password)
+    registering = (await state.get_data())["auth_mode"] == "register"
+    await message.answer("Придумайте пароль (от 4 символов):" if registering else "Введите пароль Loomis:",
+                         reply_markup=cancel_keyboard())
+
+
+def telegram_name(sender) -> str:
+    return f"@{sender.username}" if sender.username else sender.first_name
+
+
+@router.message(AccountSetup.password)
+async def password_input(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
+    if message.text is not None:
+        with suppress(TelegramAPIError):
+            await message.delete()
+    if account is not None:
+        await state.clear()
+        await message.answer("Telegram уже привязан.", reply_markup=main_menu(True))
+        return
+
+    data = await state.get_data()
+    sender = message.from_user
+    code = data.get("desktop_auth_code")
+    registering = data["auth_mode"] == "register"
+    try:
+        if registering:
+            credentials = SignUpCredentials(username=data["auth_username"], password=message.text or "")
+            user = await create_account(session, credentials, telegram_id=sender.id,
+                                        telegram_username=telegram_name(sender))
+        else:
+            credentials = Credentials(username=data["auth_username"], password=message.text or "")
+            user = await authenticate(session, credentials)
+            await bind_telegram_account(session, user, sender.id, telegram_name(sender))
+
+        if code:
+            await session.flush()
+            if not await resolve_telegram_login(session, code, sender.id, user.id):
+                await session.rollback()
+                await state.clear()
+                await message.answer("Запрос входа истёк или недоступен.", reply_markup=main_menu(False))
+                return
+        await save_account(session)
+    except ValidationError:
+        await message.answer("Придумайте пароль (от 4 символов):" if registering else "Введите пароль Loomis:")
+        return
+    except (HTTPException, IntegrityError) as error:
+        await session.rollback()
+        await message.answer(str(error.detail) if isinstance(error, HTTPException)
+                             else "Логин или Telegram уже привязан к аккаунту.")
+        await prompt_username(message, state, data["auth_mode"])
+        return
+
+    await state.clear()
+    if code:
+        await message.answer("Вход в Loomis Desktop подтверждён.", reply_markup=main_menu(True))
     else:
-        await prompt_username(callback.message, state)
+        await message.answer("Аккаунт создан." if registering else "Вы вошли в Loomis.",
+                             reply_markup=main_menu(True))
+
+
+github_login_flows = set()
+
+
+@router.callback_query(F.data == "auth:github")
+async def start_bot_github_login(callback: CallbackQuery, state: FSMContext, account: User | None):
+    await callback.answer()
+    if account:
+        await callback.message.answer("Telegram уже привязан.", reply_markup=main_menu(True))
+        return
+    if (await state.get_data()).get("desktop_auth_code"):
+        await callback.message.answer("Для входа в Desktop используйте логин и пароль или зарегистрируйтесь.",
+                                      reply_markup=auth_menu(desktop=True))
+        return
+    sender = callback.from_user
+    if sender.id in github_login_flows:
+        await callback.message.answer("Дождитесь завершения входа через GitHub.")
+        return
+    await state.clear()
+    github_login_flows.add(sender.id)
+    try:
+        flow = await request_github_device(f"telegram:{sender.id}")
+        await callback.message.answer(
+            f'Код GitHub: <code>{escape(flow["user_code"])}</code>\n'
+            'Введите код на <a href="https://github.com/login/device">github.com/login/device</a>. '
+            'Бот сообщит о результате.',
+            parse_mode="HTML",
+        )
+    except HTTPException as error:
+        github_login_flows.discard(sender.id)
+        await callback.message.answer(str(error.detail), reply_markup=main_menu(False))
+    except BaseException:
+        github_login_flows.discard(sender.id)
+        raise
+    else:
+        orchestrator.background_reply(wait_for_bot_github_login(callback.message, sender, flow))
+
+
+async def wait_for_bot_github_login(message: Message, sender, flow: dict):
+    device = GitHubDevicePoll.model_validate(flow)
+    interval = flow["interval"]
+    try:
+        while time() < device.expires_at:
+            await asyncio.sleep(interval)
+            result = await exchange_github_device(device, f"telegram:{sender.id}")
+            if isinstance(result, str):
+                account_id, username, _ = await github_profile(result)
+                async with async_session_factory() as session:
+                    user = await account_for_github(session, account_id, username)
+                    if user is None:
+                        raise HTTPException(404, "Этот GitHub не привязан ни к одному аккаунту Loomis. "
+                                            "Войдите по логину и паролю или зарегистрируйтесь.")
+                    await bind_telegram_account(session, user, sender.id, telegram_name(sender))
+                    await save_account(session)
+                await message.answer("Вы вошли в Loomis.", reply_markup=main_menu(True))
+                return
+            if result["status"] == "access_denied":
+                raise HTTPException(401, "Вход через GitHub отклонён.")
+            if result["status"] == "expired_token":
+                break
+            if result["status"] == "slow_down":
+                interval = max(interval + 5, result["interval"] or 0)
+        await message.answer("Код GitHub истёк. Начните вход заново.", reply_markup=main_menu(False))
+    except (HTTPException, IntegrityError) as error:
+        await message.answer(str(error.detail) if isinstance(error, HTTPException)
+                             else "Логин или Telegram уже привязан к аккаунту.", reply_markup=main_menu(False))
+    finally:
+        github_login_flows.discard(sender.id)
 
 
 @router.callback_query(F.data == "link_account")
@@ -541,47 +671,46 @@ async def save_mobile_folder(message: Message, state: FSMContext, session: Async
 
 
 @router.callback_query(F.data == "profile:new_password")
-async def new_password_callback(callback: CallbackQuery, session: AsyncSession, account: User | None):
+async def new_password_callback(callback: CallbackQuery, state: FSMContext, account: User | None):
     if account is None:
         await callback.answer("Привяжите Telegram к аккаунту Loomis.", show_alert=True)
         return
-    if not isinstance(callback.message, Message):
-        await callback.answer("Откройте профиль заново через /start.", show_alert=True)
-        return
-    password = secrets.token_urlsafe(18)
     await callback.answer()
-    await set_password(session, account, password)
-    await callback.message.answer(
-        f"Новый пароль для {account.username}: {password}\nСохраните его. Старый пароль больше не действует."
-    )
+    await state.set_state(AccountSetup.new_password)
+    await callback.message.answer("Придумайте пароль (от 4 символов):", reply_markup=cancel_keyboard())
 
 
-@router.callback_query(F.data.startswith("magic_approve:") | F.data.startswith("magic_reject:"))
-async def resolve_magic_login(callback: CallbackQuery, session: AsyncSession, account: User | None):
-    if (account is None or account.telegram_id != callback.from_user.id
-            or not isinstance(callback.message, Message)):
+@router.message(AccountSetup.new_password)
+async def new_password_input(message: Message, state: FSMContext, session: AsyncSession, account: User | None):
+    if message.text is not None:
+        with suppress(TelegramAPIError):
+            await message.delete()
+    if account is None:
+        await state.clear()
+        return
+    password = message.text or ""
+    if not 4 <= len(password) <= 1024:
+        await message.answer("Придумайте пароль (от 4 символов):")
+        return
+    await set_password(account, password)
+    await session.commit()
+    await state.clear()
+    await message.answer("Пароль изменён.", reply_markup=profile_keyboard(bool(account.github_username)))
+
+
+@router.callback_query(F.data.startswith("approve:") | F.data.startswith("reject:"))
+async def confirm_telegram_login(callback: CallbackQuery, session: AsyncSession, account: User | None):
+    if account is None or not isinstance(callback.message, Message):
         await callback.answer("Запрос входа недоступен.", show_alert=True)
         return
-
-    action, request_id = callback.data.split(":", 1)
-    approved = action == "magic_approve"
-    now = utc_now()
-    resolved_id = await session.scalar(
-        update(MagicLoginRequest)
-        .where(MagicLoginRequest.request_id == request_id, MagicLoginRequest.user_id == account.id,
-               MagicLoginRequest.status == "pending", MagicLoginRequest.expires_at > now)
-        .values(status="approved" if approved else "rejected", resolved_at=now)
-        .returning(MagicLoginRequest.id)
-    )
-    if resolved_id is None:
-        await session.rollback()
+    action, code = callback.data.split(":", 1)
+    approved = action == "approve"
+    if not await resolve_telegram_login(session, code, callback.from_user.id, account.id if approved else None):
         await callback.answer("Запрос входа истёк или недоступен.", show_alert=True)
         return
-
     await session.commit()
     await callback.answer()
-    text = "✅ Вход в Loomis Desktop подтверждён." if approved else "❌ Вход отклонён."
-    await callback.message.edit_text(text, reply_markup=None)
+    await callback.message.edit_text("Вход в Loomis Desktop подтверждён." if approved else "Вход отклонён.")
 
 
 @router.callback_query(F.data.startswith("project:"))

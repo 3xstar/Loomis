@@ -14,6 +14,8 @@ class ProjectSetup(StatesGroup):
 
 class AccountSetup(StatesGroup):
     username = State()
+    password = State()
+    new_password = State()
     link_code = State()
     projects_dir = State()
     mobile_download_dir = State()

@@ -53,8 +53,7 @@ def pause_keyboard(project_id: int) -> InlineKeyboardMarkup:
 
 def main_menu(account_exists: bool) -> InlineKeyboardMarkup:
     if not account_exists:
-        rows = [[InlineKeyboardButton(text="⚡ Быстрая регистрация", callback_data="quick_register")],
-                [InlineKeyboardButton(text="Привязать по коду", callback_data="link_account")]]
+        return auth_menu()
     else:
         rows = [[InlineKeyboardButton(text="➕ Создать проект", callback_data="new_project")],
                 [InlineKeyboardButton(text="Мои проекты", callback_data="projects")],
@@ -71,27 +70,31 @@ def profile_keyboard(github_linked: bool) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Папка сохранения на телефоне", callback_data="profile:mobile_folder")],
         [InlineKeyboardButton(text="Переключить рабочие логи в Telegram", callback_data="profile:logs")],
         [InlineKeyboardButton(text="Язык / Language", callback_data="profile:language")],
-        [InlineKeyboardButton(text="🔑 Сгенерировать новый пароль", callback_data="profile:new_password")],
+        [InlineKeyboardButton(text="Задать новый пароль", callback_data="profile:new_password")],
         [InlineKeyboardButton(text="Мои проекты", callback_data="projects")],
     ])
 
 
-def magic_login_keyboard(request_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Подтвердить вход в Desktop", callback_data=f"magic_approve:{request_id}")],
-        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"magic_reject:{request_id}")],
+def auth_menu(*, desktop: bool = False) -> InlineKeyboardMarkup:
+    rows = [[("Войти по логину и паролю", "auth:login")]]
+    if not desktop:
+        rows.append([("Войти через GitHub", "auth:github")])
+    rows.append([("Зарегистрироваться", "auth:register")])
+    if desktop:
+        rows.append([("Отмена", "cancel")])
+    return inline_menu(rows)
+
+
+def telegram_login_keyboard(code: str) -> InlineKeyboardMarkup:
+    return inline_menu([
+        [("Подтвердить вход в Desktop", f"approve:{code}")],
+        [("Отклонить", f"reject:{code}")],
     ])
 
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
-    ]])
-
-
-def first_project_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="➕ Создать первый проект", callback_data="new_project")
     ]])
 
 

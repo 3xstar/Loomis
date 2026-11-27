@@ -37,7 +37,7 @@ def initialize_schema(connection) -> None:
     upgrades = {
         "users": {"login_name": "VARCHAR(255)", "password_hash": "VARCHAR(255)",
                   "tg_logs_enabled": "BOOLEAN NOT NULL DEFAULT TRUE",
-                  "github_token": "TEXT", "github_username": "VARCHAR(100)",
+                  "github_account_id": "BIGINT", "github_token": "TEXT", "github_username": "VARCHAR(100)",
                   "github_avatar_url": "VARCHAR", "telegram_username": "VARCHAR",
                   "telegram_avatar_url": "VARCHAR",
                   "default_projects_dir": "VARCHAR(1024)",
@@ -103,6 +103,10 @@ def initialize_schema(connection) -> None:
                             SELECT SUM(tokens) FROM task_logs WHERE task_logs.agent_id = agent_configs.id
                         ), 0)
                     """)
+
+    connection.exec_driver_sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_github_account_id ON users (github_account_id)"
+    )
 
     if backfill_presets:
         historical_usage = (select(func.coalesce(func.sum(AgentConfig.total_tokens_used), 0))
@@ -186,7 +190,6 @@ async def poll_telegram(bot: Bot) -> None:
                 BotCommand(command="start", description="Главное меню и статус аккаунта"),
                 BotCommand(command="new_project", description="Создать новый проект"),
                 BotCommand(command="projects", description="Мои проекты и управление"),
-                BotCommand(command="quick_register", description="Быстрая регистрация аккаунта"),
                 BotCommand(command="link", description="Привязать аккаунт по коду из приложения"),
                 BotCommand(command="cancel", description="Отменить текущее действие"),
             ])

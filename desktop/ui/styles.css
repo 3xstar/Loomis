@@ -47,12 +47,12 @@ body {
   color: var(--ink);
   background: var(--base);
 }
-.hidden, .auth-pane:not(.active) { display: none; }
+.hidden { display: none; }
 h1, h2, h3, p { margin: 0; }
 h1 { font-size: 36px; letter-spacing: -.06em; }
 h2 { font-size: 24px; letter-spacing: -.035em; }
 h3 { font-size: 17px; }
-small, .hint, .eyebrow, .composer-hint, .terminal-actions, .auth-lead, .user-copy span, .brand-row span { color: var(--muted); }
+small, .hint, .eyebrow, .composer-hint, .terminal-actions, .user-copy span, .brand-row span { color: var(--muted); }
 .glass-panel, .glass-card {
   border: 1px solid var(--line);
   border-radius: 24px;
@@ -76,13 +76,13 @@ button:not(:disabled):active, select:not(:disabled):active { transform: scale(0.
 .auth-card, .modal { width: min(100%, 460px); padding: 30px; }
 .auth-brand, .brand-row, .sidebar-head, .user-card, .section-label,
 .topbar, .project-title, .topbar-actions, .section-head, .terminal-head, .terminal-actions,
-.composer-top, .composer-row, .modal-head, .magic-meta { display: flex; align-items: center; gap: 12px; }
+.composer-top, .composer-row, .modal-head { display: flex; align-items: center; gap: 12px; }
 .logo-mark { display: block; flex: none; width: 48px; aspect-ratio: 1; }
 .logo-mark.small { width: 34px; }
 .logo-mark img { display: block; width: 100%; height: 100%; object-fit: contain; }
 :root:not([data-theme="light"]) .logo-light,
 :root[data-theme="light"] .logo-dark { display: none; }
-.auth-lead { margin: 12px 0 24px; }
+.auth-brand { margin-bottom: 24px; }
 .glass-tabs { display: grid; grid-template-columns: 1fr 1.4fr; gap: 4px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; margin-bottom: 20px; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
@@ -139,7 +139,7 @@ input, textarea, select { background: var(--surface); border: 1px solid var(--li
 .deadline-input { position: relative; flex: 0 0 auto; width: 104px; }
 .deadline-input span { position: absolute; inset-inline-end: 12px; top: 50%; transform: translateY(-50%); color: var(--text-secondary); pointer-events: none; }
 option { background: var(--base); }
-.form-error:not(:empty), .magic-meta { margin-top: 12px; }
+.form-error:not(:empty) { margin-top: 12px; }
 .form-error, .danger { color: var(--danger); }
 #agent-error:empty { display: none; }
 #agent-error { margin: 0; font-size: 13px; }
@@ -638,7 +638,7 @@ option { background: var(--base); }
     display var(--motion) allow-discrete, background-color var(--motion) ease,
     color var(--motion) ease, border-color var(--motion) ease, box-shadow var(--motion) ease;
 }
-.screen.hidden, .modal-backdrop.hidden, .modal.hidden, .magic-status.hidden, .stack.hidden {
+.screen.hidden, .modal-backdrop.hidden, .modal.hidden, .stack.hidden {
   display: none;
   opacity: 0;
 }
@@ -647,17 +647,31 @@ option { background: var(--base); }
   .screen, .modal-backdrop, .modal { opacity: 0; }
   .screen, .modal { transform: translate3d(0, 12px, 0) scale(0.98); }
 }
-.auth-pane.active, .magic-status:not(.hidden), .agent-card {
+.auth-provider-status:not(.hidden), .agent-card {
   animation: glass-enter var(--motion) var(--spring) both;
 }
 @keyframes glass-enter {
   from { opacity: 0; transform: translate3d(0, 8px, 0) scale(0.98); }
   to { opacity: 1; transform: none; }
 }
-.magic-status { padding: 16px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); }
-.magic-status p { margin-top: 6px; color: var(--muted); }
-.magic-meta { justify-content: space-between; font-variant-numeric: tabular-nums; }
-.magic-beam { width: 30px; height: 3px; margin-bottom: 12px; border-radius: 3px; background: var(--accent); }
+.auth-providers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+.auth-providers.hidden { display: none; }
+.auth-providers .button {
+  min-height: 42px;
+  border-radius: 14px;
+  background: var(--glass);
+}
+.auth-provider-status { padding: 16px; }
+.auth-provider-status p { color: var(--muted); }
+#auth-provider-code { font-size: 22px; letter-spacing: .1em; }
+.auth-provider-link { color: var(--ink); text-align: center; text-decoration: none; }
+.auth-provider-link:hover { border-color: var(--accent); }
+#auth-provider-cancel { margin-top: 12px; }
 
 @supports (appearance: base-select) {
   select, select::picker(select) { appearance: base-select; }

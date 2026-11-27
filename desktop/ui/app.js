@@ -37,9 +37,9 @@ function writeDesktopSession(accessToken) {
   }).catch(error => notify(error.message));
   return sessionWrite;
 }
-let project, socket, magicTimer;
+let project, socket, authPollTimer;
 let selection = 0;
-let magicAttempt = 0;
+let authAttempt = 0;
 let statusRevision = 0;
 let specBusy = false;
 let actionBusy = null;
@@ -142,24 +142,6 @@ homeLighterToggle.addEventListener("lighterchange", ({detail: open}) => {
   saveDesktopPreferences({homeLighterOpen: open});
 });
 
-function stopMagic() {
-  magicAttempt++;
-  clearTimeout(magicTimer);
-  byId("magic-submit").disabled = false;
-  byId("magic-status").classList.add("hidden");
-  byId("magic-form").classList.remove("hidden");
-}
-byId("magic-cancel").onclick = stopMagic;
-all("[data-auth-tab]").forEach((tab) => tab.onclick = () => {
-  stopMagic();
-  byId("auth-error").textContent = "";
-  all("[data-auth-tab]").forEach((button) => {
-    button.classList.toggle("active", button === tab);
-    button.setAttribute("aria-pressed", button === tab);
-  });
-  all(".auth-pane").forEach((pane) => pane.classList.toggle("active", pane.id === "auth-" + tab.dataset.authTab));
-});
-
 function showWorkspace(visible) {
   const auth = byId("auth-screen");
   const workspace = byId("app-screen");
@@ -195,72 +177,145 @@ async function signIn(accessToken, isCurrent = () => true) {
 }
 
 let registering = false;
+let githubSignupKey;
+
+function renderAuthForm() {
+  const signup = registering || Boolean(githubSignupKey);
+  byId("auth-submit").textContent = signup ? "Зарегистрироваться" : "Войти в Loomis";
+  byId("auth-mode-toggle").textContent = signup ? "Уже есть аккаунт? Войти" : "Нет аккаунта? Зарегистрироваться";
+  byId("auth-mode-toggle").classList.toggle("hidden", Boolean(githubSignupKey));
+  byId("github-signup-prompt").classList.toggle("hidden", !githubSignupKey);
+  byId("auth-password-input").autocomplete = signup ? "new-password" : "current-password";
+  byId("auth-password-input").minLength = signup ? 4 : 1;
+}
+
+function stopProviderAuth() {
+  authAttempt++;
+  clearTimeout(authPollTimer);
+  githubSignupKey = undefined;
+  byId("auth-provider-link").removeAttribute("href");
+  byId("password-form").classList.remove("hidden");
+  byId("auth-providers").classList.remove("hidden");
+  byId("auth-provider-status").classList.add("hidden");
+  byId("auth-provider-cancel").classList.add("hidden");
+  renderAuthForm();
+}
+
+byId("auth-provider-cancel").onclick = () => {
+  byId("auth-error").textContent = "";
+  byId("password-form").reset();
+  stopProviderAuth();
+};
 byId("auth-mode-toggle").onclick = () => {
   registering = !registering;
-  byId("auth-submit").textContent = registering ? "Зарегистрироваться" : "Войти в Loomis";
-  byId("auth-mode-toggle").textContent = registering ? "Уже есть аккаунт? Войти" : "Нет аккаунта? Зарегистрироваться";
-  byId("auth-password-input").autocomplete = registering ? "new-password" : "current-password";
+  byId("auth-error").textContent = "";
+  renderAuthForm();
 };
 byId("password-form").onsubmit = async (event) => {
   event.preventDefault();
-  const button = byId("auth-submit");
-  const magicTab = document.querySelector('[data-auth-tab="magic"]');
-  magicTab.disabled = true;
-  button.disabled = true;
+  const controls = ["auth-submit", "auth-mode-toggle", "auth-github", "auth-telegram", "auth-provider-cancel"];
+  controls.forEach((id) => byId(id).disabled = true);
   byId("auth-error").textContent = "";
   try {
     const credentials = {username: byId("auth-username").value, password: byId("auth-password-input").value};
-    if (registering) await api("auth/register", credentials);
-    await signIn((await api("auth/login", credentials)).access_token);
+    const key = githubSignupKey;
+    let result;
+    if (key) {
+      result = await api("auth/github/login/register", {...credentials, key});
+    } else {
+      if (registering) await api("auth/register", credentials);
+      result = await api("auth/login", credentials);
+    }
+    await signIn(result.access_token);
     event.target.reset();
+    registering = false;
+    stopProviderAuth();
   } catch (error) {
+    if (error.status === 410 && githubSignupKey) stopProviderAuth();
     byId("auth-error").textContent = error.message;
   } finally {
-    button.disabled = false;
-    magicTab.disabled = false;
+    controls.forEach((id) => byId(id).disabled = false);
   }
 };
-byId("magic-form").onsubmit = async (event) => {
-  event.preventDefault();
-  const attempt = ++magicAttempt;
-  byId("magic-submit").disabled = true;
-  byId("auth-error").textContent = "";
+
+async function startProviderAuth(provider) {
+  const attempt = ++authAttempt;
+  const github = provider === "github";
+  const path = "auth/" + provider + "/login/";
+  const current = () => attempt === authAttempt;
   const fail = (error) => {
-    if (attempt !== magicAttempt) return;
-    stopMagic();
+    if (!current()) return;
+    stopProviderAuth();
     byId("auth-error").textContent = error.message;
   };
+
+  byId("auth-error").textContent = "";
+  byId("password-form").reset();
+  byId("password-form").classList.add("hidden");
+  byId("auth-providers").classList.add("hidden");
+  byId("auth-provider-cancel").classList.remove("hidden");
   try {
-    const request = await api("auth/magic-login/request", {username: byId("magic-username").value});
-    if (attempt !== magicAttempt) return;
-    const expires = Date.now() + request.expires_in * 1000;
-    byId("magic-status").classList.remove("hidden");
-    byId("magic-form").classList.add("hidden");
+    const flow = await api(path + "start", {});
+    if (!current()) return;
+    const expires = Date.now() + flow.expires_in * 1000;
+    const code = byId("auth-provider-code");
+    code.textContent = flow.user_code || "";
+    code.classList.toggle("hidden", !github);
+    const link = byId("auth-provider-link");
+    link.href = github ? "https://github.com/login/device" : flow.deep_link;
+    link.textContent = github ? "Открыть GitHub" : "Открыть Telegram";
+    byId("auth-provider-copy").textContent = github
+      ? "Введите этот код на GitHub."
+      : "Откройте бота и подтвердите вход или завершите регистрацию.";
+    byId("auth-provider-status").classList.remove("hidden");
+
+    let interval = github ? flow.interval : 1;
+    const credentials = github
+      ? {device_code: flow.device_code, signature: flow.signature, expires_at: flow.expires_at}
+      : {key: flow.key};
+    const expired = github ? "Код GitHub истёк. Начните вход заново." : "Время подтверждения истекло.";
     async function poll() {
+      if (!current()) return;
       try {
-        const remaining = Math.max(0, Math.ceil((expires - Date.now()) / 1000));
-        byId("magic-countdown").textContent = Math.floor(remaining / 60) + ":" + String(remaining % 60).padStart(2, "0");
-        if (!remaining) throw new Error("Время подтверждения истекло.");
-        const status = await api("auth/magic-login/status/" + request.request_id);
-        if (attempt !== magicAttempt) return;
-        if (status.status === "approved") {
-          await signIn(status.access_token, () => attempt === magicAttempt);
-          if (attempt === magicAttempt) stopMagic();
-        } else if (status.status === "pending") {
-          magicTimer = setTimeout(poll, 1000);
-        } else {
-          throw new Error("Вход через Telegram отклонён.");
+        if (Date.now() >= expires) throw new Error(expired);
+        const result = await api(path + "poll", credentials);
+        if (!current()) return;
+        switch (result.status) {
+          case "authorized":
+            await signIn(result.access_token, current);
+            if (current()) stopProviderAuth();
+            return;
+          case "signup_required":
+            githubSignupKey = result.key;
+            byId("auth-provider-status").classList.add("hidden");
+            byId("password-form").classList.remove("hidden");
+            renderAuthForm();
+            byId("auth-username").focus();
+            return;
+          case "slow_down":
+            interval = Math.max(interval + 5, result.interval || 0);
+            break;
+          case "authorization_pending":
+          case "pending":
+            break;
+          case "expired_token":
+            throw new Error(expired);
+          default:
+            throw new Error(github ? "Вход через GitHub отклонён." : "Вход через Telegram отклонён.");
         }
+        authPollTimer = setTimeout(poll, interval * 1000);
       } catch (error) {
         fail(error);
       }
     }
-    await poll();
+    authPollTimer = setTimeout(poll, interval * 1000);
   } catch (error) {
     fail(error);
   }
-};
+}
 
+byId("auth-github").onclick = () => startProviderAuth("github");
+byId("auth-telegram").onclick = () => startProviderAuth("telegram");
 
 const streams = {team: new Map(), direct: new Map(), terminal: new Map()};
 const traffic = new Map(), lights = new Map();
@@ -3440,7 +3495,7 @@ byId("logout-confirm").onclick = async () => {
   showHubPage(false);
   localStorage.removeItem(sessionKey);
   const cleared = writeDesktopSession(null);
-  stopMagic();
+  stopProviderAuth();
   selectProject(undefined);
   for (const metric of ["models", "projects", "tokens", "completed"]) byId("welcome-" + metric).textContent = "—";
   delete byId("welcome-dashboard").dataset.projectCount;

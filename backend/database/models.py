@@ -55,6 +55,7 @@ class User(Base):
     login_name: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str | None] = mapped_column(String(255))
     github_token: Mapped[str | None] = mapped_column(Text)
+    github_account_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True)
     github_username: Mapped[str | None] = mapped_column(String(100))
     github_avatar_url: Mapped[str | None] = mapped_column(String, nullable=True)
     mobile_download_dir: Mapped[str] = mapped_column(
@@ -94,16 +95,26 @@ class LinkToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
-class MagicLoginRequest(Base):
-    __tablename__ = "magic_login_requests"
+class TelegramSignIn(Base):
+    __tablename__ = "telegram_sign_ins"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    request_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code: Mapped[str] = mapped_column(String(64), primary_key=True)
+    poll_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    telegram_id: Mapped[int | None] = mapped_column(BigInteger)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class GitHubSignUp(Base):
+    __tablename__ = "github_sign_ups"
+
+    ticket: Mapped[str] = mapped_column(String(64), primary_key=True)
+    account_id: Mapped[int] = mapped_column(BigInteger)
+    username: Mapped[str] = mapped_column(String(100))
+    avatar_url: Mapped[str | None] = mapped_column(String)
+    encrypted_token: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class Project(Base):

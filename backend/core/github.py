@@ -7,6 +7,10 @@ from tempfile import NamedTemporaryFile
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+
+from backend.database.models import User
 
 from backend.settings import ROOT
 from worker.git_bridge import is_github_repo
@@ -85,22 +89,39 @@ async def _request(token: str, method: str, path: str, **kwargs) -> dict:
     raise HTTPException(502, "GitHub вернул неожиданный ответ.")
 
 
+async def github_profile(token: str) -> tuple[int, str, str | None]:
+    profile = await _request(token, "GET", "/user")
+    account_id, username, avatar_url = profile.get("id"), profile.get("login"), profile.get("avatar_url")
+    if (type(account_id) is not int or not 0 < account_id < 2**63
+            or not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", username)):
+        raise HTTPException(502, "GitHub вернул неожиданный ответ.")
+    return account_id, username, avatar_url if isinstance(avatar_url, str) else None
+
+
+def encrypt_github_token(token: str) -> str:
+    try:
+        return _cipher().encrypt(token.encode()).decode()
+    except (OSError, ValueError):
+        raise HTTPException(503, "Не удалось безопасно сохранить токен GitHub.") from None
+
+
 async def bind_github(session, user, token: str, *, device_flow: bool = False) -> None:
     token = token.strip()
     if not device_flow and not re.fullmatch(r"(?:ghp_|github_pat_)[A-Za-z0-9_]{1,250}", token):
         raise HTTPException(422, "Введите персональный токен GitHub с префиксом ghp_ или github_pat_.")
-    profile = await _request(token, "GET", "/user")
-    username = profile.get("login")
-    if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", username):
-        raise HTTPException(502, "GitHub не вернул имя пользователя.")
+    account_id, username, avatar_url = await github_profile(token)
+    legacy_owner = await session.scalar(select(User.id).where(
+        User.id != user.id, User.github_account_id.is_(None), func.lower(User.github_username) == username.lower(),
+    ).limit(1))
+    if legacy_owner is not None:
+        raise HTTPException(409, "Этот GitHub уже привязан к аккаунту Loomis.")
+    user.github_account_id, user.github_username, user.github_avatar_url = account_id, username, avatar_url
+    user.github_token = encrypt_github_token(token)
     try:
-        user.github_token = _cipher().encrypt(token.encode()).decode()
-    except (OSError, ValueError):
-        raise HTTPException(503, "Не удалось безопасно сохранить токен GitHub.") from None
-    user.github_username = username
-    avatar_url = profile.get("avatar_url")
-    user.github_avatar_url = avatar_url if isinstance(avatar_url, str) else None
-    await session.commit()
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(409, "Этот GitHub уже привязан к аккаунту Loomis.") from None
 
 
 async def create_github_repo(user, project_name: str, visibility: str) -> str:
