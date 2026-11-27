@@ -336,6 +336,16 @@ async def list_spec_items(project: OwnedProject, session: Session):
     ))
 
 
+SPEC_FILE_EXTENSIONS = {
+    ".pdf", ".docx", ".txt", ".md", ".csv", ".tsv", ".rst", ".log",
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".cs", ".c", ".cpp", ".cc", ".h", ".hpp", ".lua",
+    ".gd", ".gdshader", ".tscn", ".tres", ".unity", ".prefab", ".shader", ".hlsl", ".glsl", ".uproject", ".uplugin",
+    ".json", ".jsonc", ".yaml", ".yml", ".xml", ".toml", ".ini", ".cfg", ".conf", ".properties",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".sql", ".sh", ".bat", ".cmd", ".ps1",
+    ".java", ".kt", ".go", ".rs", ".rb", ".php", ".swift", ".vue", ".svelte",
+}
+
+
 async def read_spec_item(request: Request) -> tuple[str, str]:
     media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
     if media_type == "application/json":
@@ -344,33 +354,37 @@ async def read_spec_item(request: Request) -> tuple[str, str]:
         except ValidationError as exc:
             raise HTTPException(422, "Введите текст ТЗ.") from exc
     if media_type != "multipart/form-data":
-        raise HTTPException(415, "Передайте JSON или документ.")
+        raise HTTPException(415, "Передайте JSON или файл.")
     async with request.form(max_files=1, max_fields=0) as form:
         upload = form.get("file")
         if not isinstance(upload, UploadFile) or not upload.filename:
-            raise HTTPException(422, "Прикрепите документ в поле file.")
+            raise HTTPException(422, "Прикрепите файл в поле file.")
         title = Path(upload.filename.replace("\\", "/")).name
         suffix = Path(title).suffix.lower()
-        if suffix not in {".pdf", ".docx", ".txt", ".md"}:
-            raise HTTPException(415, "Поддерживаются документы .pdf, .docx, .txt и .md.")
+        if suffix not in SPEC_FILE_EXTENSIONS:
+            raise HTTPException(415, "Этот формат файла не поддерживается.")
         with TemporaryDirectory() as directory:
-            path = Path(directory) / f"upload{suffix}"
+            # Source files and configs use the existing plain-text decoder.
+            parser_suffix = suffix if suffix in {".pdf", ".docx"} else ".txt"
+            path = Path(directory) / f"upload{parser_suffix}"
             with path.open("wb") as stream:
                 while chunk := await upload.read(1024 * 1024):
                     stream.write(chunk)
             try:
                 content = await parse_document(path)
             except Exception as exc:
-                raise HTTPException(422, "Не удалось прочитать документ.") from exc
+                raise HTTPException(422, "Не удалось прочитать файл.") from exc
+        if "\x00" in content:
+            raise HTTPException(422, "Не удалось прочитать файл.")
         if not content:
-            raise HTTPException(422, "В документе не найден текст.")
+            raise HTTPException(422, "В файле не найден текст.")
         return title[:500], content
 
 
 async def require_draft(session: Session, project: Project) -> None:
     await session.refresh(project)
     if project.status != "draft":
-        raise HTTPException(409, "Буфер ТЗ доступен в черновике.")
+        raise HTTPException(409, "Материалы ТЗ доступны в черновике.")
 
 
 @router.post("/{project_id}/spec-items", response_model=SpecItemView, status_code=201)
@@ -860,7 +874,7 @@ async def project_action(project: OwnedProject, data: ProjectAction, session: Se
                 await require_draft(session, project)
                 has_items = await session.scalar(select(SpecItem.id).where(SpecItem.project_id == project.id).limit(1))
                 if has_items is None:
-                    raise HTTPException(409, "Добавьте хотя бы одну запись в буфер ТЗ.")
+                    raise HTTPException(409, "Добавьте хотя бы один материал в ТЗ.")
                 if not project.workspace_path:
                     project.workspace_path = default_workspace(project)
                 await build_spec(session, project)
@@ -1157,7 +1171,7 @@ async def store_spec_media(session, project, media):
         media.spec_item_id = item.id
         session.add(media)
         await session.commit()
-    await manager.publish_log(project.id, "Добавлен медиафайл в буфер ТЗ.")
+    await manager.publish_log(project.id, "Медиафайл добавлен в материалы ТЗ.")
     return item
 
 

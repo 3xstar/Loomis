@@ -231,7 +231,7 @@
         <div id="command-approvals" aria-live="polite"></div>
 
         <section id="spec-panel" class="spec-panel glass-panel stack hidden" aria-labelledby="spec-heading">
-          <h3 id="spec-heading">Буфер ТЗ</h3>
+          <h3 id="spec-heading">Материалы ТЗ</h3>
           <form id="spec-form" class="stack">
             <div class="field">
               <label for="spec-text">Текст ТЗ</label>
@@ -241,15 +241,15 @@
               </div>
             </div>
             <div class="spec-buttons">
-              <button id="spec-add" class="button secondary" type="submit">Добавить в буфер</button>
+              <button id="spec-add" class="button secondary" type="submit">Добавить в ТЗ</button>
               <button id="spec-cancel-edit" class="button secondary" type="button" hidden>Отмена</button>
-              <button id="spec-attach" class="button secondary" type="button">Прикрепить документ</button>
-              <button id="spec-image-button" class="button secondary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg> Изображение</button>
+              <button id="spec-attach" class="button secondary" type="button">Прикрепить файл</button>
+              <button id="spec-image-button" class="button secondary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11 11 21a6 6 0 0 1-8-8L13 3a4 4 0 0 1 6 6L9 19a2 2 0 0 1-3-3l9-9"/></svg> Прикрепить изображение</button>
               <input id="spec-image" class="hidden" type="file" multiple accept=".png,.jpg,.jpeg,.webp">
-              <input id="spec-file" class="hidden" type="file" multiple accept=".pdf,.docx,.txt,.md">
+              <input id="spec-file" class="hidden" type="file" multiple accept=".pdf,.docx,.txt,.md,.csv,.tsv,.rst,.log,.py,.js,.ts,.jsx,.tsx,.mjs,.cjs,.cs,.c,.cpp,.cc,.h,.hpp,.lua,.gd,.gdshader,.tscn,.tres,.unity,.prefab,.shader,.hlsl,.glsl,.uproject,.uplugin,.json,.jsonc,.yaml,.yml,.xml,.toml,.ini,.cfg,.conf,.properties,.html,.htm,.css,.scss,.sass,.less,.sql,.sh,.bat,.cmd,.ps1,.java,.kt,.go,.rs,.rb,.php,.swift,.vue,.svelte">
             </div>
           </form>
-          <p id="spec-empty" aria-live="polite">Буфер пока пуст.</p>
+          <p id="spec-empty" aria-live="polite">Материалов ТЗ пока нет.</p>
           <ul id="spec-items" class="spec-items" aria-label="Элементы ТЗ"></ul>
           <button class="button primary wide" type="button" data-action="build_spec"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg> Собрать ТЗ проекта и перейти к планированию</button>
         </section>

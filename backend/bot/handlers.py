@@ -168,7 +168,7 @@ async def start(message: Message, command: CommandObject, session: AsyncSession,
         return
     if await state.get_state() == ProjectSetup.spec_buffer.state:
         project_id = (await state.get_data()).get("project_id")
-        await message.answer("Буфер ТЗ открыт. Отправьте текст, изображение, аудио или документ.", reply_markup=spec_keyboard(project_id))
+        await message.answer("Материалы ТЗ открыты. Отправьте текст, изображение, аудио или документ.", reply_markup=spec_keyboard(project_id))
     else:
         await leave_project(message, state, account)
         text = (f"Здравствуйте, {account.username}! Выберите действие." if account else
@@ -274,7 +274,7 @@ async def new_project(message: Message, state: FSMContext, account: User | None)
         await message.answer(LINK_HELP, reply_markup=main_menu(False))
     elif await state.get_state() in {ProjectSetup.spec_buffer.state, ProjectSetup.spec_edit.state}:
         project_id = (await state.get_data()).get("project_id")
-        await message.answer("Сначала завершите текущий буфер ТЗ.", reply_markup=spec_keyboard(project_id))
+        await message.answer("Сначала завершите сбор материалов ТЗ.", reply_markup=spec_keyboard(project_id))
     else:
         await leave_project(message, state, account)
         await state.set_state(ProjectSetup.mode)
@@ -624,12 +624,12 @@ async def open_buffer(callback: CallbackQuery, state: FSMContext, session: Async
     project = await buffer_project(session, account, project_id)
     await callback.answer()
     if project is None:
-        await callback.message.answer("Буфер доступен только для проекта в статусе черновика.")
+        await callback.message.answer("Материалы ТЗ доступны только для черновиков.")
     else:
         await select_project(callback.message, state, account, project.id)
         await state.set_state(ProjectSetup.spec_buffer)
         count = await session.scalar(select(func.count(SpecItem.id)).where(SpecItem.project_id == project.id))
-        await callback.message.answer(f"Буфер ТЗ — {count} записей. Отправьте текст, изображение, аудио или документ.", reply_markup=spec_keyboard(project.id))
+        await callback.message.answer(f"Материалы ТЗ — {count} записей. Отправьте текст, изображение, аудио или документ.", reply_markup=spec_keyboard(project.id))
 
 
 @router.callback_query(F.data.startswith("spec_items:"))
@@ -638,7 +638,7 @@ async def list_buffer_items(callback: CallbackQuery, state: FSMContext, session:
     project = await buffer_project(session, account, int(project_id))
     await callback.answer()
     if project is None:
-        await callback.message.answer("Буфер ТЗ доступен в черновике.")
+        await callback.message.answer("Материалы ТЗ доступны в черновике.")
         return
     await select_project(callback.message, state, account, project.id)
     await state.set_state(ProjectSetup.spec_buffer)
@@ -659,7 +659,7 @@ async def list_buffer_items(callback: CallbackQuery, state: FSMContext, session:
         pages.append(("Далее", f"spec_items:{project.id}:{page + 1}"))
     if pages:
         rows.append(pages)
-    rows.append([("В буфер ТЗ", f"open_buffer:{project.id}")])
+    rows.append([("К материалам ТЗ", f"open_buffer:{project.id}")])
     await callback.message.answer("Фрагменты ТЗ" if items else "На этой странице нет фрагментов ТЗ.",
                                   reply_markup=inline_menu(rows))
 
@@ -674,7 +674,7 @@ async def manage_buffer_entry(callback: CallbackQuery, state: FSMContext, sessio
     project = await buffer_project(session, account, int(project_id))
     await callback.answer()
     if project is None:
-        await callback.message.answer("Буфер ТЗ доступен в черновике.")
+        await callback.message.answer("Материалы ТЗ доступны в черновике.")
         return
     try:
         async with orchestrator.runtime(project.id).execution_lock:
@@ -715,7 +715,7 @@ async def save_buffer_entry(message: Message, state: FSMContext, session: AsyncS
     project = await buffer_project(session, account, data.get("project_id"))
     if project is None:
         await state.set_state(None)
-        await message.answer("Буфер ТЗ доступен в черновике.")
+        await message.answer("Материалы ТЗ доступны в черновике.")
         return
     content = (message.text or "").strip()
     if not content:
@@ -1005,7 +1005,7 @@ async def finish_new_project(message, state, session, account):
     await select_project(message, state, account, project.id)
     await state.set_state(ProjectSetup.spec_buffer)
     await message.answer(f"{escape(workspace_details(project))}\n\n"
-                         "Буфер ТЗ — 0 записей. Отправьте текст, изображение, аудио или документ.",
+                         "Материалы ТЗ — 0 записей. Отправьте текст, изображение, аудио или документ.",
                          parse_mode="HTML", reply_markup=spec_keyboard(project.id))
 
 
@@ -1062,7 +1062,7 @@ async def spec_item(message: Message, bot: Bot, state: FSMContext, session: Asyn
     project = await buffer_project(session, account, (await state.get_data()).get("project_id"))
     if project is None:
         await leave_project(message, state, account)
-        await message.answer("Буфер ТЗ недоступен. Создайте новый проект кнопкой меню.", reply_markup=main_menu(account is not None))
+        await message.answer("Материалы ТЗ недоступны. Создайте новый проект кнопкой меню.", reply_markup=main_menu(account is not None))
         return
     if message.text is not None:
         title, content = "Текст", message.text.strip()
@@ -1071,7 +1071,7 @@ async def spec_item(message: Message, bot: Bot, state: FSMContext, session: Asyn
             media = await read_media(message, bot, project.id)
             if media is not None:
                 await store_spec_media(session, project, media)
-                await message.answer("Медиафайл добавлен в буфер ТЗ.", reply_markup=spec_keyboard(project.id))
+                await message.answer("Медиафайл добавлен в материалы ТЗ.", reply_markup=spec_keyboard(project.id))
                 return
             title, content = await read_attachment(message, bot)
         except ValueError as error:
@@ -1096,8 +1096,8 @@ async def spec_item(message: Message, bot: Bot, state: FSMContext, session: Asyn
     except HTTPException as exc:
         await answer_error(message, exc)
         return
-    await manager.publish_log(project.id, "Добавлена запись в буфер ТЗ.")
-    await message.answer(f"Буфер ТЗ — записей: {count + 1}.", reply_markup=spec_keyboard(project.id))
+    await manager.publish_log(project.id, "Запись добавлена в материалы ТЗ.")
+    await message.answer(f"Материалы ТЗ — записей: {count + 1}.", reply_markup=spec_keyboard(project.id))
 
 
 @router.callback_query(F.data.startswith("build_spec:"))
@@ -1109,7 +1109,7 @@ async def finish_spec(callback: CallbackQuery, state: FSMContext, session: Async
     project = await buffer_project(session, account, project_id)
     if project is None:
         await state.clear()
-        await callback.answer("Буфер ТЗ недоступен.", show_alert=True)
+        await callback.answer("Материалы ТЗ недоступны.", show_alert=True)
         return
     await callback.answer()
     try:
@@ -1117,7 +1117,7 @@ async def finish_spec(callback: CallbackQuery, state: FSMContext, session: Async
             await require_draft(session, project)
             item = await session.scalar(select(SpecItem.id).where(SpecItem.project_id == project.id).limit(1))
             if item is None:
-                raise HTTPException(409, "Добавьте хотя бы одну запись в буфер ТЗ.")
+                raise HTTPException(409, "Добавьте хотя бы один материал в ТЗ.")
             if not project.workspace_path:
                 project.workspace_path = default_workspace(project)
             await build_spec(session, project)

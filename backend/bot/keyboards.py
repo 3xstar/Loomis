@@ -116,7 +116,7 @@ def project_keyboard(project) -> InlineKeyboardMarkup:
     if project.status == "review_pending":
         rows.extend(review_keyboard(project_id).inline_keyboard)
     if project.status == "draft":
-        rows.append([InlineKeyboardButton(text="Открыть буфер ТЗ", callback_data=f"open_buffer:{project_id}")])
+        rows.append([InlineKeyboardButton(text="Открыть материалы ТЗ", callback_data=f"open_buffer:{project_id}")])
     else:
         rows.extend([
             [InlineKeyboardButton(text="Добавить CLI-агента", callback_data=f"agent_add:{project_id}:cli"),

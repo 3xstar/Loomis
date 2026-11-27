@@ -736,7 +736,7 @@ function renderTeamEmpty() {
     label = "Добавить агента";
     action = () => openAgentModal();
   } else if (status === "draft") {
-    copy = "Добавьте материалы в буфер, чтобы собрать ТЗ.";
+    copy = "Добавьте материалы для сборки ТЗ.";
     label = "Перейти к ТЗ";
     action = () => byId("spec-text").focus();
   } else if (["planning", "ready_to_plan"].includes(status)) {
@@ -801,7 +801,7 @@ function setSpecEdit(target) {
   const draft = specEdit?.draft ?? input.value;
   specEdit = target ? {...target, draft} : null;
   input.value = target ? target.content : draft;
-  byId("spec-add").textContent = target ? "Сохранить изменения" : "Добавить в буфер";
+  byId("spec-add").textContent = target ? "Сохранить изменения" : "Добавить в ТЗ";
   byId("spec-cancel-edit").hidden = !target;
 }
 
@@ -952,16 +952,25 @@ byId("spec-form").onsubmit = async (event) => {
   }
 };
 
+function specFileExtension(file) {
+  return file.name.match(/\.[^.]+$/)?.[0].toLowerCase();
+}
+
+const specFileExtensions = new Set(byId("spec-file").accept.split(","));
+const specDropImageExtensions = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"]);
+
 for (const [picker, trigger, image] of [
   ["spec-file", "spec-attach", false],
   ["spec-image", "spec-image-button", true],
 ]) {
   byId(trigger).onclick = () => byId(picker).click();
   byId(picker).onchange = ({target}) => {
-    const files = Array.from(target.files, (file) => ({file, image}));
+    const selected = Array.from(target.files);
     target.value = "";
-    if (project?.status !== "draft" || specBusy || actionBusy || !files.length) return;
-    specAttachments.push(...files);
+    if (project?.status !== "draft" || specBusy || actionBusy || specEdit) return;
+    const files = selected.filter((file) => image || specFileExtensions.has(specFileExtension(file)));
+    if (files.length !== selected.length) notify("Этот формат файла не поддерживается.");
+    specAttachments.push(...files.map((file) => ({file, image})));
     renderSpecAttachments();
   };
 }
@@ -971,10 +980,18 @@ specPanel.addEventListener("dragover", (event) => { if (event.dataTransfer?.type
 specPanel.addEventListener("dragleave", (event) => { if (!specPanel.contains(event.relatedTarget)) specPanel.classList.remove("spec-drop-active"); });
 specPanel.addEventListener("drop", (event) => {
   event.preventDefault(); specPanel.classList.remove("spec-drop-active");
-  if (project?.status !== "draft" || specBusy || actionBusy) return;
-  const allowed = /\.(docx|pdf|md|txt|py|js|ts|jsx|tsx|html|css|json|yaml|yml|csv|png|jpe?g|webp|gif|svg)$/i;
-  const files = Array.from(event.dataTransfer.files).filter((file) => allowed.test(file.name)).map((file) => ({file, image: /\.(png|jpe?g|webp|gif|svg)$/i.test(file.name)}));
-  if (files.length) { specAttachments.push(...files); renderSpecAttachments(); }
+  if (project?.status !== "draft" || specBusy || actionBusy || specEdit) return;
+  const dropped = Array.from(event.dataTransfer.files);
+  const files = dropped.map((file) => {
+    const extension = specFileExtension(file);
+    const image = specDropImageExtensions.has(extension);
+    return image || specFileExtensions.has(extension) ? {file, image} : null;
+  }).filter(Boolean);
+  if (files.length !== dropped.length) notify("Этот формат файла не поддерживается.");
+  if (files.length) {
+    specAttachments.push(...files);
+    renderSpecAttachments();
+  }
 });
 
 function showCommandApproval({id, command, kind}, projectId) {
