@@ -9,6 +9,14 @@
   <link rel="stylesheet" href="/styles.css?v=latest">
 </head>
 <body>
+  <svg class="ui-symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="icon-github" viewBox="0 0 24 24"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.86c-2.78.6-3.37-1.18-3.37-1.18-.45-1.15-1.11-1.46-1.11-1.46-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.64-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></symbol>
+    <symbol id="icon-telegram" viewBox="0 0 24 24"><path d="m3 10 18-7-4 18-6-5-3 3 1-6 8-6-10 5Z"/></symbol>
+    <symbol id="icon-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+    <symbol id="icon-moon" viewBox="0 0 24 24"><path d="M20 15A8 8 0 0 1 9 4a8.5 8.5 0 1 0 11 11Z"/></symbol>
+  </svg>
   <section id="auth-screen" class="screen auth-screen">
     <div class="auth-card glass-panel">
       <div class="auth-brand">
@@ -16,6 +24,11 @@
         <div>
           <h1>Loomis</h1>
         </div>
+        <button id="auth-theme" class="button glass-card" type="button" title="Сменить тему">
+          <svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-moon"/></svg>
+          <svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-sun"/></svg>
+          <span>Тёмная тема</span>
+        </button>
       </div>
 
       <form id="password-form" class="stack" autocomplete="on">
@@ -33,14 +46,18 @@
       </form>
 
       <div id="auth-providers" class="auth-providers">
-        <button id="auth-github" class="button glass-card" type="button">Войти через GitHub</button>
-        <button id="auth-telegram" class="button glass-card" type="button">Войти через Telegram</button>
+        <button id="auth-github" class="button glass-card" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-github"/></svg><span>Войти через GitHub</span></button>
+        <button id="auth-telegram" class="button glass-card" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-telegram"/></svg><span>Войти через Telegram</span></button>
       </div>
 
-      <div id="auth-provider-status" class="stack glass-card auth-provider-status hidden">
-        <p id="auth-provider-copy" role="status"></p>
-        <code id="auth-provider-code" class="hidden"></code>
-        <a id="auth-provider-link" class="button auth-provider-link" href="https://github.com/login/device" target="_blank" rel="noopener noreferrer">Открыть GitHub</a>
+      <div id="auth-provider-status" class="stack glass-card auth-provider-status provider-instructions hidden">
+        <p id="auth-provider-copy" class="hint" role="status"></p>
+        <button class="code-copy glass-card" type="button" title="Нажмите, чтобы скопировать">
+          <code id="auth-provider-code" data-user-content></code>
+          <svg class="copy-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-copy"/></svg>
+          <span class="copy-confirmation"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-check"/></svg><span>Скопировано</span></span>
+        </button>
+        <a id="auth-provider-link" class="button glass-card provider-open" href="https://github.com/login/device" target="_blank" rel="noopener noreferrer">Открыть GitHub</a>
       </div>
       <button id="auth-provider-cancel" class="link-button hidden" type="button">Отменить</button>
 
@@ -67,8 +84,8 @@
       <div class="section-label"><span>Проекты</span><button id="new-project-button" class="text-action" type="button" title="Создать проект" aria-label="Создать проект"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>Создать</span></button></div>
       <nav id="project-list" class="project-list" aria-label="Проекты"></nav>
       <div class="integration-alerts">
-        <button id="telegram-alert" class="icon-button integration-alert" type="button" title="Telegram не привязан" aria-label="Telegram не привязан" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 18-7-4 18-6-5-3 3 1-6 8-6-10 5Z"/></svg><span aria-hidden="true">!</span></button>
-        <button id="github-alert" class="icon-button integration-alert" type="button" title="GitHub не привязан" aria-label="GitHub не привязан" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.86c-2.78.6-3.37-1.18-3.37-1.18-.45-1.15-1.11-1.46-1.11-1.46-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.64-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></svg><span aria-hidden="true">!</span></button>
+        <button id="telegram-alert" class="icon-button integration-alert" type="button" title="Telegram не привязан" aria-label="Telegram не привязан" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-telegram"/></svg></button>
+        <button id="github-alert" class="icon-button integration-alert" type="button" title="GitHub не привязан" aria-label="GitHub не привязан" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-github"/></svg></button>
       </div>
       <div class="sidebar-actions">
         <button id="settings-button" class="icon-button" type="button" title="Настройки" aria-label="Настройки"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m10 3-.7 2.2-1.9 1.1-2.3-.5-2 3.4 1.6 1.7v2.2l-1.6 1.7 2 3.4 2.3-.5 1.9 1.1.7 2.2h4l.7-2.2 1.9-1.1 2.3.5 2-3.4-1.6-1.7v-2.2l1.6-1.7-2-3.4-2.3.5-1.9-1.1L14 3Z"/><circle cx="12" cy="12" r="3"/></svg></button>
@@ -624,7 +641,15 @@
             <button id="telegram-connect" class="button secondary" type="button">Привязать Telegram</button>
             <button id="telegram-disconnect" class="button secondary" type="button" hidden>Отвязать</button>
           </div>
-          <p id="telegram-instructions" class="hint" hidden><a id="telegram-link" target="_blank" rel="noopener noreferrer">Откройте Telegram</a> и нажмите «Запустить» или отправьте боту <code id="telegram-link-code"></code>. Код действует 5 минут.</p>
+        <div id="telegram-instructions" class="provider-instructions" hidden>
+            <p class="hint">Откройте бота в Telegram для подтверждения или отправьте ему команду вручную:</p>
+            <button class="code-copy glass-card" type="button" title="Нажмите, чтобы скопировать">
+              <code id="telegram-link-code" data-user-content></code>
+              <svg class="copy-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-copy"/></svg>
+              <span class="copy-confirmation"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-check"/></svg><span>Скопировано</span></span>
+            </button>
+            <a id="telegram-link" class="button glass-card provider-open" target="_blank" rel="noopener noreferrer">Открыть Telegram</a>
+        </div>
         </section>
         <section id="github-card" class="integration-card glass-panel" aria-labelledby="github-title">
           <div class="integration-row">
@@ -639,7 +664,15 @@
             <button id="github-connect" class="button secondary" type="button">Войти через GitHub</button>
             <button id="github-disconnect" class="button secondary" type="button" hidden>Отвязать</button>
           </div>
-          <p id="github-device-instructions" class="hint" role="status" hidden>Введите код <code id="github-device-code"></code> <a id="github-device-link" href="https://github.com/login/device" target="_blank" rel="noopener noreferrer">на GitHub</a>.</p>
+        <div id="github-device-instructions" class="provider-instructions" hidden>
+            <p class="hint">Введите этот код на GitHub.</p>
+            <button class="code-copy glass-card" type="button" title="Нажмите, чтобы скопировать">
+              <code id="github-device-code" data-user-content></code>
+              <svg class="copy-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-copy"/></svg>
+              <span class="copy-confirmation"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-check"/></svg><span>Скопировано</span></span>
+            </button>
+            <a id="github-device-link" class="button glass-card provider-open" href="https://github.com/login/device" target="_blank" rel="noopener noreferrer">Открыть GitHub</a>
+        </div>
         </section>
       </div>
     </div>

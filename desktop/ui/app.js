@@ -89,12 +89,12 @@ async function api(path, body, accessToken = token, method = body === undefined 
   return data;
 }
 
-function notify(message) {
+function notify(message, duration = 4500) {
   const toast = document.createElement("div");
   toast.className = "toast glass-panel";
   toast.textContent = message;
   byId("toasts").append(toast);
-  setTimeout(() => toast.remove(), 4500);
+  setTimeout(() => toast.remove(), duration);
 }
 
 function showCursorToast(message, event) {
@@ -129,7 +129,13 @@ function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("loomis-theme", theme);
   byId("settings-theme").value = theme;
+  byId("auth-theme").querySelector("span").textContent = theme === "light" ? "Светлая тема" : "Тёмная тема";
 }
+byId("auth-theme").onclick = () => {
+  const theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  setTheme(theme);
+  saveDesktopPreferences({theme});
+};
 byId("settings-theme").onchange = ({target}) => {
   setTheme(target.value);
   saveDesktopPreferences({theme: target.value});
@@ -179,6 +185,67 @@ async function signIn(accessToken, isCurrent = () => true) {
 let registering = false;
 let githubSignupKey;
 
+const codeCopyTimers = new WeakMap();
+
+function resetCodeCopy(button) {
+  clearTimeout(codeCopyTimers.get(button));
+  button.classList.remove("copied");
+  button.title = "Нажмите, чтобы скопировать";
+}
+
+function setConfirmationCode(id, value) {
+  const code = byId(id);
+  resetCodeCopy(code.parentElement);
+  code.textContent = value;
+}
+
+async function copyConfirmationCode(button) {
+  const code = button.querySelector("code");
+  const value = code.textContent;
+  if (!value) return;
+  try {
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      const field = document.createElement("textarea");
+      field.className = "clipboard-field";
+      field.value = value;
+      field.readOnly = true;
+      const focused = document.activeElement;
+      button.parentElement.append(field);
+      try {
+        field.select();
+        if (!document.execCommand("copy")) throw new Error();
+      } finally {
+        field.remove();
+        focused?.focus({preventScroll: true});
+      }
+    }
+  } catch {
+    notify("Не удалось скопировать код.", 1500);
+    return;
+  }
+  if (code.textContent !== value) return;
+  resetCodeCopy(button);
+  button.classList.add("copied");
+  button.title = "Скопировано";
+  codeCopyTimers.set(button, setTimeout(() => resetCodeCopy(button), 1500));
+  notify("Скопировано", 1500);
+}
+
+for (const button of document.querySelectorAll(".code-copy")) {
+  button.onclick = () => copyConfirmationCode(button);
+}
+for (const link of [byId("auth-provider-link"), byId("github-device-link")]) {
+  link.onclick = async (event) => {
+    if (link.hostname !== "github.com") return;
+    event.preventDefault();
+    const url = link.href;
+    await copyConfirmationCode(link.parentElement.querySelector(".code-copy"));
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+}
+
 function renderAuthForm() {
   const signup = registering || Boolean(githubSignupKey);
   byId("auth-submit").textContent = signup ? "Зарегистрироваться" : "Войти в Loomis";
@@ -194,6 +261,7 @@ function stopProviderAuth() {
   clearTimeout(authPollTimer);
   githubSignupKey = undefined;
   byId("auth-provider-link").removeAttribute("href");
+  setConfirmationCode("auth-provider-code", "");
   byId("password-form").classList.remove("hidden");
   byId("auth-providers").classList.remove("hidden");
   byId("auth-provider-status").classList.add("hidden");
@@ -258,15 +326,15 @@ async function startProviderAuth(provider) {
     const flow = await api(path + "start", {});
     if (!current()) return;
     const expires = Date.now() + flow.expires_in * 1000;
-    const code = byId("auth-provider-code");
-    code.textContent = flow.user_code || "";
-    code.classList.toggle("hidden", !github);
+    setConfirmationCode("auth-provider-code", github
+      ? flow.user_code
+      : "/start " + new URL(flow.deep_link).searchParams.get("start"));
     const link = byId("auth-provider-link");
     link.href = github ? "https://github.com/login/device" : flow.deep_link;
     link.textContent = github ? "Открыть GitHub" : "Открыть Telegram";
     byId("auth-provider-copy").textContent = github
       ? "Введите этот код на GitHub."
-      : "Откройте бота и подтвердите вход или завершите регистрацию.";
+      : "Откройте бота в Telegram для подтверждения или отправьте ему команду вручную:";
     byId("auth-provider-status").classList.remove("hidden");
 
     let interval = github ? flow.interval : 1;
@@ -287,6 +355,7 @@ async function startProviderAuth(provider) {
             return;
           case "signup_required":
             githubSignupKey = result.key;
+            setConfirmationCode("auth-provider-code", "");
             byId("auth-provider-status").classList.add("hidden");
             byId("password-form").classList.remove("hidden");
             renderAuthForm();
@@ -2521,7 +2590,13 @@ function renderIntegrations(user) {
     ["github", githubUsername && "@" + githubUsername, user.github_avatar_url],
   ]) {
     const linked = Boolean(account);
-    byId(provider + "-alert").hidden = linked;
+    const shortcut = byId(provider + "-alert");
+    shortcut.hidden = false;
+    shortcut.classList.toggle("linked", linked);
+    const name = provider === "telegram" ? "Telegram" : "GitHub";
+    const label = name + (linked ? " привязан" : " не привязан");
+    shortcut.title = label;
+    shortcut.setAttribute("aria-label", label);
     byId(provider + "-card").classList.toggle("linked", linked);
     const status = byId(provider + "-status");
     const displayName = linked ? account : "Не привязан";
@@ -2608,7 +2683,7 @@ for (const prefix of ["project", "settings"]) {
 function showTelegramCode(result) {
   clearTimeout(telegramCodeTimer);
   telegramLinkAttempt = result;
-  byId("telegram-link-code").textContent = result ? "/link " + result.code : "";
+  setConfirmationCode("telegram-link-code", result ? "/link " + result.code : "");
   byId("telegram-instructions").hidden = !result;
   if (result) {
     byId("telegram-link").href = result.deep_link;
@@ -2622,7 +2697,7 @@ function stopGitHubDevice() {
   clearTimeout(githubDeviceTimer);
   githubDeviceFlow = undefined;
   byId("github-device-instructions").hidden = true;
-  byId("github-device-code").textContent = "";
+  setConfirmationCode("github-device-code", "");
 }
 
 byId("telegram-connect").onclick = (event) => {
@@ -2631,7 +2706,6 @@ byId("telegram-connect").onclick = (event) => {
     const result = await api("auth/generate-link-code", undefined, session, "POST");
     if (session !== token) return;
     showTelegramCode(result);
-    window.open(result.deep_link, "_blank", "noopener,noreferrer");
     const check = async () => {
       if (session !== token || telegramLinkAttempt !== result) return;
       await refreshIntegrations(true);
@@ -2647,9 +2721,8 @@ byId("github-connect").onclick = (event) => {
     const flow = await api("auth/github/device/start", {}, session);
     if (session !== token) return;
     githubDeviceFlow = flow;
-    byId("github-device-code").textContent = flow.user_code;
+    setConfirmationCode("github-device-code", flow.user_code);
     byId("github-device-instructions").hidden = false;
-    window.open(byId("github-device-link").href, "_blank", "noopener,noreferrer");
     const poll = async () => {
       if (session !== token || githubDeviceFlow !== flow) return;
       try {

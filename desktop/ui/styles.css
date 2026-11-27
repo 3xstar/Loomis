@@ -8,6 +8,7 @@
   --muted: #a1a1aa;
   --text-secondary: #d4d4d8;
   --glass: rgba(24, 24, 27, 0.72);
+  --bg-panel: #18181b;
   --surface: #ffffff12;
   --line: rgba(255, 255, 255, 0.1);
   --accent: #ffffff;
@@ -27,6 +28,7 @@
   --muted: #52525b;
   --text-secondary: #3f3f46;
   --glass: rgba(255, 255, 255, 0.78);
+  --bg-panel: #fff;
   --surface: #0000000d;
   --line: rgba(0, 0, 0, 0.08);
   --accent: #09090b;
@@ -159,10 +161,17 @@ option { background: var(--base); }
 .integration-alert[hidden], .retry-agent[hidden] { display: none; }
 .integration-alert { position: relative; width: 36px; height: 36px; }
 .integration-alert svg { width: 18px; height: 18px; fill: currentColor; stroke: none; }
-.integration-alert span {
-  position: absolute; top: -3px; right: -3px; display: grid; place-items: center;
-  width: 15px; height: 15px; border-radius: 50%; background: #c75937; color: white;
-  font-size: 10px; font-weight: 700;
+.integration-alert:not(.linked)::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  box-sizing: content-box;
+  border-radius: 50%;
+  border: 2px solid var(--bg-panel);
+  background: var(--muted);
 }
 .user-card, .section-label, .topbar, .section-head, .terminal-head, .modal-head { justify-content: space-between; }
 .user-card { padding: 10px; background: var(--surface); border-radius: 14px; }
@@ -662,15 +671,67 @@ option { background: var(--base); }
 }
 .auth-providers.hidden { display: none; }
 .auth-providers .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   min-height: 42px;
   border-radius: 14px;
   background: var(--glass);
 }
+.auth-providers svg, #auth-theme svg, .code-copy svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.auth-providers svg { fill: currentColor; stroke: none; }
+#auth-theme {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-inline-start: auto;
+  padding: 6px 9px;
+  background: var(--glass);
+  font-size: 12px;
+  line-height: 1.2;
+}
+#auth-theme svg, .code-copy svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+:root[data-theme="dark"] .theme-sun,
+:root[data-theme="light"] .theme-moon { display: none; }
 .auth-provider-status { padding: 16px; }
-.auth-provider-status p { color: var(--muted); }
-#auth-provider-code { font-size: 22px; letter-spacing: .1em; }
-.auth-provider-link { color: var(--ink); text-align: center; text-decoration: none; }
-.auth-provider-link:hover { border-color: var(--accent); }
+.provider-instructions:not([hidden], .hidden) { display: grid; gap: 10px; }
+.provider-instructions p { color: var(--muted); }
+.provider-open { background: var(--glass); color: var(--ink); text-align: center; text-decoration: none; }
+.provider-open:hover, .code-copy:hover, #auth-theme:hover { border-color: var(--muted); }
+.code-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 14px;
+  border-radius: 20px;
+  color: var(--ink);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.code-copy code { overflow-wrap: anywhere; }
+.copy-confirmation {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+.code-copy:not(.copied) .copy-confirmation, .code-copy.copied .copy-icon { display: none; }
+.clipboard-field { position: fixed; top: 0; left: 0; opacity: 0; pointer-events: none; }
+.ui-symbols { display: none; }
 #auth-provider-cancel { margin-top: 12px; }
 
 @supports (appearance: base-select) {
@@ -1346,7 +1407,6 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
 }
 .integration-avatar img { width: 100%; height: 100%; object-fit: cover; }
 #telegram-instructions, #github-device-instructions { margin: 12px 0 0; }
-#telegram-link-code, #github-device-code { white-space: nowrap; user-select: text; }
 #unlink-dialog { width: min(420px, calc(100vw - 32px)); padding: 20px; color: var(--ink); }
 #unlink-dialog::backdrop { background: #0007; }
 .cursor-toast {
