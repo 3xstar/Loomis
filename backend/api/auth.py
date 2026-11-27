@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import hashlib
+import json
 import logging
 import smtplib
 import hmac
@@ -19,20 +21,19 @@ from aiogram.exceptions import TelegramAPIError
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, computed_field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, SecretStr, StringConstraints, computed_field, field_validator
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql.elements import ColumnElement
 
 from backend.core.github import bind_github, encrypt_github_token, github_profile, github_token
 from backend.database.db import get_session
 from backend.database.models import AuthChallenge, DEFAULT_PROJECTS_DIR, GitHubSignUp, LinkToken, TelegramSignIn, User, utc_now
 from backend.settings import ROOT, settings
 
-from backend.services.email_service import send_verification
+from backend.services.email_service import SMTP_SETUP_HINT, send_verification
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -68,13 +69,33 @@ if not SECRET_KEY:
     raise RuntimeError("Loomis .secret_key is empty")
 
 
+LoginIdentifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
+PASSWORD_HINT = "Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей."
+
+
+def validate_password(password: str) -> str:
+    if (not 8 <= len(password) <= 1024 or not any(char.isalpha() for char in password)
+            or not any("0" <= char <= "9" for char in password)
+            or password.lower() in {"12345678", "123456789", "qwerty123", "password1"}):
+        raise ValueError(PASSWORD_HINT)
+    return password
+
+
+StrongPassword = Annotated[str, AfterValidator(validate_password)]
+
+
 class Credentials(BaseModel):
-    username: Username
+    username: LoginIdentifier
     password: str = Field(min_length=1, max_length=1024)
 
 
 class SignUpCredentials(Credentials):
-    password: str = Field(min_length=4, max_length=1024)
+    username: Username
+    password: StrongPassword
+
+
+class OAuthRegistration(SignUpCredentials):
+    pending_token: str = Field(min_length=1, max_length=4096)
 
 
 class AuthSecret(BaseModel):
@@ -158,40 +179,9 @@ async def create_account(session: AsyncSession, credentials: SignUpCredentials, 
     return user
 
 
-async def create_provider_account(
-    session: AsyncSession, name: str, identity: ColumnElement[bool], **fields,
-) -> tuple[User, bool]:
-    base = re.sub(r"[^\w.@-]+", "-", name).strip(".@-") or "loomis"
-    insert = sqlite_insert if session.get_bind().dialect.name == "sqlite" else postgresql_insert
-    suffix = 1
-    while True:
-        ending = f"-{suffix}" if suffix > 1 else ""
-        stem = base[:255 - len(ending)]
-        while len(stem.casefold()) + len(ending) > 255:
-            stem = stem[:-1]
-        username = stem + ending
-        user_id = await session.scalar(insert(User).values(
-            username=username, login_name=username.casefold(), **fields,
-        ).on_conflict_do_nothing().returning(User.id))
-        if user_id is not None:
-            return await session.get_one(User, user_id), True
-        user = await session.scalar(select(User).where(identity))
-        if user is not None:
-            return user, False
-        suffix += 1
-
-
-async def telegram_account(session: AsyncSession, telegram_id: int, name: str) -> tuple[User, bool]:
-    identity = User.telegram_id == telegram_id
-    user = await session.scalar(select(User).where(identity))
-    if user is not None:
-        return user, False
-    return await create_provider_account(session, name, identity, telegram_id=telegram_id, telegram_username=name)
-
-
 class AccountCredentialsUpdate(BaseModel):
     username: Username | None = None
-    password: str | None = Field(default=None, min_length=4, max_length=1024)
+    password: StrongPassword | None = None
     old_password: str | None = Field(default=None, max_length=1024)
 
 
@@ -246,11 +236,16 @@ async def update_credentials(data: AccountCredentialsUpdate, session: Session, u
 
 
 async def authenticate(session: AsyncSession, data: Credentials) -> User:
-    user = await session.scalar(select(User).where(User.login_name == data.username.casefold()))
-    matches = await password_matches(data.password, user.password_hash if user else None)
-    if user is None or not matches:
-        raise HTTPException(401, "Неверное имя пользователя или пароль.")
-    return user
+    login_match = User.login_name == data.username.casefold()
+    users = (await session.scalars(select(User).where(
+        login_match | (func.lower(User.email) == data.username.lower()),
+    ).order_by(func.coalesce(login_match, False).desc(), User.id))).all()
+    for user in users:
+        if await password_matches(data.password, user.password_hash):
+            return user
+    if not users:
+        await password_matches(data.password, None)
+    raise HTTPException(401, "Неверный логин, Email или пароль.")
 
 
 def _login_result(user_id: int) -> dict:
@@ -278,35 +273,49 @@ async def start_telegram_login(session: Session):
     return {"key": poll_key, "expires_in": 300, "deep_link": f"https://t.me/{bot_username}?start=auth_{code}"}
 
 
-async def claim_telegram_login(session: AsyncSession, code: str, telegram_id: int) -> bool:
-    claimed = await session.scalar(update(TelegramSignIn).where(
-        TelegramSignIn.code == _telegram_code(code), TelegramSignIn.status == "pending",
+async def confirm_telegram_login_link(session, code, telegram_id, username, account):
+    slot = _telegram_code(code)
+    status = "approved" if account else "needs_registration"
+    values = dict(status=status, telegram_id=telegram_id, user_id=account.id if account else None)
+    if account is None:
+        values["expires_at"] = utc_now() + timedelta(minutes=15)
+    resolved = await session.scalar(update(TelegramSignIn).where(
+        TelegramSignIn.code == slot, TelegramSignIn.status == "pending",
         TelegramSignIn.expires_at > utc_now(),
         (TelegramSignIn.telegram_id.is_(None) | (TelegramSignIn.telegram_id == telegram_id)),
-    ).values(telegram_id=telegram_id).returning(TelegramSignIn.code))
+    ).values(**values).returning(TelegramSignIn.code))
+    if resolved is None:
+        return None
+    if account is None:
+        await issue_oauth_registration(session, {"telegram_id": telegram_id, "telegram_username": username},
+                                       slot=slot, expires_at=values["expires_at"])
     await session.commit()
-    return claimed is not None
+    return status
 
 
-async def resolve_telegram_login(
-    session: AsyncSession, code: str, telegram_id: int, user_id: int | None, *, created: bool = False
-) -> bool:
-    status = "rejected" if user_id is None else "approved_new" if created else "approved"
+async def resolve_telegram_login(session: AsyncSession, code: str, telegram_id: int, user_id: int | None) -> bool:
     resolved = await session.scalar(update(TelegramSignIn).where(
         TelegramSignIn.code == _telegram_code(code), TelegramSignIn.status == "pending",
         TelegramSignIn.expires_at > utc_now(), TelegramSignIn.telegram_id == telegram_id,
-    ).values(status=status, user_id=user_id).returning(TelegramSignIn.code))
+    ).values(status="rejected" if user_id is None else "approved", user_id=user_id).returning(TelegramSignIn.code))
     return resolved is not None
 
 
 @router.post("/telegram/login/poll")
 async def poll_telegram_login(data: AuthSecret, session: Session):
     key = _sign(f"telegram-poll:{data.key}")
-    row = (await session.execute(select(TelegramSignIn.status).where(
+    row = (await session.execute(select(TelegramSignIn.status, TelegramSignIn.code).where(
         TelegramSignIn.poll_key == key, TelegramSignIn.expires_at > utc_now(),
     ))).one_or_none()
     if row is None:
         return {"status": "expired_token"}
+    if row.status == "needs_registration":
+        pending = await session.scalar(select(AuthChallenge.payload).where(
+            AuthChallenge.slot == row.code, AuthChallenge.purpose == "oauth", AuthChallenge.expires_at > utc_now(),
+        ))
+        if pending is None:
+            return {"status": "expired_token"}
+        return {"status": row.status, "pending_token": pending["pending_token"]}
     if row.status not in {"approved", "approved_new"}:
         return {"status": row.status}
     linked_user = select(User.id).where(
@@ -315,12 +324,11 @@ async def poll_telegram_login(data: AuthSecret, session: Session):
     authorized = (await session.execute(delete(TelegramSignIn).where(
         TelegramSignIn.poll_key == key, TelegramSignIn.status.in_(("approved", "approved_new")),
         TelegramSignIn.expires_at > utc_now(), linked_user,
-    ).returning(TelegramSignIn.user_id, TelegramSignIn.status))).one_or_none()
+    ).returning(TelegramSignIn.user_id))).one_or_none()
     await session.commit()
     if authorized is None:
         return {"status": "rejected"}
-    return {"status": "authorized", "needs_credentials": authorized.status == "approved_new",
-            **_login_result(authorized.user_id)}
+    return {"status": "authorized", **_login_result(authorized.user_id)}
 
 
 async def bind_telegram_account(session: AsyncSession, user: User, telegram_id: int, username: str) -> None:
@@ -449,17 +457,68 @@ async def account_for_github(session: AsyncSession, account_id: int, username: s
     return None
 
 
-async def github_login_account(session: AsyncSession, token: str) -> tuple[User, bool]:
+OAUTH_EXPIRED = "Подтверждение регистрации истекло. Начните вход заново."
+
+
+async def issue_oauth_registration(session, identity, *, slot=None, expires_at=None, **fields):
+    now = utc_now()
+    expires_at = expires_at or now + timedelta(minutes=15)
+    claims = {**identity, "nonce": secrets.token_urlsafe(32), "exp": int(expires_at.timestamp())}
+    encoded = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode()
+    pending_token = f"{encoded}.{_sign(f'pending-oauth:{encoded}')}"
+    key_hash = challenge_key(pending_token)
+    await session.execute(delete(AuthChallenge).where(AuthChallenge.expires_at <= now))
+    session.add(AuthChallenge(
+        slot=slot or key_hash, key_hash=key_hash, purpose="oauth",
+        payload={**fields, "pending_token": pending_token},
+        attempts=1, approved=True, created_at=now, expires_at=expires_at,
+    ))
+    return pending_token
+
+
+async def finish_oauth_registration(session, data):
+    try:
+        encoded, signature = data.pending_token.split(".")
+        if not hmac.compare_digest(_sign(f"pending-oauth:{encoded}"), signature):
+            raise ValueError
+        identity = json.loads(base64.urlsafe_b64decode(encoded))
+        if identity["exp"] <= time.time():
+            raise ValueError
+    except (ValueError, TypeError):
+        raise HTTPException(410, OAUTH_EXPIRED) from None
+
+    fields = await session.scalar(delete(AuthChallenge).where(
+        AuthChallenge.key_hash == challenge_key(data.pending_token),
+        AuthChallenge.purpose == "oauth", AuthChallenge.expires_at > utc_now(),
+    ).returning(AuthChallenge.payload))
+    if fields is None:
+        raise HTTPException(410, OAUTH_EXPIRED)
+    fields.pop("pending_token")
+    if "github_id" in identity:
+        fields.update(github_account_id=identity["github_id"], github_username=identity["github_username"])
+    if "telegram_id" in identity:
+        fields.update(telegram_id=identity["telegram_id"], telegram_username=identity["telegram_username"])
+    user = await create_account(session, data, **fields)
+    await save_account(session)
+    return user
+
+
+@router.post("/complete-oauth", status_code=201)
+async def complete_oauth(data: OAuthRegistration, session: Session):
+    return _login_result((await finish_oauth_registration(session, data)).id)
+
+
+async def github_login_account(session: AsyncSession, token: str, *, telegram_identity=None):
     account_id, username, avatar_url = await github_profile(token)
     user = await account_for_github(session, account_id, username)
-    created = False
     if user is None:
-        user, created = await create_provider_account(
-            session, username, User.github_account_id == account_id, github_account_id=account_id,
-            github_username=username, github_avatar_url=avatar_url, github_token=encrypt_github_token(token),
+        identity = {"github_id": account_id, "github_username": username, **(telegram_identity or {})}
+        pending_token = await issue_oauth_registration(
+            session, identity, github_avatar_url=avatar_url, github_token=encrypt_github_token(token),
         )
+        return None, pending_token
     user.github_username, user.github_avatar_url = username, avatar_url
-    return user, created
+    return user, None
 
 
 @router.post("/github/login/start")
@@ -472,9 +531,11 @@ async def poll_github_login(data: GitHubDevicePoll, session: Session):
     result = await exchange_github_device(data, "desktop")
     if isinstance(result, dict):
         return result
-    user, created = await github_login_account(session, result)
+    user, pending_token = await github_login_account(session, result)
     await save_account(session)
-    return {"status": "authorized", "needs_credentials": created, **_login_result(user.id)}
+    if user is None:
+        return {"status": "needs_registration", "pending_token": pending_token}
+    return {"status": "authorized", **_login_result(user.id)}
 
 
 @router.post("/github/login/register", status_code=201)
@@ -656,7 +717,7 @@ class RecoveryDevicePoll(GitHubDevicePoll, AuthSecret):
 
 
 class RecoveryPassword(AuthSecret):
-    password: str = Field(min_length=4, max_length=1024)
+    password: StrongPassword
 
 
 def challenge_key(key: str) -> str:
@@ -668,6 +729,8 @@ def otp_digest(key: str, code: str) -> str:
 
 
 async def issue_challenge(session, purpose, target, payload, *, user=None, address=None, language="ru"):
+    if address and not settings.smtp_host.strip():
+        raise HTTPException(503, SMTP_SETUP_HINT)
     key = secrets.token_urlsafe(32)
     key_hash = challenge_key(key)
     code = f"{secrets.randbelow(1_000_000):06d}" if address else None

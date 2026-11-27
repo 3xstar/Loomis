@@ -32,13 +32,14 @@
       </div>
 
       <form id="password-form" class="stack" autocomplete="on">
+        <h3 id="auth-oauth-title" hidden>Завершение регистрации</h3>
         <label class="field">
-          <span>Логин</span>
+          <span id="auth-username-label">Логин или Email</span>
           <input id="auth-username" name="username" type="text" autocomplete="username" maxlength="255" required>
         </label>
         <label class="field">
           <span>Пароль</span>
-          <input id="auth-password-input" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
+          <input id="auth-password-input" name="password" type="password" autocomplete="current-password" maxlength="1024" required aria-describedby="auth-password-input-hint"><small id="auth-password-input-hint" class="hint">Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей.</small>
         </label>
         <label id="auth-email-field" class="field" hidden><span>Электронная почта</span>
           <input id="auth-email" type="email" autocomplete="email" maxlength="254">
@@ -81,7 +82,7 @@
           </div>
           <form id="recovery-password-form" class="stack" hidden>
             <label class="field"><span>Новый пароль</span>
-              <input id="recovery-password" type="password" autocomplete="new-password" minlength="4" maxlength="1024" required>
+              <input id="recovery-password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" required aria-describedby="recovery-password-hint"><small id="recovery-password-hint" class="hint">Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей.</small>
             </label>
             <button class="button primary wide" type="submit">Установить новый пароль</button>
           </form>
@@ -112,28 +113,31 @@
 
   <section id="app-screen" class="screen app-screen hidden" inert>
     <aside id="sidebar" class="sidebar glass-panel">
-      <div class="sidebar-head">
-        <button id="brand-home" class="brand-row" type="button" title="Стартовый дашборд" aria-label="Стартовый дашборд"><span class="logo-mark small" aria-hidden="true"><img class="logo-dark" src="/static/logo-dark.png" alt=""><img class="logo-light" src="/static/logo-light.png" alt=""></span><strong>Loomis</strong></button>
-        <button id="sidebar-toggle" class="icon-button" type="button" title="Свернуть в значки" aria-label="Свернуть в значки" aria-controls="sidebar" aria-expanded="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14m7-10-3 3 3 3"/></svg></button>
-      </div>
+      <div class="sidebar-main">
+        <div class="sidebar-head">
+          <button id="brand-home" class="brand-row" type="button" title="Стартовый дашборд" aria-label="Стартовый дашборд"><span class="logo-mark small" aria-hidden="true"><img class="logo-dark" src="/static/logo-dark.png" alt=""><img class="logo-light" src="/static/logo-light.png" alt=""></span><strong>Loomis</strong></button>
+          <button id="sidebar-toggle" class="icon-button" type="button" title="Свернуть в значки" aria-label="Свернуть в значки" aria-controls="sidebar" aria-expanded="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14m7-10-3 3 3 3"/></svg></button>
+        </div>
 
-      <div class="user-card">
-        <div id="user-avatar" class="avatar">L</div>
-        <div class="user-copy"><strong id="user-name">—</strong><span>Локальная сессия</span></div>
-      </div>
+        <div class="user-card">
+          <div id="user-avatar" class="avatar">L</div>
+          <div class="user-copy"><strong id="user-name">—</strong><span>Локальная сессия</span></div>
+        </div>
 
-      <button id="hub-button" class="button secondary" type="button" title="Хаб нейросетей" aria-label="Хаб нейросетей" aria-controls="hub-page project-page">
-        <span class="hub-nav-label hub-nav-models" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m7.3 11 8.4-4m-8.4 6 8.4 4"/></svg><span>Хаб нейросетей</span></span>
-        <span class="hub-nav-label hub-nav-projects" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg><span>Проекты</span></span>
-      </button>
-      <div class="section-label"><span>Проекты</span><button id="new-project-button" class="text-action" type="button" title="Создать проект" aria-label="Создать проект"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>Создать</span></button></div>
-      <nav id="project-list" class="project-list" aria-label="Проекты"></nav>
-      <div class="integration-alerts">
-        <button id="telegram-alert" class="icon-button integration-alert" type="button" title="Telegram не привязан" aria-label="Telegram не привязан" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-telegram"/></svg></button>
-        <button id="github-alert" class="icon-button integration-alert" type="button" title="GitHub не привязан" aria-label="GitHub не привязан" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-github"/></svg></button>
+        <button id="hub-button" class="button secondary" type="button" title="Хаб нейросетей" aria-label="Хаб нейросетей" aria-controls="hub-page project-page">
+          <span class="hub-nav-label hub-nav-models" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m7.3 11 8.4-4m-8.4 6 8.4 4"/></svg><span>Хаб нейросетей</span></span>
+          <span class="hub-nav-label hub-nav-projects" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg><span>Проекты</span></span>
+        </button>
+        <div class="section-label"><span>Проекты</span><button id="new-project-button" class="text-action" type="button" title="Создать проект" aria-label="Создать проект"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>Создать</span></button></div>
+        <nav id="project-list" class="project-list" aria-label="Проекты"></nav>
       </div>
       <div class="sidebar-actions">
         <button id="settings-button" class="icon-button" type="button" title="Настройки" aria-label="Настройки"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m10 3-.7 2.2-1.9 1.1-2.3-.5-2 3.4 1.6 1.7v2.2l-1.6 1.7 2 3.4 2.3-.5 1.9 1.1.7 2.2h4l.7-2.2 1.9-1.1 2.3.5 2-3.4-1.6-1.7v-2.2l1.6-1.7-2-3.4-2.3.5-1.9-1.1L14 3Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        <div class="integration-alerts">
+          <button id="telegram-alert" class="icon-button integration-alert" type="button" title="Telegram не привязан" aria-label="Telegram не привязан" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-telegram"/></svg></button>
+          <button id="github-alert" class="icon-button integration-alert" type="button" title="GitHub не привязан" aria-label="GitHub не привязан" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-github"/></svg></button>
+          <button id="email-alert" class="icon-button integration-alert" type="button" title="Email не привязан" aria-label="Email не привязан" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></button>
+        </div>
         <button id="logout-button" class="icon-button subtle" type="button" title="Выйти" aria-label="Выйти"><svg viewBox="0 0 24 24"><path d="M10 5H5v14h5"/><path d="m13 8 4 4-4 4"/><path d="M17 12H9"/></svg></button>
       </div>
     </aside>
@@ -640,16 +644,15 @@
     <div id="account-credentials-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="account-credentials-title">
       <div class="modal-head"><h3 id="account-credentials-title">Логин и пароль</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <form id="account-credentials-form" class="stack">
-        <p id="account-credentials-prompt" class="hint" hidden></p>
+        <p class="hint">Оставьте поле пароля пустым, чтобы сохранить текущий пароль.</p>
         <label class="field"><span>Логин</span><input id="account-username" name="username" autocomplete="username" maxlength="255" required></label>
         <label id="account-old-password-field" class="field" hidden><span>Старый пароль</span>
           <input id="account-old-password" type="password" autocomplete="current-password" maxlength="1024">
         </label>
         <button id="account-forgot" class="link-button auth-forgot" type="button" hidden>Не помню старый пароль</button>
-        <label class="field"><span>Новый пароль</span><input id="account-password" name="password" type="password" autocomplete="new-password" minlength="4" maxlength="1024"></label>
+        <label class="field"><span>Новый пароль</span><input id="account-password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" aria-describedby="account-password-hint"><small id="account-password-hint" class="hint">Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей.</small></label>
         <p id="account-credentials-error" class="error" role="alert"></p>
         <button id="account-credentials-save" class="button primary wide" type="submit">Сохранить</button>
-        <button id="account-credentials-skip" class="link-button close-modal" type="button" hidden>Пропустить</button>
       </form>
       <div id="account-recovery-slot"></div>
     </div>

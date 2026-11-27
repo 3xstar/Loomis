@@ -1,7 +1,6 @@
 """Loomis transactional email."""
 
 import asyncio
-import logging
 import smtplib
 import ssl
 from email.message import EmailMessage
@@ -9,7 +8,7 @@ from email.utils import parseaddr
 
 from backend.settings import ROOT, settings
 
-logger = logging.getLogger(__name__)
+SMTP_SETUP_HINT = "Укажите SMTP_HOST, SMTP_USER и SMTP_PASSWORD в файле .env."
 
 COPY = {
     "ru": {
@@ -36,7 +35,7 @@ def verification_message(address: str, code: str, purpose: str, language: str) -
     message["Subject"] = copy[purpose]
     message["From"] = settings.smtp_from or settings.smtp_user
     message["To"] = address
-    message.set_content(f'Loomis\n\n{copy[purpose]}\n{copy["instructions"]}\n\n{code}\n\n{copy["expiry"]}')
+    message.set_content(f'Loomis\n\n{copy[purpose]}\n{copy["instructions"]}\n\n{code}\n\n{copy["expiry"]}', charset="utf-8")
     message.add_alternative(f"""<!doctype html>
 <html lang="{language}">
 <body style="margin:0;background:#09090b;color:#f4f4f5;font-family:Arial,sans-serif">
@@ -57,7 +56,7 @@ def verification_message(address: str, code: str, purpose: str, language: str) -
     </td></tr>
   </table>
 </body>
-</html>""", subtype="html")
+</html>""", subtype="html", charset="utf-8")
     message.get_payload()[-1].add_related(
         (ROOT / "desktop/ui/favicon.png").read_bytes(), maintype="image", subtype="png",
         cid="<loomis-lighter@loomis>", disposition="inline",
@@ -71,9 +70,9 @@ def _deliver(message: EmailMessage) -> None:
     if not sender:
         raise ValueError("SMTP_FROM or SMTP_USER is required")
     if settings.smtp_port == 465:
-        connection = smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=15, context=context)
+        connection = smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=10, context=context)
     else:
-        connection = smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15)
+        connection = smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10)
     with connection as client:
         if settings.smtp_port != 465:
             client.starttls(context=context)
@@ -84,6 +83,5 @@ def _deliver(message: EmailMessage) -> None:
 
 async def send_verification(address: str, code: str, purpose: str, language: str) -> None:
     if not settings.smtp_host.strip():
-        logger.warning("Loomis email OTP (%s, %s): %s", purpose, address, code)
-        return
+        raise ValueError(SMTP_SETUP_HINT)
     await asyncio.to_thread(_deliver, verification_message(address, code, purpose, language))

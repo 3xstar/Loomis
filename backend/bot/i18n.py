@@ -10,6 +10,13 @@ from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
 
 bot_language = ContextVar("bot_language", default="ru")
 EN = {
+    "Введите логин или Email Loomis:": "Enter your Loomis username or email:",
+    "Неверный логин, Email или пароль.": "Incorrect username, email, or password.",
+    "Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей.": "Use at least 8 characters, including a letter and a digit. Avoid common passwords.",
+    "Подтверждение регистрации истекло. Начните вход заново.": "Registration confirmation expired. Start signing in again.",
+    "Вход в Loomis Desktop выполнен": "Signed in to Loomis Desktop",
+    "Аккаунт Telegram подтверждён — задайте логин и пароль в окне Loomis на ПК": "Telegram account verified. Choose a username and password in Loomis Desktop.",
+    "Укажите SMTP_HOST, SMTP_USER и SMTP_PASSWORD в файле .env.": "Set SMTP_HOST, SMTP_USER, and SMTP_PASSWORD in the .env file.",
     "Не привязана": "Not linked",
     "Электронная почта": "Email",
     "Адрес электронной почты": "Email address",

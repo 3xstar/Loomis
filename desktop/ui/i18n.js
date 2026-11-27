@@ -1,5 +1,14 @@
 const LoomisI18n = (() => {
   const en = {
+    "Логин или Email": "Username or email",
+    "Неверный логин, Email или пароль.": "Incorrect username, email, or password.",
+    "Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей.": "Use at least 8 characters, including a letter and a digit. Avoid common passwords.",
+    "Завершение регистрации": "Finish registration",
+    "Завершить регистрацию": "Finish registration",
+    "Подтверждение регистрации истекло. Начните вход заново.": "Registration confirmation expired. Start signing in again.",
+    "Ссылка входа в Telegram недоступна.": "The Telegram sign-in link is unavailable.",
+    "Email не привязан": "Email is disconnected",
+    "Укажите SMTP_HOST, SMTP_USER и SMTP_PASSWORD в файле .env.": "Set SMTP_HOST, SMTP_USER, and SMTP_PASSWORD in the .env file.",
     "Электронная почта": "Email",
     "Адрес электронной почты": "Email address",
     "Забыли пароль?": "Forgot your password?",

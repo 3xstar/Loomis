@@ -167,7 +167,7 @@ function renderAccountName(user) {
   byId("account-username").defaultValue = user.username || "";
 }
 
-async function signIn(accessToken, isCurrent = () => true, setupProvider) {
+async function signIn(accessToken, isCurrent = () => true) {
   const user = await api("auth/me", undefined, accessToken);
   if (!isCurrent()) return;
   token = accessToken;
@@ -181,7 +181,6 @@ async function signIn(accessToken, isCurrent = () => true, setupProvider) {
   const saved = writeDesktopSession(token);
   renderAccountName(user);
   showWorkspace(true);
-  if (setupProvider) openAccountCredentials(setupProvider);
   loadHubModels();
   try {
     await loadProjects(Number(localStorage.getItem(activeProjectKey)));
@@ -191,7 +190,19 @@ async function signIn(accessToken, isCurrent = () => true, setupProvider) {
   await saved;
 }
 
+const passwordHint = "Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей.";
+const simplePasswords = new Set(["12345678", "123456789", "qwerty123", "password1"]);
+
+function validatePassword(password) {
+  const length = Array.from(password).length;
+  if (length < 8 || length > 1024 || !/\p{L}/u.test(password) ||
+      !/[0-9]/.test(password) || simplePasswords.has(password.toLowerCase())) {
+    throw new Error(passwordHint);
+  }
+}
+
 let registering = false;
+let oauthRegistration;
 let signupKey;
 let emailLinkKey;
 let recovery = null;
@@ -259,17 +270,24 @@ for (const link of [byId("auth-provider-link"), byId("github-device-link"), byId
 }
 
 function renderAuthForm() {
-  const signup = registering;
+  const completing = Boolean(oauthRegistration);
+  const signup = registering && !completing;
+  const newPassword = signup || completing;
+  byId("auth-oauth-title").hidden = !completing;
+  byId("auth-username-label").textContent = newPassword ? "Логин" : "Логин или Email";
   byId("auth-email-field").hidden = !signup;
   byId("auth-email").required = signup;
-  byId("auth-forgot").hidden = signup;
-  byId("auth-submit").textContent = signup ? "Зарегистрироваться" : "Войти в Loomis";
+  byId("auth-forgot").hidden = newPassword;
+  byId("auth-mode-toggle").hidden = completing;
+  byId("auth-submit").textContent = completing ? "Завершить регистрацию"
+    : signup ? "Зарегистрироваться" : "Войти в Loomis";
   byId("auth-mode-toggle").textContent = signup ? "Уже есть аккаунт? Войти" : "Нет аккаунта? Зарегистрироваться";
-  byId("auth-password-input").autocomplete = signup ? "new-password" : "current-password";
-  byId("auth-password-input").minLength = signup ? 4 : 1;
+  byId("auth-password-input").autocomplete = newPassword ? "new-password" : "current-password";
+  byId("auth-password-input").minLength = newPassword ? 8 : 1;
 }
 
 function stopProviderAuth() {
+  oauthRegistration = undefined;
   authAttempt++;
   clearTimeout(authPollTimer);
   byId("auth-provider-link").removeAttribute("href");
@@ -298,7 +316,20 @@ byId("password-form").onsubmit = async (event) => {
   byId("auth-error").textContent = "";
   try {
     const credentials = {username: byId("auth-username").value, password: byId("auth-password-input").value};
+    if (oauthRegistration) {
+      if (!oauthRegistration.accessToken) {
+        validatePassword(credentials.password);
+        const result = await api("auth/complete-oauth", {...credentials, pending_token: oauthRegistration.pendingToken});
+        oauthRegistration.accessToken = result.access_token;
+      }
+      await signIn(oauthRegistration.accessToken);
+      event.target.reset();
+      registering = false;
+      stopProviderAuth();
+      return;
+    }
     if (registering) {
+      validatePassword(credentials.password);
       const result = await api("auth/register", {
         ...credentials, email: byId("auth-email").value, language: LoomisI18n.language,
       });
@@ -316,6 +347,11 @@ byId("password-form").onsubmit = async (event) => {
     registering = false;
     stopProviderAuth();
   } catch (error) {
+    if (oauthRegistration && !oauthRegistration.accessToken && error.status === 410) {
+      const {provider} = oauthRegistration;
+      stopProviderAuth();
+      void startProviderAuth(provider);
+    }
     byId("auth-error").textContent = error.message;
   } finally {
     controls.forEach((id) => byId(id).disabled = false);
@@ -499,6 +535,7 @@ byId("recovery-password-form").onsubmit = async (event) => {
   byId("recovery-error").textContent = "";
   try {
     const body = {key: attempt.grant, password: byId("recovery-password").value};
+    validatePassword(body.password);
     const path = attempt.account ? "auth/recovery/account/finish" : "auth/recovery/finish";
     const result = await api(path, body, attempt.session);
     if (!current()) return;
@@ -588,11 +625,14 @@ async function startProviderAuth(provider) {
     const flow = await api(path + "start", {});
     if (!current()) return;
     const expires = Date.now() + flow.expires_in * 1000;
-    setConfirmationCode("auth-provider-code", github
-      ? flow.user_code
-      : "/start " + new URL(flow.deep_link).searchParams.get("start"));
+    const telegramLink = github ? null : new URL(flow.deep_link);
+    const start = telegramLink?.searchParams.get("start");
+    if (telegramLink && (telegramLink.origin !== "https://t.me" || !/^auth_[A-Za-z0-9_-]{43}$/.test(start))) {
+      throw new Error("Ссылка входа в Telegram недоступна.");
+    }
+    setConfirmationCode("auth-provider-code", github ? flow.user_code : "/start " + start);
     const link = byId("auth-provider-link");
-    link.href = github ? "https://github.com/login/device" : flow.deep_link;
+    link.href = github ? "https://github.com/login/device" : telegramLink.href;
     link.textContent = github ? "Открыть GitHub" : "Открыть Telegram";
     byId("auth-provider-copy").textContent = github
       ? "Введите этот код на GitHub."
@@ -612,8 +652,15 @@ async function startProviderAuth(provider) {
         if (!current()) return;
         switch (result.status) {
           case "authorized":
-            await signIn(result.access_token, current, result.needs_credentials ? provider : undefined);
+            await signIn(result.access_token, current);
             if (current()) stopProviderAuth();
+            return;
+          case "needs_registration":
+            stopProviderAuth();
+            oauthRegistration = {provider, pendingToken: result.pending_token};
+            byId("auth-providers").classList.add("hidden");
+            renderAuthForm();
+            byId("auth-username").focus();
             return;
           case "slow_down":
             interval = Math.max(interval + 5, result.interval || 0);
@@ -2803,20 +2850,10 @@ function openSettings(tabId) {
   if (tabId === "integrations-tab") tab.focus();
 }
 
-function openAccountCredentials(provider) {
-  const prompt = byId("account-credentials-prompt");
-  prompt.textContent = provider === "github"
-    ? "Аккаунт создан через GitHub! Задайте свой логин и пароль для входа напрямую."
-    : provider === "telegram"
-      ? "Аккаунт создан через Telegram! Задайте свой логин и пароль для входа напрямую."
-      : "Оставьте поле пароля пустым, чтобы сохранить текущий пароль.";
-  prompt.hidden = false;
+function openAccountCredentials() {
   byId("account-credentials-form").reset();
-  const hasPassword = Boolean(accountHasPassword && !provider);
-  byId("account-old-password-field").hidden = !hasPassword;
-  byId("account-forgot").hidden = !hasPassword;
-  byId("account-password").required = Boolean(provider);
-  byId("account-credentials-skip").hidden = !provider;
+  byId("account-old-password-field").hidden = !accountHasPassword;
+  byId("account-forgot").hidden = !accountHasPassword;
   byId("account-credentials-error").textContent = "";
   showModal("account-credentials-modal");
 }
@@ -2839,6 +2876,7 @@ byId("account-credentials-form").onsubmit = async (event) => {
   save.disabled = true;
   errorField.textContent = "";
   try {
+    if (password) validatePassword(password);
     const user = await api("auth/credentials", body, session, "PATCH");
     if (token !== session) return;
     renderAccountName(user);
@@ -2852,7 +2890,7 @@ byId("account-credentials-form").onsubmit = async (event) => {
 };
 
 byId("settings-button").onclick = () => openSettings("general-tab");
-for (const provider of ["telegram", "github"]) {
+for (const provider of ["telegram", "github", "email"]) {
   byId(provider + "-alert").onclick = () => openSettings("integrations-tab");
 }
 
@@ -2892,6 +2930,7 @@ byId("settings-delete-project").onclick = () => {
 
 function renderIntegrations(user) {
   const verified = Boolean(user.email_verified && user.email);
+  byId("email-alert").hidden = verified;
   const emailStatus = byId("email-status");
   emailStatus.hidden = !verified;
   emailStatus.textContent = verified ? user.email : "";
@@ -2904,13 +2943,7 @@ function renderIntegrations(user) {
     ["github", githubUsername && "@" + githubUsername, user.github_avatar_url],
   ]) {
     const linked = Boolean(account);
-    const shortcut = byId(provider + "-alert");
-    shortcut.hidden = false;
-    shortcut.classList.toggle("linked", linked);
-    const name = provider === "telegram" ? "Telegram" : "GitHub";
-    const label = name + (linked ? " привязан" : " не привязан");
-    shortcut.title = label;
-    shortcut.setAttribute("aria-label", label);
+    byId(provider + "-alert").hidden = linked;
     byId(provider + "-card").classList.toggle("linked", linked);
     const status = byId(provider + "-status");
     const displayName = linked ? account : "Не привязан";
