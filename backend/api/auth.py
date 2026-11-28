@@ -253,12 +253,14 @@ async def change_password(session: AsyncSession, user: User, password: str, prev
         raise HTTPException(409, "Пароль уже изменён. Повторите попытку.")
 
 
-async def save_account(session: AsyncSession) -> None:
+async def save_account(
+    session: AsyncSession, conflict_message: str = "Логин, Email, Telegram или GitHub уже привязан к аккаунту."
+) -> None:
     try:
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        raise HTTPException(409, "Логин, Email, Telegram или GitHub уже привязан к аккаунту.") from None
+        raise HTTPException(409, conflict_message) from None
 
 
 async def create_account(session: AsyncSession, credentials: SignUpCredentials, **fields) -> User:
@@ -312,17 +314,17 @@ async def update_credentials(data: AccountCredentialsUpdate, session: Session, u
     if data.password is not None:
         validate_password_strength(data.password, data.username or user.username, user.email)
     if data.username is not None:
-        login_name = data.username.casefold()
-        if len(login_name) > 255:
-            raise HTTPException(422, "Логин слишком длинный.")
         user.username = data.username
-        user.login_name = login_name
+        user.login_name = data.username.casefold()
     if data.password is not None:
         previous = user.password_hash
         if previous and not await password_matches(data.old_password or "", previous):
             raise HTTPException(403, "Неверный старый пароль.")
         await change_password(session, user, data.password, previous)
-    await save_account(session)
+    if data.username is not None:
+        await save_account(session, "Этот логин уже занят.")
+    else:
+        await save_account(session)
     return user
 
 

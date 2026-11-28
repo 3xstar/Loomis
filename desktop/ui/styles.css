@@ -1378,7 +1378,7 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
 .settings-tabs.glass-panel {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   margin-bottom: 16px;
@@ -1389,7 +1389,7 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
   position: absolute;
   box-sizing: border-box;
   inset: 4px auto 4px 4px;
-  width: calc((100% - 16px) / 3);
+  width: calc((100% - 20px) / 4);
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface);
@@ -1401,6 +1401,34 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
 }
 .settings-tabs:has(#language-tab[aria-selected="true"])::before {
   transform: translate3d(calc(200% + 8px), 0, 0);
+}
+.settings-tabs:has(#account-tab[aria-selected="true"])::before {
+  transform: translate3d(calc(300% + 12px), 0, 0);
+}
+#account-tab { display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+#account-tab .button-icon { flex: none; width: 14px; height: 14px; }
+.settings-tabs .tab { min-width: 0; padding-inline: 2px; }
+.account-details, .account-form {
+  margin: 0;
+  padding: 14px;
+  border-radius: 16px;
+}
+.account-details > div {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding-block: 8px;
+}
+.account-details > div + div { border-top: 1px solid var(--line); }
+.account-details dt { color: var(--muted); }
+.account-details dd { margin: 0; overflow-wrap: anywhere; }
+.account-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.account-actions .button[aria-expanded="true"] { border-color: var(--muted); background: var(--surface); }
+#account-recovery-slot:not(:has(#password-recovery:not([hidden]))) { display: none; }
+@media (max-width: 400px) {
+  #settings-modal { padding-inline: 14px; }
+  #account-tab { gap: 2px; }
+  .settings-tabs .tab { font-size: 12px; }
 }
 .language-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .language-card {
@@ -1774,7 +1802,7 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
 .auth-forgot { justify-self: start; align-self: flex-start; }
 #email-card h3, #password-recovery h3 { margin: 0; }
 #recovery-github-code { font-size: 1.25rem; user-select: text; }
-#auth-screen [hidden], #account-credentials-modal [hidden] { display: none; }
+#auth-screen [hidden] { display: none; }
 
 .auth-tools {
   display: flex;

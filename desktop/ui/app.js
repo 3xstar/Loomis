@@ -165,6 +165,8 @@ function showWorkspace(visible) {
 
 let accountHasPassword = false;
 let accountEmail = "";
+let accountUsername = "";
+let accountPanelRevision = 0;
 
 function renderAccountName(user) {
   accountHasPassword = user.has_password;
@@ -172,7 +174,15 @@ function renderAccountName(user) {
   byId("user-name").dataset.userContent = "";
   byId("user-name").textContent = user.username || "Loomis";
   byId("user-avatar").textContent = byId("user-name").textContent[0].toUpperCase();
-  byId("account-username").defaultValue = user.username || "";
+  accountUsername = user.username || "";
+  byId("account-current-username").textContent = accountUsername;
+  byId("account-no-username").hidden = Boolean(accountUsername);
+  byId("account-current-email").textContent = accountEmail;
+  byId("account-no-email").hidden = Boolean(accountEmail);
+  byId("account-password-set").hidden = !accountHasPassword;
+  byId("account-no-password").hidden = accountHasPassword;
+  byId("account-old-password-field").hidden = !accountHasPassword;
+  byId("account-forgot").hidden = !accountHasPassword;
 }
 
 async function signIn(accessToken, isCurrent = () => true) {
@@ -187,7 +197,6 @@ async function signIn(accessToken, isCurrent = () => true) {
   renderTelegramLogs();
   localStorage.setItem(sessionKey, token);
   const saved = writeDesktopSession(token);
-  renderAccountName(user);
   showWorkspace(true);
   loadHubModels();
   try {
@@ -257,7 +266,7 @@ function validate_password_strength(password, username = "", email = "") {
 }
 
 function recoveryPasswordIdentity(attempt) {
-  if (attempt?.account) return [byId("account-username").defaultValue, accountEmail];
+  if (attempt?.account) return [accountUsername, accountEmail];
   const identifier = attempt?.identifier || "";
   return identifier.includes("@") ? ["", identifier] : [identifier];
 }
@@ -265,7 +274,7 @@ function recoveryPasswordIdentity(attempt) {
 for (const [id, identity] of [
   ["auth-password-input", () => [byId("auth-username").value.trim(), registering && !oauthRegistration ? byId("auth-email").value.trim() : ""]],
   ["recovery-password", () => recoveryPasswordIdentity(recovery)],
-  ["account-password", () => [byId("account-username").value.trim(), accountEmail]],
+  ["account-password", () => [accountUsername, accountEmail]],
 ]) {
   const input = byId(id);
   const meter = byId(id + "-strength");
@@ -530,9 +539,9 @@ function openRecovery(account) {
   byId("recovery-start").reset();
   byId("recovery-identifier").value = account ? "" : byId("auth-username").value;
   if (account) {
-    byId("account-old-password").value = "";
-    byId("account-password").value = "";
-    byId("account-credentials-form").hidden = true;
+    byId("account-password-form").reset();
+    byId("account-password-form").querySelector(".form-error").textContent = "";
+    byId("account-password-form").hidden = true;
   } else {
     byId("auth-password-input").value = "";
     byId("auth-error").textContent = "";
@@ -553,7 +562,7 @@ function closeRecovery() {
   byId("recovery-code-form").reset();
   byId("recovery-password-form").reset();
   if (account) {
-    byId("account-credentials-form").hidden = false;
+    byId("account-password-form").hidden = false;
   } else {
     stopProviderAuth();
   }
@@ -633,7 +642,9 @@ byId("auth-forgot").onclick = () => openRecovery(false);
 byId("account-forgot").onclick = () => openRecovery(true);
 byId("recovery-back").onclick = () => {
   if (!recovery?.method) {
+    const account = recovery?.account;
     closeRecovery();
+    if (account) byId("account-forgot").focus();
     return;
   }
   clearTimeout(recoveryTimer);
@@ -702,9 +713,10 @@ byId("recovery-password-form").onsubmit = async (event) => {
     const result = await api(path, body, attempt.session);
     if (!current()) return;
     if (attempt.account) {
+      integrationsRevision++;
       renderAccountName(result);
-      closeRecovery();
-      showModal();
+      setAccountForm();
+      byId("account-edit-password").focus();
       notify("Пароль изменён.");
     } else {
       await signIn(result.access_token, current);
@@ -2513,11 +2525,9 @@ async function mutateFromModal(button, target, method, body, onError = (error) =
 function showModal(id) {
   const backdrop = byId("modal-backdrop");
   if (!id && (backdrop.inert || !byId("agent-test-status").classList.contains("hidden"))) return;
-  if (id !== "settings-modal") resetEmailLink();
-  if (id !== "account-credentials-modal") {
-    byId("account-password").value = "";
-    byId("account-old-password").value = "";
-    if (recovery?.account) closeRecovery();
+  if (id !== "settings-modal") {
+    resetEmailLink();
+    setAccountForm();
   }
   modalRevision++;
   clearInterval(integrationsTimer);
@@ -2931,6 +2941,7 @@ const locationForm = byId("project-location-form");
 const projectsDirField = byId("default-projects-dir");
 
 function selectSettingsTab(tab) {
+  if (tab.id !== "account-tab") setAccountForm();
   for (const button of all(".settings-tabs .tab")) {
     const selected = button === tab;
     button.classList.toggle("active", selected);
@@ -2944,6 +2955,8 @@ function selectSettingsTab(tab) {
     integrationsTimer = setInterval(() => {
       if (!telegramLinkAttempt) refreshIntegrations();
     }, 3000);
+  } else if (tab.id === "account-tab") {
+    refreshIntegrations();
   }
 }
 
@@ -3018,48 +3031,66 @@ function openSettings(tabId) {
   if (tabId === "integrations-tab") tab.focus();
 }
 
-function openAccountCredentials() {
-  byId("account-credentials-form").reset();
-  byId("account-old-password-field").hidden = !accountHasPassword;
-  byId("account-forgot").hidden = !accountHasPassword;
-  byId("account-credentials-error").textContent = "";
-  showModal("account-credentials-modal");
+function setAccountForm(active) {
+  accountPanelRevision++;
+  if (recovery?.account) closeRecovery();
+  for (const field of ["username", "password"]) {
+    const form = byId("account-" + field + "-form");
+    form.reset();
+    form.querySelector(".form-error").textContent = "";
+    form.hidden = field !== active;
+    byId("account-edit-" + field).setAttribute("aria-expanded", field === active);
+  }
+  if (active === "username") byId("account-username").focus();
+  if (active === "password") byId(accountHasPassword ? "account-old-password" : "account-password").focus();
 }
 
-byId("account-credentials-button").onclick = () => openAccountCredentials();
-byId("account-credentials-form").onsubmit = async (event) => {
-  event.preventDefault();
-  const save = byId("account-credentials-save");
-  const errorField = byId("account-credentials-error");
-  const session = token;
-  const revision = modalRevision;
-  const username = byId("account-username");
-  const body = {};
-  if (username.value !== username.defaultValue) body.username = username.value;
-  const password = byId("account-password").value;
-  if (password) {
-    body.password = password;
-    if (accountHasPassword) body.old_password = byId("account-old-password").value;
-  }
-  save.disabled = true;
-  errorField.textContent = "";
-  try {
-    if (body.username !== undefined) body.username = validatedUsername(body.username);
-    if (password) {
-      validate_password_strength(password, body.username ?? username.defaultValue, accountEmail);
-      if (accountHasPassword && !body.old_password) throw new Error("Введите текущий пароль.");
+const accountActions = all(".account-actions button");
+for (const field of ["username", "password"]) {
+  const button = byId("account-edit-" + field);
+  const form = byId("account-" + field + "-form");
+  button.onclick = () => setAccountForm(button.getAttribute("aria-expanded") === "false" ? field : undefined);
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const save = form.querySelector('[type="submit"]');
+    const errorField = form.querySelector(".form-error");
+    const session = token;
+    const revision = accountPanelRevision;
+    save.disabled = true;
+    byId("account-forgot").disabled = true;
+    for (const action of accountActions) action.disabled = true;
+    errorField.textContent = "";
+    try {
+      const body = {};
+      if (field === "username") {
+        body.username = validatedUsername(byId("account-username").value);
+      } else {
+        body.password = byId("account-password").value;
+        if (accountHasPassword) {
+          body.old_password = byId("account-old-password").value;
+          if (!body.old_password) throw new Error("Введите текущий пароль.");
+        }
+        validate_password_strength(body.password, accountUsername, accountEmail);
+      }
+      const user = await api("auth/credentials", body, session, "PATCH");
+      if (token !== session) return;
+      integrationsRevision++;
+      renderAccountName(user);
+      if (revision === accountPanelRevision) {
+        setAccountForm();
+        button.disabled = false;
+        button.focus();
+      }
+      notify(field === "username" ? "Логин изменён." : "Пароль изменён.");
+    } catch (error) {
+      if (token === session && revision === accountPanelRevision) errorField.textContent = error.message;
+    } finally {
+      save.disabled = false;
+      byId("account-forgot").disabled = false;
+      for (const action of accountActions) action.disabled = false;
     }
-    const user = await api("auth/credentials", body, session, "PATCH");
-    if (token !== session) return;
-    renderAccountName(user);
-    if (modalRevision === revision) showModal();
-    notify("Данные для входа сохранены.");
-  } catch (error) {
-    if (token === session && modalRevision === revision) errorField.textContent = error.message;
-  } finally {
-    save.disabled = false;
-  }
-};
+  };
+}
 
 byId("settings-button").onclick = () => openSettings("general-tab");
 for (const provider of ["telegram", "github", "email"]) {
@@ -3101,7 +3132,7 @@ byId("settings-delete-project").onclick = () => {
 };
 
 function renderIntegrations(user) {
-  accountEmail = user.email || "";
+  renderAccountName(user);
   const verified = Boolean(user.email_verified && user.email);
   byId("email-alert").hidden = verified;
   byId("email-disconnect").hidden = !verified;

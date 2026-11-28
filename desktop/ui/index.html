@@ -670,38 +670,22 @@
         </form>
     </div>
 
-    <div id="account-credentials-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="account-credentials-title">
-      <div class="modal-head"><h3 id="account-credentials-title">Логин и пароль</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
-      <form id="account-credentials-form" novalidate class="stack">
-        <p class="hint">Оставьте поле пароля пустым, чтобы сохранить текущий пароль.</p>
-        <label class="field"><span>Логин</span><input id="account-username" name="username" autocomplete="username" maxlength="255" required></label>
-        <label id="account-old-password-field" class="field" hidden><span>Старый пароль</span>
-          <input id="account-old-password" type="password" autocomplete="current-password" maxlength="1024">
-        </label>
-        <button id="account-forgot" class="link-button auth-forgot" type="button" hidden>Не помню старый пароль</button>
-        <label class="field"><span>Новый пароль</span><input id="account-password" name="password" type="password" autocomplete="new-password"></label>
-        <div id="account-password-strength" class="password-strength" hidden>
-          <div class="password-strength-track" aria-hidden="true"><span></span><span></span><span></span></div>
-          <span class="password-strength-label" aria-live="polite"></span>
-        </div>
-        <p id="account-credentials-error" class="error" role="alert"></p>
-        <button id="account-credentials-save" class="button primary wide" type="submit">Сохранить</button>
-      </form>
-      <div id="account-recovery-slot"></div>
-    </div>
     <div id="settings-modal" class="modal glass-panel hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
       <div class="modal-head"><h3 id="settings-modal-title">Настройки</h3><button class="icon-button close-modal" type="button" aria-label="Закрыть"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
       <div class="settings-tabs glass-panel" role="tablist" aria-label="Разделы настроек">
         <button id="general-tab" class="tab active" type="button" role="tab" aria-controls="general-panel" aria-selected="true">Общие</button>
         <button id="integrations-tab" class="tab" type="button" role="tab" aria-controls="integrations-panel" aria-selected="false" tabindex="-1">Интеграции</button>
         <button id="language-tab" class="tab" type="button" role="tab" aria-controls="language-panel" aria-selected="false" tabindex="-1">Язык</button>
+        <button id="account-tab" class="tab" type="button" role="tab" aria-controls="account-panel" aria-selected="false" tabindex="-1">
+          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20v-1a7 7 0 0 1 14 0v1"/></svg>
+          <span>Аккаунт</span>
+        </button>
       </div>
       <div id="language-panel" class="language-cards" role="tabpanel" aria-labelledby="language-tab" hidden>
         <button class="language-card glass-panel" type="button" data-language="ru" aria-pressed="true"><span lang="ru">Русский (RU)</span><span class="language-check" aria-hidden="true">✓</span></button>
         <button class="language-card glass-panel" type="button" data-language="en" aria-pressed="false"><span lang="en">English (EN)</span><span class="language-check" aria-hidden="true">✓</span></button>
       </div>
       <div id="general-panel" class="stack" role="tabpanel" aria-labelledby="general-tab">
-        <button id="account-credentials-button" class="button secondary" type="button">Изменить логин или пароль</button>
         <form id="projects-dir-form" class="field" aria-labelledby="projects-dir-title">
           <label id="projects-dir-title" for="default-projects-dir">Общая папка для проектов на ПК</label>
           <div class="folder-field">
@@ -731,6 +715,38 @@
             </button>
           </div>
         </div>
+      </div>
+      <div id="account-panel" class="stack" role="tabpanel" aria-labelledby="account-tab" hidden>
+        <dl class="account-details glass-panel">
+          <div><dt>Текущий логин</dt><dd><span id="account-current-username" data-user-content></span><span id="account-no-username" hidden>Не задан</span></dd></div>
+          <div><dt>Привязанный email</dt><dd><span id="account-current-email" data-user-content></span><span id="account-no-email" hidden>Не привязан</span></dd></div>
+          <div><dt>Защита аккаунта</dt><dd><span id="account-password-set">Пароль установлен</span><span id="account-no-password" hidden>Пароль не задан</span></dd></div>
+        </dl>
+        <div class="account-actions">
+          <button id="account-edit-username" class="button glass-card" type="button" aria-controls="account-username-form" aria-expanded="false">Изменить логин</button>
+          <button id="account-edit-password" class="button glass-card" type="button" aria-controls="account-password-form account-recovery-slot" aria-expanded="false">Изменить пароль</button>
+        </div>
+        <form id="account-username-form" class="account-form glass-panel stack" novalidate hidden>
+          <label class="field"><span>Новый логин</span>
+            <input id="account-username" name="username" autocomplete="username" minlength="3" maxlength="24" required>
+          </label>
+          <p class="form-error" role="alert"></p>
+          <button class="button glass-card wide" type="submit">Сохранить логин</button>
+        </form>
+        <form id="account-password-form" class="account-form glass-panel stack" novalidate hidden>
+          <label id="account-old-password-field" class="field" hidden><span>Текущий пароль</span>
+            <input id="account-old-password" type="password" autocomplete="current-password" maxlength="1024">
+          </label>
+          <button id="account-forgot" class="link-button auth-forgot" type="button" hidden>Не помню старый пароль</button>
+          <label class="field"><span>Новый пароль</span><input id="account-password" name="password" type="password" autocomplete="new-password" required></label>
+          <div id="account-password-strength" class="password-strength" hidden>
+            <div class="password-strength-track" aria-hidden="true"><span></span><span></span><span></span></div>
+            <span class="password-strength-label" aria-live="polite"></span>
+          </div>
+          <p class="form-error" role="alert"></p>
+          <button class="button glass-card wide" type="submit">Сохранить пароль</button>
+        </form>
+        <div id="account-recovery-slot"></div>
       </div>
       <div id="integrations-panel" class="stack" role="tabpanel" aria-labelledby="integrations-tab" tabindex="0" hidden>
         <section id="email-card" class="integration-card glass-panel stack" aria-labelledby="email-title">
