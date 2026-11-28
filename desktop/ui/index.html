@@ -718,12 +718,19 @@
           </div>
           <input id="telegram-logs" type="checkbox" role="switch"><span id="telegram-logs-state" aria-hidden="true"></span>
         </div>
-        <label class="field"><span>Тема оформления</span>
-          <select id="settings-theme">
-            <option value="dark">Тёмная</option>
-            <option value="light">Светлая</option>
-          </select>
-        </label>
+        <div class="field">
+          <span id="settings-theme-label">Тема оформления</span>
+          <div id="settings-theme" role="group" aria-labelledby="settings-theme-label">
+            <button class="button glass-card" type="button" data-theme-choice="dark" aria-pressed="true">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-moon"/></svg>
+              <span>Тёмная</span>
+            </button>
+            <button class="button glass-card" type="button" data-theme-choice="light" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-sun"/></svg>
+              <span>Светлая</span>
+            </button>
+          </div>
+        </div>
       </div>
       <div id="integrations-panel" class="stack" role="tabpanel" aria-labelledby="integrations-tab" tabindex="0" hidden>
         <section id="email-card" class="integration-card glass-panel stack" aria-labelledby="email-title">

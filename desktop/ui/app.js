@@ -124,10 +124,14 @@ function showCursorToast(message, event) {
   doc.addEventListener("click", toast.dismiss, {capture: true, once: true});
 }
 
+const themeButtons = all("#settings-theme [data-theme-choice]");
+
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("loomis-theme", theme);
-  byId("settings-theme").value = theme;
+  for (const button of themeButtons) {
+    button.setAttribute("aria-pressed", button.dataset.themeChoice === theme);
+  }
   byId("auth-theme").querySelector("span").textContent = theme === "light" ? "Светлая тема" : "Тёмная тема";
 }
 byId("auth-theme").onclick = () => {
@@ -135,10 +139,13 @@ byId("auth-theme").onclick = () => {
   setTheme(theme);
   saveDesktopPreferences({theme});
 };
-byId("settings-theme").onchange = ({target}) => {
-  setTheme(target.value);
-  saveDesktopPreferences({theme: target.value});
-};
+for (const button of themeButtons) {
+  button.onclick = () => {
+    const theme = button.dataset.themeChoice;
+    setTheme(theme);
+    saveDesktopPreferences({theme});
+  };
+}
 setTheme(localStorage.getItem("loomis-theme") === "light" ? "light" : "dark");
 const homeLighterToggle = byId("lighter-toggle");
 homeLighterToggle.setAttribute("aria-expanded", String(localStorage.getItem(homeLighterKey) === "true"));
