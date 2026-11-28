@@ -22,7 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.auth import (
-    PASSWORD_HINT, AccountCredentialsUpdate, AuthSecret, Credentials, EmailInput, EmailRegistration,
+    PASSWORD_HINT, PasswordStrengthError, AccountCredentialsUpdate, AuthSecret, Credentials, EmailInput, EmailRegistration,
     GitHubDevicePoll, LoginIdentifier, OAuthRegistration, RecoveryDevicePoll, RecoveryPassword,
     UserPreferences, Username, VerifyCode,
     authenticate, begin_recovery, begin_registration, bind_telegram_account, change_password, confirm_telegram_login_link,
@@ -30,7 +30,7 @@ from backend.api.auth import (
     exchange_github_device, finish_oauth_registration, github_login_account, issue_oauth_registration,
     link_telegram, poll_github_device, request_github_device, resolve_telegram_login, save_account,
     password_matches, poll_github_recovery, poll_recovery, resolve_recovery_telegram, start_email_link, start_github_device,
-    update_credentials, update_preferences, validate_password, verify_email_link, verify_recovery,
+    update_credentials, update_preferences, validate_password_strength, verify_email_link, verify_recovery,
 )
 from backend.api.projects import (
     AgentCreate, AgentPatch, ClearView, ExistingAgentTest, HubImport, PresetCreate, PresetPatch,
@@ -406,6 +406,9 @@ async def password_input(message: Message, state: FSMContext, session: AsyncSess
         except ValidationError:
             await message.answer(PASSWORD_HINT)
             return
+        except PasswordStrengthError as exc:
+            await answer_error(message, exc)
+            return
         except HTTPException as exc:
             await answer_error(message, exc)
             await prompt_username(message, state, "profile_setup")
@@ -452,6 +455,9 @@ async def password_input(message: Message, state: FSMContext, session: AsyncSess
             await save_account(session)
     except ValidationError:
         await message.answer(PASSWORD_HINT if registering or oauth else "Введите пароль Loomis:")
+        return
+    except PasswordStrengthError as exc:
+        await answer_error(message, exc)
         return
     except (HTTPException, IntegrityError) as error:
         await session.rollback()
@@ -781,9 +787,9 @@ async def new_password_input(message: Message, state: FSMContext, session: Async
         return
     password = message.text or ""
     try:
-        validate_password(password)
-    except ValueError:
-        await message.answer(PASSWORD_HINT)
+        validate_password_strength(password, account.username, account.email)
+    except PasswordStrengthError as exc:
+        await answer_error(message, exc)
         return
     try:
         previous = (await state.get_data()).get("verified_password_hash")

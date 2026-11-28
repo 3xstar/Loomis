@@ -1829,3 +1829,16 @@ body.resizing-direct { cursor: col-resize; user-select: none; }
 .recovery-methods [data-recovery-method="email"] svg { fill: none; stroke: currentColor; stroke-width: 1.6; }
 #unlink-dialog [hidden] { display: none; }
 #unlink-device-code { font-size: 1.25rem; user-select: all; }
+
+.password-strength {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.password-strength[hidden] { display: none; }
+.password-strength-track { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.password-strength-track span { height: 2px; border-radius: 2px; background: currentColor; opacity: 0.25; }
+.password-strength-track span:first-child,
+.password-strength[data-level="2"] .password-strength-track span:nth-child(2),
+.password-strength[data-level="3"] .password-strength-track span { color: var(--ink); opacity: 1; }

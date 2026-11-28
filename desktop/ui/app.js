@@ -70,7 +70,7 @@ const deletedAgents = new Set();
 const icon = (paths) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
 
 async function api(path, body, accessToken = token, method = body === undefined ? "GET" : "POST") {
-  const headers = {};
+  const headers = {"Accept-Language": LoomisI18n.language};
   const multipart = body instanceof FormData;
   if (accessToken) headers.Authorization = "Bearer " + accessToken;
   if (body !== undefined && !multipart) headers["Content-Type"] = "application/json";
@@ -157,9 +157,11 @@ function showWorkspace(visible) {
 }
 
 let accountHasPassword = false;
+let accountEmail = "";
 
 function renderAccountName(user) {
   accountHasPassword = user.has_password;
+  accountEmail = user.email || "";
   byId("user-name").dataset.userContent = "";
   byId("user-name").textContent = user.username || "Loomis";
   byId("user-avatar").textContent = byId("user-name").textContent[0].toUpperCase();
@@ -189,15 +191,96 @@ async function signIn(accessToken, isCurrent = () => true) {
   await saved;
 }
 
-const passwordHint = "Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей.";
-const simplePasswords = new Set(["12345678", "123456789", "qwerty123", "password1"]);
+const passwordErrors = {
+  length: "Пароль должен содержать от 10 до 64 символов.",
+  common: "Пароль не должен содержать распространённые пароли или слова из списка запрещённых.",
+  sequence: "Пароль не должен содержать простые последовательности (например, 1234 или qwerty).",
+  repeat: "Пароль не должен содержать три одинаковых символа подряд.",
+  personal: "Пароль не должен содержать логин или часть Email до знака @.",
+  groups: "Пароль длиной 10–14 символов должен включать минимум три группы: строчные буквы, заглавные буквы, цифры и спецсимволы.",
+  letter: "Пароль длиной от 15 символов должен содержать хотя бы одну букву.",
+};
 
-function validatePassword(password) {
-  const length = Array.from(password).length;
-  if (length < 8 || length > 1024 || !/\p{L}/u.test(password) ||
-      !/[0-9]/.test(password) || simplePasswords.has(password.toLowerCase())) {
-    throw new Error(passwordHint);
+const passwordBlocklist = "password admin welcome letmein master dragon monkey loomis 1234567890".split(" ");
+const passwordSequenceRows = [
+  "0123456789",
+  "abcdefghijklmnopqrstuvwxyz",
+  "абвгдежзийклмнопрстуфхцчшщъыьэюя",
+  "абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+  "qwertyuiop",
+  "asdfghjkl",
+  "zxcvbnm",
+  "йцукенгшщзхъ",
+  "фывапролджэ",
+  "ячсмитьбю",
+  "!@#$%^&*()",
+];
+const passwordSequences = new Set();
+for (const row of passwordSequenceRows) {
+  for (const sequence of [row, Array.from(row).reverse().join("")]) {
+    for (let index = 0; index <= sequence.length - 4; index++) {
+      passwordSequences.add(sequence.slice(index, index + 4));
+    }
   }
+}
+
+const passwordLowercase = value => Array.from(value, char => char.toLowerCase()).join("");
+
+function validate_password_strength(password, username = "", email = "") {
+  const length = Array.from(password).length;
+  if (length < 10 || length > 64) throw new Error(passwordErrors.length);
+  const lowered = passwordLowercase(password);
+  if (passwordBlocklist.some(word => lowered.includes(word))) throw new Error(passwordErrors.common);
+  for (let index = 0; index <= lowered.length - 4; index++) {
+    if (passwordSequences.has(lowered.slice(index, index + 4))) throw new Error(passwordErrors.sequence);
+  }
+  if (/(.)\1\1/su.test(lowered)) throw new Error(passwordErrors.repeat);
+  const emailSeparator = email.lastIndexOf("@");
+  const emailLocal = emailSeparator < 0 ? email : email.slice(0, emailSeparator);
+  if ([username, emailLocal].some(value => value && lowered.includes(passwordLowercase(value)))) {
+    throw new Error(passwordErrors.personal);
+  }
+  if (length >= 15) {
+    if (!/\p{L}/u.test(password)) throw new Error(passwordErrors.letter);
+  } else {
+    const groups = [/\p{Ll}/u, /[\p{Lu}\p{Lt}]/u, /\p{Nd}/u, /[\p{P}\p{S}]/u];
+    if (groups.filter(pattern => pattern.test(password)).length < 3) throw new Error(passwordErrors.groups);
+  }
+  return length >= 15 ? 3 : 2;
+}
+
+function recoveryPasswordIdentity(attempt) {
+  if (attempt?.account) return [byId("account-username").defaultValue, accountEmail];
+  const identifier = attempt?.identifier || "";
+  return identifier.includes("@") ? ["", identifier] : [identifier];
+}
+
+for (const [id, identity] of [
+  ["auth-password-input", () => [byId("auth-username").value.trim(), registering && !oauthRegistration ? byId("auth-email").value.trim() : ""]],
+  ["recovery-password", () => recoveryPasswordIdentity(recovery)],
+  ["account-password", () => [byId("account-username").value.trim(), accountEmail]],
+]) {
+  const input = byId(id);
+  const meter = byId(id + "-strength");
+  const label = meter.querySelector(".password-strength-label");
+
+  function updateMeter() {
+    meter.hidden = input.autocomplete !== "new-password" || document.activeElement !== input || !input.value;
+    if (meter.hidden) return;
+    let level;
+    try {
+      level = validate_password_strength(input.value, ...identity());
+    } catch {
+      level = 1;
+    }
+    meter.dataset.level = level;
+    label.textContent = ["Слабый", "Хороший", "Надёжный"][level - 1];
+  }
+
+  input.addEventListener("input", updateMeter);
+  input.addEventListener("focus", updateMeter);
+  input.addEventListener("blur", () => { meter.hidden = true; });
+  input.form.addEventListener("reset", () => { meter.hidden = true; });
 }
 
 const emailPattern = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -312,7 +395,7 @@ function renderAuthForm() {
     : signup ? "Зарегистрироваться" : "Войти в Loomis";
   byId("auth-mode-toggle").textContent = signup ? "Уже есть аккаунт? Войти" : "Нет аккаунта? Зарегистрироваться";
   byId("auth-password-input").autocomplete = newPassword ? "new-password" : "current-password";
-  byId("auth-password-input").minLength = newPassword ? 8 : 1;
+  byId("auth-password-input-strength").hidden = true;
 }
 
 function stopProviderAuth() {
@@ -347,10 +430,10 @@ byId("password-form").onsubmit = async (event) => {
     const rawUsername = byId("auth-username").value;
     const username = registering || oauthRegistration ? validatedUsername(rawUsername) : validatedIdentifier(rawUsername);
     const credentials = {username, password: byId("auth-password-input").value};
-    if (!credentials.password) throw new Error("Введите пароль.");
+    if (!credentials.password && !registering && !oauthRegistration) throw new Error("Введите пароль.");
     if (oauthRegistration) {
       if (!oauthRegistration.accessToken) {
-        validatePassword(credentials.password);
+        validate_password_strength(credentials.password, username);
         const result = await api("auth/complete-oauth", {...credentials, pending_token: oauthRegistration.pendingToken});
         oauthRegistration.accessToken = result.access_token;
       }
@@ -361,12 +444,14 @@ byId("password-form").onsubmit = async (event) => {
       return;
     }
     if (registering) {
-      validatePassword(credentials.password);
+      const email = validatedEmail(byId("auth-email").value);
+      validate_password_strength(credentials.password, username, email);
       const result = await api("auth/register", {
-        ...credentials, email: validatedEmail(byId("auth-email").value), language: LoomisI18n.language,
+        ...credentials, email, language: LoomisI18n.language,
       });
       signupKey = result.key;
       byId("auth-password-input").value = "";
+      byId("auth-password-input-strength").hidden = true;
       event.target.classList.add("hidden");
       byId("auth-providers").classList.add("hidden");
       byId("signup-code-form").hidden = false;
@@ -486,6 +571,7 @@ async function startRecovery(method = recovery?.method) {
     if (attempt !== recovery) return;
     clearTimeout(recoveryTimer);
     attempt.flow = flow;
+    attempt.identifier = body.identifier;
     if (flow.method === "email") {
       showRecoveryStep("recovery-code-form");
       byId("recovery-error").textContent = flow.hint || "";
@@ -604,7 +690,7 @@ byId("recovery-password-form").onsubmit = async (event) => {
   byId("recovery-error").textContent = "";
   try {
     const body = {key: attempt.grant, password: byId("recovery-password").value};
-    validatePassword(body.password);
+    validate_password_strength(body.password, ...recoveryPasswordIdentity(attempt));
     const path = attempt.account ? "auth/recovery/account/finish" : "auth/recovery/finish";
     const result = await api(path, body, attempt.session);
     if (!current()) return;
@@ -2953,7 +3039,7 @@ byId("account-credentials-form").onsubmit = async (event) => {
   try {
     if (body.username !== undefined) body.username = validatedUsername(body.username);
     if (password) {
-      validatePassword(password);
+      validate_password_strength(password, body.username ?? username.defaultValue, accountEmail);
       if (accountHasPassword && !body.old_password) throw new Error("Введите текущий пароль.");
     }
     const user = await api("auth/credentials", body, session, "PATCH");
@@ -3008,6 +3094,7 @@ byId("settings-delete-project").onclick = () => {
 };
 
 function renderIntegrations(user) {
+  accountEmail = user.email || "";
   const verified = Boolean(user.email_verified && user.email);
   byId("email-alert").hidden = verified;
   byId("email-disconnect").hidden = !verified;

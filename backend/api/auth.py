@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import time
+import unicodedata
 from contextlib import suppress
 from datetime import timedelta
 from pathlib import Path
@@ -19,7 +20,8 @@ import httpx
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.exceptions import TelegramAPIError
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, SecretStr, StringConstraints, computed_field, field_validator
 from sqlalchemy import delete, func, select, update
@@ -36,7 +38,6 @@ from backend.settings import ROOT, settings
 from backend.services.email_service import send_verification, verification_hint
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/auth", tags=["auth"])
 Session = Annotated[AsyncSession, Depends(get_session)]
 USERNAME_ERROR = "Логин должен содержать от 3 до 24 латинских букв, цифр или подчёркиваний и хотя бы одну букву."
 EMAIL_ERROR = "Введите корректный адрес электронной почты."
@@ -91,18 +92,85 @@ if not SECRET_KEY:
 
 LoginIdentifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
                             AfterValidator(validate_login_identifier)]
-PASSWORD_HINT = "Минимум 8 символов, хотя бы одна буква и одна цифра. Избегайте простых паролей."
+PASSWORD_HINT = 'Придумайте пароль от 10 до 64 символов.'
+PASSWORD_ERRORS = {
+    'length': ('Пароль должен содержать от 10 до 64 символов.', 'Password must contain 10 to 64 characters.'),
+    'common': ('Пароль не должен содержать распространённые пароли или слова из списка запрещённых.', 'Password must not contain common passwords or blocklisted words.'),
+    'sequence': ('Пароль не должен содержать простые последовательности (например, 1234 или qwerty).', 'Password must not contain predictable sequences.'),
+    'repeat': ('Пароль не должен содержать три одинаковых символа подряд.', 'Password must not contain three identical characters in a row.'),
+    'personal': ('Пароль не должен содержать логин или часть Email до знака @.', 'Password must not contain your username or the part of your email before @.'),
+    'groups': ('Пароль длиной 10–14 символов должен включать минимум три группы: строчные буквы, заглавные буквы, цифры и спецсимволы.', 'A 10–14 character password must use at least three groups: lowercase letters, uppercase letters, digits, and special characters.'),
+    'letter': ('Пароль длиной от 15 символов должен содержать хотя бы одну букву.', 'A password of 15 or more characters must contain at least one letter.'),
+}
+
+PASSWORD_BLOCKLIST = "password admin welcome letmein master dragon monkey loomis 1234567890".split()
+PASSWORD_SEQUENCE_ROWS = (
+    '0123456789',
+    'abcdefghijklmnopqrstuvwxyz',
+    'абвгдежзийклмнопрстуфхцчшщъыьэюя',
+    'абвгдеёжзийклмнопрстуфхцчшщъыьэюя',
+    'qwertyuiop',
+    'asdfghjkl',
+    'zxcvbnm',
+    'йцукенгшщзхъ',
+    'фывапролджэ',
+    'ячсмитьбю',
+    '!@#$%^&*()',
+)
+PASSWORD_SEQUENCES = {
+    row[index:index + 4]
+    for forward in PASSWORD_SEQUENCE_ROWS
+    for row in (forward, forward[::-1])
+    for index in range(len(row) - 3)
+}
 
 
-def validate_password(password: str) -> str:
-    if (not 8 <= len(password) <= 1024 or not any(char.isalpha() for char in password)
-            or not any("0" <= char <= "9" for char in password)
-            or password.lower() in {"12345678", "123456789", "qwerty123", "password1"}):
-        raise ValueError(PASSWORD_HINT)
-    return password
+class PasswordStrengthError(HTTPException):
+    def __init__(self, reason: str):
+        russian, self.english = PASSWORD_ERRORS[reason]
+        super().__init__(422, russian)
 
 
-StrongPassword = Annotated[str, AfterValidator(validate_password)]
+class AuthRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def localized_handler(request: Request):
+            try:
+                return await handler(request)
+            except PasswordStrengthError as exc:
+                preferred = request.headers.get("Accept-Language", "").split(",")[0].split(";")[0].strip()
+                if preferred.lower().split("-")[0] == "en":
+                    raise HTTPException(exc.status_code, exc.english) from None
+                raise
+
+        return localized_handler
+
+
+router = APIRouter(prefix="/api/auth", tags=["auth"], route_class=AuthRoute)
+
+
+def validate_password_strength(password: str, username: str | None = None, email: str | None = None) -> None:
+    if not 10 <= len(password) <= 64:
+        raise PasswordStrengthError("length")
+    lowered = "".join(char.lower() for char in password)
+    if any(word in lowered for word in PASSWORD_BLOCKLIST):
+        raise PasswordStrengthError("common")
+    if any(lowered[index:index + 4] in PASSWORD_SEQUENCES for index in range(len(lowered) - 3)):
+        raise PasswordStrengthError("sequence")
+    if any(a == b == c for a, b, c in zip(lowered, lowered[1:], lowered[2:])):
+        raise PasswordStrengthError("repeat")
+    for personal in (username, email.rsplit("@", 1)[0] if email else None):
+        if personal and "".join(char.lower() for char in personal) in lowered:
+            raise PasswordStrengthError("personal")
+
+    categories = {unicodedata.category(char) for char in password}
+    if len(password) >= 15:
+        if not any(category.startswith("L") for category in categories):
+            raise PasswordStrengthError("letter")
+    elif sum(("Ll" in categories, bool(categories & {"Lu", "Lt"}), "Nd" in categories,
+              any(category.startswith(("P", "S")) for category in categories))) < 3:
+        raise PasswordStrengthError("groups")
 
 
 class Credentials(BaseModel):
@@ -112,7 +180,7 @@ class Credentials(BaseModel):
 
 class SignUpCredentials(Credentials):
     username: Username
-    password: StrongPassword
+    password: str
 
 
 class OAuthRegistration(SignUpCredentials):
@@ -202,7 +270,7 @@ async def create_account(session: AsyncSession, credentials: SignUpCredentials, 
 
 class AccountCredentialsUpdate(BaseModel):
     username: Username | None = None
-    password: StrongPassword | None = None
+    password: str | None = None
     old_password: str | None = Field(default=None, max_length=1024)
 
 
@@ -241,6 +309,8 @@ CurrentUser = Annotated[User, Depends(current_user)]
 
 @router.patch("/credentials", response_model=UserView)
 async def update_credentials(data: AccountCredentialsUpdate, session: Session, user: CurrentUser):
+    if data.password is not None:
+        validate_password_strength(data.password, data.username or user.username, user.email)
     if data.username is not None:
         login_name = data.username.casefold()
         if len(login_name) > 255:
@@ -499,6 +569,7 @@ async def issue_oauth_registration(session, identity, *, slot=None, expires_at=N
 
 
 async def finish_oauth_registration(session, data):
+    validate_password_strength(data.password, data.username)
     try:
         encoded, signature = data.pending_token.split(".")
         if not hmac.compare_digest(_sign(f"pending-oauth:{encoded}"), signature):
@@ -562,6 +633,7 @@ async def poll_github_login(data: GitHubDevicePoll, session: Session):
 
 @router.post("/github/login/register", status_code=201)
 async def register_github(data: GitHubRegistration, session: Session):
+    validate_password_strength(data.password, data.username)
     ticket = (await session.execute(delete(GitHubSignUp).where(
         GitHubSignUp.ticket == _sign(f"github-signup:{data.key}"), GitHubSignUp.expires_at > utc_now(),
     ).returning(GitHubSignUp.account_id, GitHubSignUp.username, GitHubSignUp.avatar_url,
@@ -721,7 +793,7 @@ class RecoveryDevicePoll(GitHubDevicePoll, AuthSecret):
 
 
 class RecoveryPassword(AuthSecret):
-    password: StrongPassword
+    password: str
 
 
 def challenge_key(key: str) -> str:
@@ -801,6 +873,7 @@ async def available_email(session, address, user_id=None):
 
 
 async def begin_registration(session, data, *, telegram_id=None, telegram_name=None):
+    validate_password_strength(data.password, data.username, data.email)
     login_name = data.username.casefold()
     if len(login_name) > 255:
         raise HTTPException(422, "Логин слишком длинный.")
@@ -1195,7 +1268,6 @@ async def complete_recovery(session, data, *, telegram_id=None, telegram_name=No
     conditions = [*active_challenge(data.key, "reset"), AuthChallenge.approved.is_(True)]
     if require_user_id is not None:
         conditions.append(AuthChallenge.user_id == require_user_id)
-    new_hash = await password_hash(data.password)
     row = (await session.execute(delete(AuthChallenge).execution_options(synchronize_session=False).where(*conditions).returning(
         AuthChallenge.user_id, AuthChallenge.payload,
     ))).one_or_none()
@@ -1206,6 +1278,12 @@ async def complete_recovery(session, data, *, telegram_id=None, telegram_name=No
     if user is None or not hmac.compare_digest(payload["password"], _sign(f"recovery-password:{user.password_hash}")):
         await session.commit()
         raise HTTPException(410, RECOVERY_ERROR)
+    try:
+        validate_password_strength(data.password, user.username, user.email)
+    except PasswordStrengthError:
+        await session.rollback()
+        raise
+    new_hash = await password_hash(data.password)
     telegram_proof = int(payload["telegram_id"]) if payload["telegram_id"] else None
     proofs = {
         "email": User.email_verified.is_(True) & (User.email == payload["email"]),

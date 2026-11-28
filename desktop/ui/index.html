@@ -11,7 +11,7 @@
 <body>
   <svg class="ui-symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <symbol id="icon-github" viewBox="0 0 24 24"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.86c-2.78.6-3.37-1.18-3.37-1.18-.45-1.15-1.11-1.46-1.11-1.46-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.64-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></symbol>
-    <symbol id="icon-telegram" viewBox="0 0 24 24"><path d="m3 10 18-7-4 18-6-5-3 3 1-6 8-6-10 5Z"/></symbol>
+    <symbol id="icon-telegram" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" stroke="none" d="M2 9.5 22 2l-4 20-6.4-5-3.8 3.4.7-6.5L2 11.2Zm2.1.9 5.3 2.2 8-6.1 1 1.2-6.1 7.9 4.7 3.7 3-14.9Zm5.7 6.4 1.3-1.2 3.4-4.5-4.4 3.4Z"/></symbol>
     <symbol id="icon-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
     <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
     <symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
@@ -48,6 +48,10 @@
           <span>Пароль</span>
           <input id="auth-password-input" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
         </label>
+        <div id="auth-password-input-strength" class="password-strength" hidden>
+          <div class="password-strength-track" aria-hidden="true"><span></span><span></span><span></span></div>
+          <span class="password-strength-label" aria-live="polite"></span>
+        </div>
         <label id="auth-email-field" class="field" hidden><span>Электронная почта</span>
           <input id="auth-email" type="email" autocomplete="email" maxlength="254">
         </label>
@@ -103,8 +107,12 @@
           </div>
           <form id="recovery-password-form" novalidate class="stack" hidden>
             <label class="field"><span>Новый пароль</span>
-              <input id="recovery-password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" required>
+              <input id="recovery-password" type="password" autocomplete="new-password" required>
             </label>
+            <div id="recovery-password-strength" class="password-strength" hidden>
+              <div class="password-strength-track" aria-hidden="true"><span></span><span></span><span></span></div>
+              <span class="password-strength-label" aria-live="polite"></span>
+            </div>
             <button class="button primary wide" type="submit">Установить новый пароль</button>
           </form>
           <p id="recovery-error" class="form-error" role="alert"></p>
@@ -671,7 +679,11 @@
           <input id="account-old-password" type="password" autocomplete="current-password" maxlength="1024">
         </label>
         <button id="account-forgot" class="link-button auth-forgot" type="button" hidden>Не помню старый пароль</button>
-        <label class="field"><span>Новый пароль</span><input id="account-password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="1024"></label>
+        <label class="field"><span>Новый пароль</span><input id="account-password" name="password" type="password" autocomplete="new-password"></label>
+        <div id="account-password-strength" class="password-strength" hidden>
+          <div class="password-strength-track" aria-hidden="true"><span></span><span></span><span></span></div>
+          <span class="password-strength-label" aria-live="polite"></span>
+        </div>
         <p id="account-credentials-error" class="error" role="alert"></p>
         <button id="account-credentials-save" class="button primary wide" type="submit">Сохранить</button>
       </form>
